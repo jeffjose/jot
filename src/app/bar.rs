@@ -359,14 +359,11 @@ impl App {
         let Some(pgrp) = self.job(id) else {
             return self.toast("Nothing running", "The shell has the pane to itself", None, Some(id));
         };
-        let name = self.panes.get(&id).and_then(|p| p.pty.foreground()).unwrap_or_else(|| "the job".into());
         let Some(p) = self.panes.get_mut(&id) else { return };
         let hard = p.shell.killed_at.is_some_and(|t| t.elapsed() < Duration::from_secs(10));
-        let (signal, what) = if hard { (libc::SIGKILL, "SIGKILL") } else { (libc::SIGTERM, "SIGTERM") };
+        let signal = if hard { libc::SIGKILL } else { libc::SIGTERM };
         unsafe { libc::kill(-pgrp, signal) };
         p.shell.killed_at = Some(Instant::now());
-        let again = if hard { "" } else { " · /kill again for SIGKILL" };
-        self.toast(&format!("Sent {what}"), &format!("to {name}{again}"), None, Some(id));
     }
 
     /// A queued command run now, beside the shell rather than in it: in
