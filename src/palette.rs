@@ -37,6 +37,12 @@ pub enum Action {
     CopyCommand,
     /// The command under the menu: again, or into the editor first.
     Rerun,
+    /// The command under the menu pinned to its pane; a pin run, edited
+    /// or unpinned, by pane and place.
+    Pin,
+    PinRun(u64, usize),
+    PinEdit(u64, usize),
+    PinRemove(u64, usize),
     EditCommand,
     /// The pane's running command, stopped and run again.
     Restart,

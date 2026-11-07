@@ -34,6 +34,8 @@ pub enum Does {
     Grep,
     /// The workspace given the name that follows.
     Rename,
+    /// A command pinned to the top of the pane.
+    Pin,
     /// Told when the command ends; its processes; its ports; its files.
     Notify,
     Tree,
@@ -58,7 +60,7 @@ impl Command {
 
     /// Whether it takes a word after it, picked from a list.
     fn takes_arg(&self) -> bool {
-        matches!(self.does, Does::Theme | Does::Tee | Does::Filter | Does::Grep | Does::Rename)
+        matches!(self.does, Does::Theme | Does::Tee | Does::Filter | Does::Grep | Does::Rename | Does::Pin)
     }
 }
 
@@ -112,6 +114,7 @@ impl App {
             Command::new("clear", "Clear terminal", Does::Act(Action::Clear)),
             Command::new("theme", "Set the color theme", Does::Theme),
             Command::new("edit", "Edit this command in a larger editor", Does::Edit),
+            Command::new("pin", "Pin a command to the top of this pane", Does::Pin),
             Command::new("tee", "Write this pane's output to a file as well", Does::Tee),
             Command::new("filter", "Show only the running command's lines with some text", Does::Filter),
             Command::new("grep", "Find and light matches, as Ctrl F", Does::Grep),
@@ -169,7 +172,7 @@ impl App {
         }
         if let Some((c, arg)) = self.slash_arg_command(typed).filter(|_| !mid) {
             // Free text after it: one row, saying what it will do.
-            if matches!(c.does, Does::Tee | Does::Filter | Does::Grep | Does::Rename) {
+            if matches!(c.does, Does::Tee | Does::Filter | Does::Grep | Does::Rename | Does::Pin) {
                 let arg = arg.trim();
                 let what = match (&c.does, arg.is_empty()) {
                     (Does::Tee, true) if self.focused().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.tee.is_some()) => "Stop".to_string(),
@@ -177,6 +180,8 @@ impl App {
                     (Does::Tee, false) => "Save the command's output here too (--all: everything)".to_string(),
                     (Does::Filter, true) => "Stop filtering".to_string(),
                     (Does::Filter, false) => "Show only lines with this".to_string(),
+                    (Does::Pin, true) => "Pin the last command".to_string(),
+                    (Does::Pin, false) => "Pin this command".to_string(),
                     (Does::Rename, true) => "Type the new name, or Enter for the rename box".to_string(),
                     (Does::Rename, false) => "The new name for this workspace".to_string(),
                     (_, true) => "Type what to find".to_string(),
@@ -202,7 +207,7 @@ impl App {
             .filter_map(|c| {
                 // Mid-line, /tee takes no word: it is the line's own command.
                 let label = if c.takes_arg() && !mid { format!("{} …", c.name) } else { c.name.clone() };
-                if mid && !(matches!(c.does, Does::Insert(_) | Does::Edit | Does::Tee) && c.name.starts_with(typed)) {
+                if mid && !(matches!(c.does, Does::Insert(_) | Does::Edit | Does::Tee | Does::Pin) && c.name.starts_with(typed)) {
                     return None;
                 }
                 rank(&c.name, typed).map(|r| (r, Row { label, what: c.what.clone(), kind: kind_of(&c.does) }))
@@ -474,6 +479,17 @@ impl App {
             Does::Tee => self.tee(id, arg),
             Does::Filter => self.filter(id, arg),
             Does::Grep => self.find_text(id, arg),
+            Does::Pin => {
+                // What follows it, else the line it ends (left there to run or
+                // not), else the last command.
+                let line = self.prompt_line(id);
+                let line = line.trim_end().rsplit_once(" /p").map_or(line.trim().to_string(), |(head, _)| head.trim().to_string());
+                let last = self.panes.get(&id).and_then(|p| p.shell.blocks.iter().rev().map(|b| b.command.trim().to_string()).find(|c| !c.is_empty()));
+                let cmd = if !arg.trim().is_empty() { Some(arg.trim().to_string()) } else if !line.is_empty() && !line.starts_with('/') { Some(line) } else { last };
+                if let Some(cmd) = cmd {
+                    self.pin_add(id, &cmd);
+                }
+            }
             Does::Rename => match arg.trim() {
                 "" => self.run(Action::Rename, event_loop),
                 name => {
@@ -586,7 +602,7 @@ fn kind_of(d: &Does) -> &'static str {
         Does::Edit => "edit",
         Does::Tee | Does::Filter => "watch",
         Does::Grep => "find",
-        Does::Rename => "jterm",
+        Does::Rename | Does::Pin => "jterm",
         Does::Run(_) => "run",
         Does::Stop | Does::Kill | Does::Restart | Does::Info | Does::Notify | Does::Tree | Does::Ports | Does::Files => "job",
     }

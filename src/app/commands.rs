@@ -131,6 +131,7 @@ impl App {
                 ShellEvent::End(exit) => {
                     let Some((started, start, line)) = p.shell.running.take() else { continue };
                     let took = started.elapsed();
+                    Self::pins_ended(p, &line, exit);
                     if std::mem::take(&mut p.shell.notify) {
                         let how = match exit {
                             Some(0) | None => "done".to_string(),

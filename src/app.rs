@@ -38,6 +38,7 @@ mod dnd;
 mod find;
 mod links;
 mod minimize;
+mod pin;
 mod mouse;
 mod popout;
 mod restore;
@@ -94,6 +95,9 @@ pub struct Pane {
     filter: Option<watch::Filter>,
     /// The last line it printed, for its row when minimized.
     last_line: String,
+    /// Commands pinned to its top, and how far their strip is scrolled.
+    pins: Vec<pin::Pin>,
+    pins_scroll: usize,
 }
 
 /// A pane closed, to bring back.
@@ -191,6 +195,9 @@ pub struct App {
     /// Minimized panes' rows, to click, and the one the pointer is on.
     mini_hits: Vec<(Rect, PaneId)>,
     mini_lit: Option<PaneId>,
+    /// Pin strips' buttons, and the one the pointer is on.
+    pin_hits: Vec<(Rect, PaneId, usize, pin::PinHit)>,
+    pin_lit: Option<(PaneId, usize, pin::PinHit)>,
     /// Commands run now from a bar, as they end: pane, output, status.
     ran: Arc<std::sync::Mutex<Vec<(PaneId, String, i32)>>>,
     last_click: Option<(Instant, (u16, u16), u8)>,
@@ -330,6 +337,8 @@ impl App {
             multi_lit: None,
             mini_hits: Vec::new(),
             mini_lit: None,
+            pin_hits: Vec::new(),
+            pin_lit: None,
             ran: Default::default(),
             last_click: None,
             clipboard: None,
@@ -417,7 +426,7 @@ impl App {
         let caption = folder_name(&start.cwd);
         self.panes.insert(
             id,
-            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new() },
+            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0 },
         );
         id
     }
@@ -429,6 +438,14 @@ impl App {
             ids.push(id);
             id
         });
+        // The pins each pane had when the session was saved.
+        if let Some(layout) = &spec.layout {
+            for (id, pins) in ids.iter().zip(persist::pins_in_order(layout)) {
+                if let Some(p) = self.panes.get_mut(id) {
+                    p.pins = pins.into_iter().map(|cmd| pin::Pin { cmd, last: None }).collect();
+                }
+            }
+        }
         let name = if spec.name.is_empty() { folder_name(&spec.folder()) } else { spec.name.clone() };
         self.workspaces.push(Workspace { name, root, focus: ids[0], zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new() });
         self.run_hook(self.workspaces.len() - 1, true);
@@ -510,6 +527,7 @@ impl App {
         // left behind for a pane no longer on screen.
         self.multi_tags.clear();
         self.bar_hits.clear();
+        self.pin_hits.clear();
         self.lay_out_popouts();
         let area = self.area();
         let mut shown = Vec::new();
@@ -535,8 +553,9 @@ impl App {
         let (cw, ch, cap, pad, top) = (self.fonts.cell_w, self.fonts.cell_h, self.caption_h(), self.px(12.0), self.px(8.0));
         for (id, rect) in shown {
             let bar = self.bar_height(id);
+            let pins = self.pins_height(id);
             let Some(p) = self.panes.get_mut(&id) else { continue };
-            let content = Rect { x: rect.x + pad, y: rect.y + top, w: (rect.w - 2 * pad).max(0), h: (rect.h - cap - top - bar).max(0) };
+            let content = Rect { x: rect.x + pad, y: rect.y + top + pins, w: (rect.w - 2 * pad).max(0), h: (rect.h - cap - top - bar - pins).max(0) };
             let cols = (content.w / cw).clamp(1, u16::MAX as i32) as u16;
             let rows = (content.h / ch).clamp(1, u16::MAX as i32) as u16;
             // Only a change of rows or columns is told to the program: a
@@ -1188,7 +1207,7 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
-        if (button == MouseButton::Left && (self.offer_click(event_loop) || self.toast_click() || self.mini_click() || self.editor_run_click() || self.editor_press() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
+        if (button == MouseButton::Left && (self.offer_click(event_loop) || self.toast_click() || self.mini_click() || self.pin_click() || self.editor_run_click() || self.editor_press() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
             return;
         }
         let (x, y) = self.pointer;
@@ -1241,7 +1260,7 @@ impl App {
             }
         }
         // The command line's text, right clicked: a text box's menu.
-        if button == MouseButton::Right && (self.editor_menu() || self.bar_field_menu()) {
+        if button == MouseButton::Right && (self.editor_menu() || self.bar_field_menu() || self.pin_menu()) {
             return;
         }
         // A tag on a caption, right clicked: what can be done with it.
@@ -1345,7 +1364,7 @@ impl App {
                 }
             }
             None => {
-                if self.mini_hover(x, y) || self.editor_drag(x, y) || self.editor_run_hover(x, y) || self.editor_hover(x, y) || self.bar_field_drag(x, y) || self.bar_field_hover(x, y) || self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
+                if self.mini_hover(x, y) || self.pin_hover(x, y) || self.editor_drag(x, y) || self.editor_run_hover(x, y) || self.editor_hover(x, y) || self.bar_field_drag(x, y) || self.bar_field_hover(x, y) || self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
                     return;
                 }
                 self.update_link();
@@ -1808,6 +1827,7 @@ impl App {
             }
         }
         if full {
+            self.draw_pins(id);
             self.draw_handle(id);
             self.draw_bar(id);
         }
@@ -2023,8 +2043,8 @@ impl App {
         }
         let panes = &self.panes;
         let describe = |id: PaneId| match panes.get(&id) {
-            Some(p) => (p.cmd.clone(), p.pty.cwd()),
-            None => (String::new(), None),
+            Some(p) => (p.cmd.clone(), p.pty.cwd(), p.pins.iter().map(|pin| pin.cmd.clone()).collect()),
+            None => (String::new(), None, Vec::new()),
         };
         let workspaces = self
             .workspaces
@@ -2132,7 +2152,7 @@ impl ApplicationHandler<()> for App {
                     }
                     MouseScrollDelta::PixelDelta(p) => -(p.y / self.fonts.cell_h as f64) as isize,
                 };
-                if lines != 0 && !self.settings_scroll(lines) {
+                if lines != 0 && !self.settings_scroll(lines) && !self.pins_wheel(lines as f32) {
                     self.scroll(lines);
                 }
             }
@@ -2251,7 +2271,7 @@ impl App {
     pub(super) fn open_pending_popouts(&mut self, event_loop: &ActiveEventLoop) {
         for (i, spec) in std::mem::take(&mut self.pending_popouts).into_iter().enumerate() {
             let (cmd, cwd) = match spec {
-                persist::Spec::Pane { cmd, cwd } => (cmd, cwd.map(|c| persist::expand(&c)).unwrap_or_else(pty::home)),
+                persist::Spec::Pane { cmd, cwd, .. } => (cmd, cwd.map(|c| persist::expand(&c)).unwrap_or_else(pty::home)),
                 persist::Spec::Command(cmd) => (cmd, pty::home()),
                 _ => continue,
             };

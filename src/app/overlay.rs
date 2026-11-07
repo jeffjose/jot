@@ -304,6 +304,19 @@ impl App {
             Action::CopyOutput => self.copy_output_at(self.menu_at),
             Action::CopyCommand => self.copy_command_at(self.menu_at),
             Action::Rerun => self.rerun_at(self.menu_at),
+            Action::Pin => {
+                if let (Some(cmd), Some((id, _))) = (self.command_at(self.menu_at), self.pane_at(self.menu_at.0, self.menu_at.1)) {
+                    self.pin_add(id, &cmd);
+                }
+            }
+            Action::PinRun(id, i) => self.pin_run(id, i),
+            Action::PinRemove(id, i) => self.pin_remove(id, i),
+            Action::PinEdit(id, i) => {
+                if let Some(cmd) = self.panes.get(&id).and_then(|p| p.pins.get(i)).map(|pin| pin.cmd.clone()) {
+                    let busy = !self.pane_waiting(id);
+                    self.open_editor_with(id, &cmd, busy);
+                }
+            }
             Action::EditCommand => self.edit_command_at(self.menu_at),
             Action::Restart => {
                 if let Some((id, _)) = self.pane_at(self.menu_at.0, self.menu_at.1) {
@@ -429,6 +442,7 @@ impl App {
             if busy { c("Restart", "Ctrl R", Action::Restart) } else { None },
             if has_command && !busy { c("Rerun", "", Action::Rerun) } else { None },
             if has_command { c("Edit command", "", Action::EditCommand) } else { None },
+            if has_command { c("Pin", "", Action::Pin) } else { None },
             None,
             c("Split right", "Alt V", Action::Split(Dir::Across)),
             c("Split down", "Alt S", Action::Split(Dir::Down)),

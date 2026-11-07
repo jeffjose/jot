@@ -302,6 +302,17 @@ impl App {
                 let text = self.prompt_line(id);
                 self.open_editor_with(id, &text, false);
             }
+            Does::Pin => {
+                // What follows it, else the command running, else the last.
+                let p = self.panes.get(&id);
+                let running = p.and_then(|p| p.shell.running.as_ref().filter(|_| !p.shell.at_prompt)).map(|r| r.2.trim().to_string());
+                let last = p.and_then(|p| p.shell.blocks.iter().rev().map(|b| b.command.trim().to_string()).find(|c| !c.is_empty()));
+                let cmd = Some(arg.trim().to_string()).filter(|a| !a.is_empty()).or(running).or(last);
+                self.close_bar();
+                if let Some(cmd) = cmd {
+                    self.pin_add(id, &cmd);
+                }
+            }
             Does::Tree | Does::Ports | Does::Files => {
                 let (title, lines) = match c.does {
                     Does::Tree => ("/tree", self.report_tree(id)),

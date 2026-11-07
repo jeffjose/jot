@@ -33,6 +33,9 @@ pub enum Spec {
         cmd: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+        /// Commands pinned to the top of the pane.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pins: Vec<String>,
     },
 }
 
@@ -106,7 +109,7 @@ fn build(spec: &Spec, cwd: &Path, start: &mut impl FnMut(Start) -> PaneId) -> No
     };
     match spec {
         Spec::Command(cmd) => Node::Pane(start(Start { cmd: cmd.clone(), cwd: cwd.to_path_buf() })),
-        Spec::Pane { cmd, cwd: dir } => {
+        Spec::Pane { cmd, cwd: dir, .. } => {
             let cwd = dir.as_deref().map(expand).unwrap_or_else(|| cwd.to_path_buf());
             Node::Pane(start(Start { cmd: cmd.clone(), cwd }))
         }
@@ -117,11 +120,11 @@ fn build(spec: &Spec, cwd: &Path, start: &mut impl FnMut(Start) -> PaneId) -> No
 
 /// A layout as it is now, to be saved: `pane` gives each pane's command
 /// and the folder it is in.
-pub fn spec(node: &Node, pane: &impl Fn(PaneId) -> (String, Option<PathBuf>)) -> Spec {
+pub fn spec(node: &Node, pane: &impl Fn(PaneId) -> (String, Option<PathBuf>, Vec<String>)) -> Spec {
     match node {
         Node::Pane(id) => {
-            let (cmd, cwd) = pane(*id);
-            Spec::Pane { cmd, cwd: cwd.map(|p| shorten(&p)) }
+            let (cmd, cwd, pins) = pane(*id);
+            Spec::Pane { cmd, cwd: cwd.map(|p| shorten(&p)), pins }
         }
         Node::Split { dir, children, sizes } => {
             let kids = children.iter().map(|c| spec(c, pane)).collect();
@@ -491,4 +494,19 @@ pub fn load_scrollback(name: &str) -> Option<(String, std::time::SystemTime)> {
 /// When the last session was saved.
 pub fn session_saved_at() -> Option<std::time::SystemTime> {
     std::fs::metadata(state_dir().join("session.toml")).and_then(|m| m.modified()).ok()
+}
+
+/// The pins of each pane a layout makes, in the order its panes are made.
+pub fn pins_in_order(spec: &Spec) -> Vec<Vec<String>> {
+    match spec {
+        Spec::Command(_) => vec![Vec::new()],
+        Spec::Pane { pins, .. } => vec![pins.clone()],
+        Spec::Across { v: kids, .. } | Spec::Down { h: kids, .. } => {
+            if kids.is_empty() {
+                vec![Vec::new()]
+            } else {
+                kids.iter().flat_map(pins_in_order).collect()
+            }
+        }
+    }
 }
