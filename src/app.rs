@@ -90,6 +90,8 @@ pub struct App {
     font_size: f32,
     scale: f32,
     theme: &'static Theme,
+    /// The colour of what is picked out: the pane you are in, menus.
+    accent: u32,
     panes: HashMap<PaneId, Pane>,
     workspaces: Vec<Workspace>,
     current: usize,
@@ -151,8 +153,9 @@ impl App {
         let (tx, rx) = channel();
         let font_size = config.font_size;
         let theme = Theme::by_name(&config.theme);
+        let accent = crate::theme::accent(&config.accent);
         App {
-            fonts: Fonts::new(font_size, font_size * 0.9),
+            fonts: Fonts::new(&crate::font::Choice { family: config.font_family.clone(), size: font_size, ui_family: config.ui_font_family.clone(), ui_size: config.ui_font_size, line_height: config.line_height }, 1.0),
             font_size,
             config,
             proxy,
@@ -164,6 +167,7 @@ impl App {
             canvas: Canvas::new(),
             scale: 1.0,
             theme,
+            accent,
             panes: HashMap::new(),
             workspaces: Vec::new(),
             current: 0,
@@ -315,10 +319,11 @@ impl App {
             let m = self.px(24.0);
             shown.push((r, Rect { x: area.x + m, y: area.y + m, w: area.w - 2 * m, h: area.h - 2 * m }));
         }
-        let (cw, ch, cap, pad) = (self.fonts.cell_w, self.fonts.cell_h, self.caption_h(), self.px(4.0));
+        // Room around the text, as VS Code's terminal leaves.
+        let (cw, ch, cap, pad, top) = (self.fonts.cell_w, self.fonts.cell_h, self.caption_h(), self.px(12.0), self.px(8.0));
         for (id, rect) in shown {
             let Some(p) = self.panes.get_mut(&id) else { continue };
-            let content = Rect { x: rect.x + pad, y: rect.y + pad, w: (rect.w - 2 * pad).max(0), h: (rect.h - cap - pad).max(0) };
+            let content = Rect { x: rect.x + pad, y: rect.y + top, w: (rect.w - 2 * pad).max(0), h: (rect.h - cap - top).max(0) };
             let cols = (content.w / cw).clamp(1, u16::MAX as i32) as u16;
             let rows = (content.h / ch).clamp(1, u16::MAX as i32) as u16;
             if (cols, rows) != (p.cols, p.rows) || p.rect != rect {
@@ -470,9 +475,19 @@ impl App {
         self.changed();
     }
 
+    fn font_choice(&self) -> crate::font::Choice {
+        crate::font::Choice { family: self.config.font_family.clone(), size: self.font_size, ui_family: self.config.ui_font_family.clone(), ui_size: self.config.ui_font_size, line_height: self.config.line_height }
+    }
+
+    /// The fonts made again, after a setting of theirs changed.
+    fn reload_fonts(&mut self) {
+        self.fonts = Fonts::new(&self.font_choice(), self.scale);
+        self.relayout();
+    }
+
     fn set_font_size(&mut self, size: f32) {
         self.font_size = size.clamp(6.0, 48.0);
-        self.fonts = Fonts::new(self.font_size * self.scale, self.font_size * 0.9 * self.scale);
+        self.fonts = Fonts::new(&self.font_choice(), self.scale);
         self.relayout();
     }
 
@@ -571,6 +586,10 @@ impl App {
         }
         if ctrl && !shift && !alt && code == KeyCode::KeyK {
             self.open_palette();
+            return true;
+        }
+        if ctrl && !shift && !alt && code == KeyCode::KeyP {
+            self.open_palette_with(">");
             return true;
         }
         if ctrl && !shift && !alt && code == KeyCode::Comma {
@@ -782,6 +801,7 @@ impl App {
     }
 
     fn mouse_release(&mut self) {
+        self.settings_release();
         if let Some(Drag::Select { .. }) = self.drag.take() {
             self.copy(true);
         }
@@ -1036,7 +1056,7 @@ impl App {
         let h = self.caption_h();
         let bar = Rect { x: rect.x, y: rect.y + rect.h - h, w: rect.w, h };
         let (bg, fg) = if focused {
-            self.theme.active_caption()
+            (self.accent, crate::canvas::on(self.accent))
         } else {
             let (bg, fg) = self.theme.idle_caption();
             (bg, if activity { ACTIVITY } else { fg })
@@ -1161,7 +1181,7 @@ impl ApplicationHandler<()> for App {
         let context = Context::new(window.clone()).expect("failed to connect to display");
         self.surface = Some(Surface::new(&context, window.clone()).expect("failed to create surface"));
         self.scale = window.scale_factor() as f32;
-        self.fonts = Fonts::new(self.font_size * self.scale, self.font_size * 0.9 * self.scale);
+        self.fonts = Fonts::new(&self.font_choice(), self.scale);
         let size = window.inner_size();
         self.canvas.resize(size.width as i32, size.height as i32);
         if let Some(s) = self.surface.as_mut() {

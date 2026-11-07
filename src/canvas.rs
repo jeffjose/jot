@@ -1,5 +1,6 @@
 //! The window's pixels, kept between frames so a frame only draws what
-//! changed: 0x00RRGGBB, a row after another.
+//! changed: 0x00RRGGBB, a row after another. Drawing can be kept inside a
+//! rectangle, as a page that scrolls is.
 
 use crate::font::{Glyph, UiFont};
 use crate::layout::Rect;
@@ -8,6 +9,8 @@ pub struct Canvas {
     pub pixels: Vec<u32>,
     pub width: i32,
     pub height: i32,
+    /// Nothing is drawn outside this, when set.
+    pub clip: Option<Rect>,
 }
 
 fn blend(dst: u32, src: u32, a: u32) -> u32 {
@@ -24,9 +27,20 @@ pub fn mix(a: u32, b: u32, share: u32) -> u32 {
     blend(a, b, share)
 }
 
+/// The colour for words on `color`: white, or near black on one light
+/// enough that white would be lost on it.
+pub fn on(color: u32) -> u32 {
+    let c = |shift: u32| f64::from(color >> shift & 0xFF);
+    if 0.299 * c(16) + 0.587 * c(8) + 0.114 * c(0) > 160.0 {
+        0x161616
+    } else {
+        0xFFFFFF
+    }
+}
+
 impl Canvas {
     pub fn new() -> Canvas {
-        Canvas { pixels: Vec::new(), width: 0, height: 0 }
+        Canvas { pixels: Vec::new(), width: 0, height: 0, clip: None }
     }
 
     pub fn resize(&mut self, width: i32, height: i32) {
@@ -35,9 +49,20 @@ impl Canvas {
         self.pixels = vec![0; (self.width * self.height) as usize];
     }
 
+    /// The part of `r` that may be drawn in: on the canvas, inside the clip.
+    fn bounds(&self, r: Rect) -> (i32, i32, i32, i32) {
+        let (mut x0, mut y0, mut x1, mut y1) = (r.x.max(0), r.y.max(0), (r.x + r.w).min(self.width), (r.y + r.h).min(self.height));
+        if let Some(c) = self.clip {
+            x0 = x0.max(c.x);
+            y0 = y0.max(c.y);
+            x1 = x1.min(c.x + c.w);
+            y1 = y1.min(c.y + c.h);
+        }
+        (x0, y0, x1, y1)
+    }
+
     pub fn fill(&mut self, r: Rect, color: u32) {
-        let (x0, x1) = (r.x.clamp(0, self.width), (r.x + r.w).clamp(0, self.width));
-        let (y0, y1) = (r.y.clamp(0, self.height), (r.y + r.h).clamp(0, self.height));
+        let (x0, y0, x1, y1) = self.bounds(r);
         if x0 >= x1 {
             return;
         }
@@ -52,9 +77,10 @@ impl Canvas {
     pub fn round_fill(&mut self, r: Rect, radius: i32, color: u32, alpha: u32) {
         let radius = radius.min(r.w / 2).min(r.h / 2).max(0);
         let rad = radius as f32;
-        for y in r.y.max(0)..(r.y + r.h).min(self.height) {
+        let (x0, y0, x1, y1) = self.bounds(r);
+        for y in y0..y1 {
             let row = (y * self.width) as usize;
-            for x in r.x.max(0)..(r.x + r.w).min(self.width) {
+            for x in x0..x1 {
                 // Distance into a corner's curve, for the pixels in one.
                 let (dx, dy) = (
                     if x < r.x + radius { (r.x + radius) as f32 - (x as f32 + 0.5) } else if x >= r.x + r.w - radius { (x as f32 + 0.5) - (r.x + r.w - radius) as f32 } else { 0.0 },
@@ -65,6 +91,32 @@ impl Canvas {
                 if a > 0 {
                     let p = &mut self.pixels[row + x as usize];
                     *p = blend(*p, color, a);
+                }
+            }
+        }
+    }
+
+    /// A rounded outline `width` thick, the inside left as it is.
+    pub fn ring(&mut self, r: Rect, radius: i32, width: i32, color: u32) {
+        // Drawn row by row as the difference of two rounded shapes.
+        let inner = Rect { x: r.x + width, y: r.y + width, w: r.w - 2 * width, h: r.h - 2 * width };
+        let (x0, y0, x1, y1) = self.bounds(r);
+        let inside = |x: i32, y: i32, q: Rect, rad: i32| -> f32 {
+            let rad = rad.min(q.w / 2).min(q.h / 2).max(0);
+            if x < q.x || x >= q.x + q.w || y < q.y || y >= q.y + q.h {
+                return 0.0;
+            }
+            let dx = if x < q.x + rad { (q.x + rad) as f32 - (x as f32 + 0.5) } else if x >= q.x + q.w - rad { (x as f32 + 0.5) - (q.x + q.w - rad) as f32 } else { 0.0 };
+            let dy = if y < q.y + rad { (q.y + rad) as f32 - (y as f32 + 0.5) } else if y >= q.y + q.h - rad { (y as f32 + 0.5) - (q.y + q.h - rad) as f32 } else { 0.0 };
+            if dx > 0.0 && dy > 0.0 { (rad as f32 + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0) } else { 1.0 }
+        };
+        for y in y0..y1 {
+            let row = (y * self.width) as usize;
+            for x in x0..x1 {
+                let a = (inside(x, y, r, radius) - inside(x, y, inner, radius - width)).clamp(0.0, 1.0);
+                if a > 0.0 {
+                    let p = &mut self.pixels[row + x as usize];
+                    *p = blend(*p, color, (a * 255.0) as u32);
                 }
             }
         }
@@ -91,10 +143,7 @@ impl Canvas {
 
     #[allow(clippy::too_many_arguments)]
     fn coverage(&mut self, cov: &[u8], w: usize, h: usize, x: i32, y: i32, color: u32, clip: Rect) {
-        let cx0 = clip.x.max(0);
-        let cy0 = clip.y.max(0);
-        let cx1 = (clip.x + clip.w).min(self.width);
-        let cy1 = (clip.y + clip.h).min(self.height);
+        let (cx0, cy0, cx1, cy1) = self.bounds(clip);
         for gy in 0..h as i32 {
             let py = y + gy;
             if py < cy0 || py >= cy1 {
@@ -109,14 +158,13 @@ impl Canvas {
                 let a = cov[(gy * w as i32 + gx) as usize] as u32;
                 if a > 0 {
                     let p = &mut self.pixels[row + px as usize];
-                    *p = blend(*p, color, a);
+                    *p = blend_linear(*p, color, a);
                 }
             }
         }
     }
 
-    /// Text in the interface's font, its baseline `ascent` below `y`.
-    /// Returns where it ends.
+    /// Text in an interface font, its top at `y`. Returns where it ends.
     pub fn text(&mut self, font: &mut UiFont, text: &str, mut x: f32, y: i32, color: u32, clip: Rect) -> i32 {
         let ascent = font.ascent;
         for c in text.chars() {
@@ -129,4 +177,49 @@ impl Canvas {
         }
         x.round() as i32
     }
+
+    /// Text cut to `room` pixels wide, with … where it was cut.
+    pub fn text_fit(&mut self, font: &mut UiFont, text: &str, x: i32, y: i32, room: i32, color: u32, clip: Rect) -> i32 {
+        if font.width(text) <= room {
+            return self.text(font, text, x as f32, y, color, clip);
+        }
+        let mut cut: String = text.to_string();
+        while !cut.is_empty() && font.width(&format!("{cut}…")) > room {
+            cut.pop();
+        }
+        self.text(font, &format!("{cut}…"), x as f32, y, color, clip)
+    }
+}
+
+/// sRGB to linear light, 0 to 4095, and back: text is laid over its
+/// ground in linear light, as browsers and VS Code draw it, so light text
+/// on a dark ground keeps the weight its font gives it.
+fn tables() -> &'static ([u16; 256], [u8; 4096]) {
+    static T: std::sync::OnceLock<([u16; 256], [u8; 4096])> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let to_lin = |c: f64| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        let to_srgb = |l: f64| if l <= 0.0031308 { l * 12.92 } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 };
+        let mut lin = [0u16; 256];
+        for (i, v) in lin.iter_mut().enumerate() {
+            *v = (to_lin(i as f64 / 255.0) * 4095.0).round() as u16;
+        }
+        let mut srgb = [0u8; 4096];
+        for (i, v) in srgb.iter_mut().enumerate() {
+            *v = (to_srgb(i as f64 / 4095.0) * 255.0).round() as u8;
+        }
+        (lin, srgb)
+    })
+}
+
+/// `src` laid over `dst` at coverage `a`, mixed in linear light.
+fn blend_linear(dst: u32, src: u32, a: u32) -> u32 {
+    if a >= 255 {
+        return src;
+    }
+    let (lin, srgb) = tables();
+    let ch = |shift: u32| {
+        let (s, d) = (lin[(src >> shift & 0xff) as usize] as u32, lin[(dst >> shift & 0xff) as usize] as u32);
+        (srgb[((s * a + d * (255 - a)) / 255) as usize] as u32) << shift
+    };
+    ch(16) | ch(8) | ch(0)
 }

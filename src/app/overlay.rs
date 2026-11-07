@@ -2,6 +2,7 @@
 //! menu, both drawn as jog draws its own, a panel with the pick filled in.
 
 use super::*;
+use crate::canvas::on;
 use crate::palette::{self, Action, Item, Mode, Palette};
 
 const MENU_BG: u32 = 0x1C1D21;
@@ -9,10 +10,6 @@ const MENU_EDGE: u32 = 0x3A3C43;
 const TEXT: u32 = 0xEEEEEE;
 const DIM: u32 = 0x8E9199;
 const FAINT: u32 = 0x5C5F67;
-/// jog's accent, indigo.
-const ACCENT: u32 = 0x3E63DD;
-const ON_ACCENT: u32 = 0xFFFFFF;
-const ON_ACCENT_DIM: u32 = 0xC5D0F5;
 
 /// The right-click menu: items, with lines between groups (None).
 pub struct Menu {
@@ -63,6 +60,16 @@ impl App {
                 action: Action::GoTo(i),
             })
             .collect();
+        // Every pane, by its caption, in every workspace.
+        for (wi, ws) in self.workspaces.iter().enumerate() {
+            let mut ids = Vec::new();
+            ws.root.panes(&mut ids);
+            for (n, id) in ids.iter().enumerate() {
+                if let Some(p) = self.panes.get(id) {
+                    items.push(Item { label: p.caption.clone(), hint: format!("{} · pane {}", ws.name, n + 1), action: Action::Pane(wi, *id) });
+                }
+            }
+        }
         items.extend(palette::commands());
         let roots: Vec<PathBuf> = self.config.projects.iter().map(|p| persist::expand(p)).collect();
         let open: Vec<String> = self.workspaces.iter().map(|w| w.name.clone()).collect();
@@ -78,8 +85,17 @@ impl App {
     }
 
     pub(super) fn open_palette(&mut self) {
+        self.open_palette_with("");
+    }
+
+    /// The palette with something already typed: `>` for the commands,
+    /// on Ctrl P, as jog has it.
+    pub(super) fn open_palette_with(&mut self, typed: &str) {
         self.menu = None;
-        self.palette = Some(Palette::new());
+        self.settings = None;
+        let mut p = Palette::new();
+        p.typed = typed.to_string();
+        self.palette = Some(p);
         self.palette_changed();
     }
 
@@ -190,6 +206,17 @@ impl App {
             }
             Action::Only => self.only(),
             Action::GoTo(i) => self.go_to(i),
+            Action::Pane(wi, id) => {
+                self.go_to(wi);
+                self.roam_shown = false;
+                if let Some(ws) = self.workspaces.get_mut(wi) {
+                    if ws.zoom.is_some_and(|z| z != id) {
+                        ws.zoom = None;
+                    }
+                }
+                self.set_focus(id);
+                self.relayout();
+            }
             Action::NewWorkspace => self.new_workspace(),
             Action::Open(dir) => {
                 self.add_workspace(&WorkspaceSpec { name: String::new(), cwd: Some(dir.display().to_string()), panes: vec![], split: None, layout: None });
@@ -222,6 +249,7 @@ impl App {
             Action::FontReset => self.set_font_size(self.config.font_size),
             Action::Settings => self.open_settings(),
             Action::Palette => self.open_palette(),
+            Action::Commands => self.open_palette_with(">"),
             Action::StatusLine => {
                 self.config.status_line = !self.config.status_line;
                 self.relayout();
@@ -271,9 +299,9 @@ impl App {
             let top = r.y + l.head + row as i32 * l.row_h;
             let picked = *at == selected;
             if picked {
-                self.canvas.round_fill(Rect { x: r.x + l.pad / 2, y: top + 1, w: r.w - l.pad, h: l.row_h - 2 }, l.pad * 3 / 4, ACCENT, 255);
+                self.canvas.round_fill(Rect { x: r.x + l.pad / 2, y: top + 1, w: r.w - l.pad, h: l.row_h - 2 }, l.pad * 3 / 4, self.accent, 255);
             }
-            let (main, dim) = if picked { (ON_ACCENT, ON_ACCENT_DIM) } else { (TEXT, DIM) };
+            let (main, dim) = if picked { (on(self.accent), mix(self.accent, on(self.accent), 200)) } else { (TEXT, DIM) };
             let ty = top + (l.row_h - ui.height) / 2;
             let row_clip = Rect { x: r.x, y: top, w: r.w, h: l.row_h };
             self.canvas.text(ui, &item.label, (r.x + l.pad * 3 / 2) as f32, ty, main, row_clip);
@@ -312,7 +340,8 @@ impl App {
             c("New workspace here", "Alt Shift N", Action::NewWorkspace),
             c("Rename workspace…", "", Action::Rename),
             None,
-            c("Palette…", "Ctrl K", Action::Palette),
+            c("Find…", "Ctrl K", Action::Palette),
+            c("Run a command…", "Ctrl P", Action::Commands),
             c("Settings…", "Ctrl ,", Action::Settings),
         ]);
         self.palette = None;
@@ -375,9 +404,9 @@ impl App {
             };
             let picked = hover == Some(i);
             if picked {
-                self.canvas.round_fill(Rect { x: r.x + pad / 2, y: top, w: r.w - pad, h: row_h }, pad / 2, ACCENT, 255);
+                self.canvas.round_fill(Rect { x: r.x + pad / 2, y: top, w: r.w - pad, h: row_h }, pad / 2, self.accent, 255);
             }
-            let (main, dim) = if picked { (ON_ACCENT, ON_ACCENT_DIM) } else { (TEXT, FAINT) };
+            let (main, dim) = if picked { (on(self.accent), mix(self.accent, on(self.accent), 200)) } else { (TEXT, FAINT) };
             let ty = top + (row_h - ui.height) / 2;
             self.canvas.text(ui, &item.label, (r.x + pad * 3 / 2) as f32, ty, main, r);
             if !item.hint.is_empty() {

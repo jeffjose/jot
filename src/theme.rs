@@ -1,6 +1,6 @@
 //! Colour themes: the terminal's sixteen colours, its ground, text,
 //! cursor and selection, and jterm's own chrome made from them. The
-//! default is VS Code's Dark Modern, as its terminal shows it.
+//! default is VS Code's 2026 Dark, as its terminal shows it.
 
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
@@ -34,10 +34,6 @@ impl Theme {
         (self.toward(if self.dark { 18 } else { 22 }), self.toward(150))
     }
 
-    /// The caption of the pane you are in: the theme's red, as screen's.
-    pub fn active_caption(&self) -> (u32, u32) {
-        (self.ansi[9], if self.dark { self.bg } else { 0xFFFFFF })
-    }
 }
 
 const fn t(name: &'static str, dark: bool, bg: u32, fg: u32, cursor: u32, selection: u32, ansi: [u32; 16]) -> Theme {
@@ -45,6 +41,18 @@ const fn t(name: &'static str, dark: bool, bg: u32, fg: u32, cursor: u32, select
 }
 
 pub static THEMES: &[Theme] = &[
+    // VS Code's 2026 themes, from theme-defaults/themes/2026-*.json: their
+    // terminal ground, text, cursor and selection (its translucent blue
+    // laid over the ground), and VS Code's own sixteen colours, which
+    // neither changes.
+    t("Dark 2026", true, 0x191A1B, 0xCCCCCC, 0xBFBFBF, 0x1F323B, [
+        0x000000, 0xCD3131, 0x0DBC79, 0xE5E510, 0x2472C8, 0xBC3FBC, 0x11A8CD, 0xE5E5E5,
+        0x666666, 0xF14C4C, 0x23D18B, 0xF5F543, 0x3B8EEA, 0xD670D6, 0x29B8DB, 0xE5E5E5,
+    ]),
+    t("Light 2026", false, 0xFAFAFD, 0x3B3B3B, 0x202020, 0xD5E4F6, [
+        0x000000, 0xCD3131, 0x00BC00, 0x949800, 0x0451A5, 0xBC05BC, 0x0598BC, 0x555555,
+        0x666666, 0xCD3131, 0x14CE14, 0xB5BA00, 0x0451A5, 0xBC05BC, 0x0598BC, 0xA5A5A5,
+    ]),
     t("Dark Modern", true, 0x181818, 0xCCCCCC, 0xAEAFAD, 0x264F78, [
         0x000000, 0xCD3131, 0x0DBC79, 0xE5E510, 0x2472C8, 0xBC3FBC, 0x11A8CD, 0xE5E5E5,
         0x666666, 0xF14C4C, 0x23D18B, 0xF5F543, 0x3B8EEA, 0xD670D6, 0x29B8DB, 0xE5E5E5,
@@ -110,3 +118,39 @@ pub static THEMES: &[Theme] = &[
         0x75715E, 0xF92672, 0xA6E22E, 0xF4BF75, 0x66D9EF, 0xAE81FF, 0xA1EFE4, 0xF9F8F5,
     ]),
 ];
+
+/// The colours the accent can be, by name: Radix's ninth step, as jog
+/// names them. Indigo is jog's, and the menus'.
+pub static ACCENTS: &[(&str, u32)] = &[
+    ("indigo", 0x3E63DD),
+    ("blue", 0x0090FF),
+    ("iris", 0x5B5BD6),
+    ("violet", 0x6E56CF),
+    ("purple", 0x8E4EC6),
+    ("plum", 0xAB4ABA),
+    ("pink", 0xD6409F),
+    ("crimson", 0xE93D82),
+    ("ruby", 0xE54666),
+    ("red", 0xE5484D),
+    ("tomato", 0xE54D2E),
+    ("orange", 0xF76B15),
+    ("amber", 0xFFC53D),
+    ("gold", 0x978365),
+    ("brown", 0xAD7F58),
+    ("grass", 0x46A758),
+    ("green", 0x30A46C),
+    ("jade", 0x29A383),
+    ("teal", 0x12A594),
+    ("cyan", 0x00A2C7),
+];
+
+/// An accent by name, or as RRGGBB; indigo when it is neither.
+pub fn accent(name: &str) -> u32 {
+    let name = name.trim().trim_start_matches('#');
+    ACCENTS
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, c)| *c)
+        .or_else(|| (name.len() == 6).then(|| u32::from_str_radix(name, 16).ok()).flatten())
+        .unwrap_or(ACCENTS[0].1)
+}

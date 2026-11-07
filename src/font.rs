@@ -1,16 +1,33 @@
-//! Glyphs, rasterized once and kept: Fira Code for the terminal, bold and
-//! regular, with a system font found by fontconfig for any character it
-//! does not have. Box-drawing and block characters are drawn from their
-//! shapes instead, to fill the cell exactly and join their neighbours.
+//! Glyphs, rasterized once and kept. The terminal's font is Fira Code
+//! unless another is chosen, bold and regular, with a system font found by
+//! fontconfig for any character it does not have; the interface's is
+//! Geist unless another is. Box-drawing and block characters are drawn
+//! from their shapes instead, to fill the cell exactly and join their
+//! neighbours.
 
 use std::collections::HashMap;
 use std::process::Command;
 
 use fontdue::{Font, FontSettings};
 
-const REGULAR: &[u8] = include_bytes!("../assets/FiraCode-Medium.ttf");
-const BOLD: &[u8] = include_bytes!("../assets/FiraCode-Bold.ttf");
-const UI: &[u8] = include_bytes!("../assets/Geist-Medium.ttf");
+const FIRA: &[u8] = include_bytes!("../assets/FiraCode-Medium.ttf");
+const FIRA_BOLD: &[u8] = include_bytes!("../assets/FiraCode-Bold.ttf");
+const GEIST: &[u8] = include_bytes!("../assets/Geist-Medium.ttf");
+
+/// The fonts jterm has with it, used by these names whatever is installed.
+pub const TERMINAL_DEFAULT: &str = "Fira Code";
+pub const INTERFACE_DEFAULT: &str = "Geist";
+
+/// Which fonts, at what sizes in points.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    pub family: String,
+    pub size: f32,
+    pub ui_family: String,
+    pub ui_size: f32,
+    /// The height of a line, as a share of the font's own.
+    pub line_height: f32,
+}
 
 /// A glyph's coverage, placed relative to the top left of its cell.
 pub struct Glyph {
@@ -28,28 +45,89 @@ pub struct Fonts {
     baseline: i32,
     regular: Font,
     bold: Font,
-    /// Fonts found for characters Fira Code lacks, by file.
+    /// Fonts found for characters the terminal's font lacks, by file.
     fallback: Vec<Font>,
     fallback_files: HashMap<String, usize>,
-    /// Which font has each character: None for Fira Code, else a
-    /// fallback; a character no font has is drawn with Fira Code's blank.
+    /// Which font has each character: None for the terminal's own, else
+    /// a fallback; a character no font has is drawn with its blank.
     which: HashMap<char, Option<usize>>,
     cache: HashMap<(char, bool), Glyph>,
+    /// The interface: its text, headings, and the smaller words under
+    /// a setting.
     pub ui: UiFont,
+    pub heading: UiFont,
+    pub small: UiFont,
 }
 
 fn load(bytes: &[u8]) -> Font {
     Font::from_bytes(bytes, FontSettings::default()).expect("bundled font")
 }
 
+/// The file fontconfig has for `family` in a weight, if it has that family
+/// at all: fc-match answers every question with something.
+fn find(family: &str, weight: &str) -> Option<Font> {
+    let pattern = format!("{family}:weight={weight}");
+    let out = Command::new("fc-match").args(["-f", "%{family}|%{file}|%{index}", &pattern]).output().ok()?;
+    let out = String::from_utf8(out.stdout).ok()?;
+    let mut parts = out.rsplitn(3, '|');
+    let index: u32 = parts.next()?.trim().parse().unwrap_or(0);
+    let file = parts.next()?;
+    let families = parts.next()?;
+    if !families.split(',').any(|f| f.trim().eq_ignore_ascii_case(family.trim())) {
+        return None;
+    }
+    let bytes = std::fs::read(file).ok()?;
+    Font::from_bytes(bytes, FontSettings { collection_index: index, ..FontSettings::default() }).ok()
+}
+
+/// The terminal's font, regular and bold.
+fn terminal_font(family: &str) -> (Font, Font) {
+    if !family.eq_ignore_ascii_case(TERMINAL_DEFAULT) {
+        if let Some(regular) = find(family, "medium").or_else(|| find(family, "regular")) {
+            let bold = find(family, "bold").unwrap_or_else(|| find(family, "regular").unwrap_or_else(|| load(FIRA)));
+            return (regular, bold);
+        }
+    }
+    (load(FIRA), load(FIRA_BOLD))
+}
+
+fn interface_font(family: &str) -> Font {
+    if !family.eq_ignore_ascii_case(INTERFACE_DEFAULT) {
+        if let Some(f) = find(family, "medium").or_else(|| find(family, "regular")) {
+            return f;
+        }
+    }
+    load(GEIST)
+}
+
+/// The font families installed, by name, each once, A to Z: only those
+/// whose letters are all one width with `mono`. The fonts jterm has
+/// with it are among them.
+pub fn families(mono: bool) -> Vec<String> {
+    let mut args = vec!["-f", "%{family[0]}\n"];
+    if mono {
+        args.push(":spacing=100");
+    }
+    let out = Command::new("fc-list").args(&args).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let mut names: Vec<String> = out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect();
+    names.push(if mono { TERMINAL_DEFAULT } else { INTERFACE_DEFAULT }.to_string());
+    names.sort_by_key(|n| n.to_lowercase());
+    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    names
+}
+
 impl Fonts {
-    pub fn new(px: f32, ui_px: f32) -> Fonts {
-        let regular = load(REGULAR);
-        let bold = load(BOLD);
+    pub fn new(choice: &Choice, scale: f32) -> Fonts {
+        let px = choice.size * scale;
+        let ui_px = choice.ui_size * scale;
+        let (regular, bold) = terminal_font(&choice.family);
         let m = regular.horizontal_line_metrics(px).expect("line metrics");
         let cell_w = regular.metrics('M', px).advance_width.round().max(1.0) as i32;
-        let cell_h = (m.ascent - m.descent + m.line_gap).ceil().max(1.0) as i32;
-        let baseline = (m.ascent + m.line_gap / 2.0).round() as i32;
+        let natural = m.ascent - m.descent + m.line_gap;
+        let cell_h = (natural * choice.line_height.clamp(0.8, 2.0)).round().max(1.0) as i32;
+        // The room a taller line adds is shared above and below.
+        let baseline = (m.ascent + m.line_gap / 2.0 + (cell_h as f32 - natural) / 2.0).round() as i32;
+        let ui = interface_font(&choice.ui_family);
         Fonts {
             px,
             cell_w,
@@ -61,7 +139,9 @@ impl Fonts {
             fallback_files: HashMap::new(),
             which: HashMap::new(),
             cache: HashMap::new(),
-            ui: UiFont::new(ui_px),
+            heading: UiFont::new(ui.clone(), ui_px * 1.3),
+            small: UiFont::new(ui.clone(), ui_px * 0.88),
+            ui: UiFont::new(ui, ui_px),
         }
     }
 
@@ -112,7 +192,7 @@ impl Fonts {
     }
 }
 
-/// Geist, for jterm's own captions and status line.
+/// An interface font at one size, for jterm's own words.
 pub struct UiFont {
     font: Font,
     pub px: f32,
@@ -122,8 +202,7 @@ pub struct UiFont {
 }
 
 impl UiFont {
-    fn new(px: f32) -> UiFont {
-        let font = load(UI);
+    fn new(font: Font, px: f32) -> UiFont {
         let m = font.horizontal_line_metrics(px).expect("line metrics");
         UiFont { font, px, ascent: m.ascent.round() as i32, height: (m.ascent - m.descent).ceil() as i32, cache: HashMap::new() }
     }
@@ -137,6 +216,7 @@ impl UiFont {
         text.chars().map(|c| self.glyph(c).0.advance_width).sum::<f32>().round() as i32
     }
 }
+
 
 /// Box-drawing (U+2500–257F) and block (U+2580–259F) characters drawn
 /// from their shapes.
@@ -347,3 +427,4 @@ mod shapes {
         Some(Glyph { left: 0, top: 0, width: wu, height: hu, coverage: b.cov })
     }
 }
+

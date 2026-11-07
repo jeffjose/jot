@@ -1,7 +1,7 @@
-//! The palette, on Ctrl K (or Super K), as jog's find box is: type to find a
-//! workspace, a project folder or a command, Enter to go. `>` finds only
-//! commands, `@` only workspaces. With nothing typed, what was run from
-//! it lately comes first.
+//! The palette, as jog's: Ctrl K to find a workspace, a pane or a project
+//! folder, Ctrl P for a command (what is typed after `>`). Enter to go.
+//! `@` finds only workspaces. With nothing typed, what was run from it
+//! lately comes first.
 
 use std::path::PathBuf;
 
@@ -15,6 +15,8 @@ pub enum Action {
     Equalize,
     Only,
     GoTo(usize),
+    /// A pane, by its workspace and id.
+    Pane(usize, u64),
     NewWorkspace,
     Open(PathBuf),
     Rename,
@@ -29,6 +31,7 @@ pub enum Action {
     StatusLine,
     Settings,
     Palette,
+    Commands,
 }
 
 #[derive(Clone, Debug)]
@@ -128,9 +131,10 @@ pub fn score(name: &str, query: &str, loose: bool) -> Option<i32> {
 /// typed, those run lately first and the rest in their order.
 pub fn matching(all: Vec<Item>, typed: &str, recent: &[String]) -> Vec<Item> {
     let (query, filter): (&str, Box<dyn Fn(&Item) -> bool>) = match typed.chars().next() {
-        Some('>') => (&typed[1..], Box::new(|i: &Item| !matches!(i.action, Action::GoTo(_) | Action::Open(_)))),
+        Some('>') => (&typed[1..], Box::new(|i: &Item| !matches!(i.action, Action::GoTo(_) | Action::Open(_) | Action::Pane(..)))),
         Some('@') => (&typed[1..], Box::new(|i: &Item| matches!(i.action, Action::GoTo(_)))),
-        _ => (typed, Box::new(|_: &Item| true)),
+        // Plain words find places: workspaces, panes, project folders.
+        _ => (typed, Box::new(|i: &Item| matches!(i.action, Action::GoTo(_) | Action::Open(_) | Action::Pane(..)))),
     };
     let all: Vec<Item> = all.into_iter().filter(|i| filter(i)).collect();
     let lately = |label: &str| recent.iter().position(|r| r == label).unwrap_or(usize::MAX);
@@ -171,7 +175,7 @@ pub fn commands() -> Vec<Item> {
         c("Text as it was", "Ctrl 0", Action::FontReset),
         c("Status line, on or off", "", Action::StatusLine),
         c("Settings", "Ctrl ,", Action::Settings),
-        c("Palette", "Ctrl K", Action::Palette),
+        c("Find a workspace, pane or project", "Ctrl K", Action::Palette),
     ]
 }
 
@@ -199,12 +203,14 @@ mod tests {
     #[test]
     fn closest_first() {
         let items = commands();
-        let found = matching(items.clone(), "split", &[]);
+        let found = matching(items.clone(), ">split", &[]);
         assert!(found[0].label.starts_with("Split"));
-        let found = matching(items.clone(), "spsd", &[]);
+        let found = matching(items.clone(), ">spsd", &[]);
         assert_eq!(found[0].label, "Split side by side");
-        let found = matching(items.clone(), "", &["Paste".to_string()]);
+        let found = matching(items.clone(), ">", &["Paste".to_string()]);
         assert_eq!(found[0].label, "Paste");
-        assert!(matching(items, "zzzz", &[]).is_empty());
+        assert!(matching(items, ">zzzz", &[]).is_empty());
+        // Plain words find places, not commands.
+        assert!(matching(commands(), "split", &[]).is_empty());
     }
 }

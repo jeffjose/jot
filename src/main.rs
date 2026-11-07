@@ -39,7 +39,8 @@ Keys (screen's, on Alt):
   Alt 1-9, Alt , .     go to a workspace, the one before or after
   Alt Shift n          a new workspace, in this pane's folder
   Alt `                the roaming terminal, shown over any workspace
-  Ctrl k               the palette: workspaces, commands, projects
+  Ctrl k               find a workspace, pane or project folder
+  Ctrl p               run a command
   Ctrl ,               settings: theme, text size, captions
   Ctrl Shift c / v     copy / paste (a selection is copied as you make it;
                        middle click pastes it)

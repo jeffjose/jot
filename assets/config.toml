@@ -7,17 +7,32 @@
 # ---- Look -----------------------------------------------------------
 
 # The colours, by name:
-#   Dark Modern  Light Modern  Catppuccin Mocha  Catppuccin Latte
+#   Dark 2026  Light 2026  Dark Modern  Light Modern  Catppuccin Mocha
+#   Catppuccin Latte
 #   Tokyo Night  Dracula  One Dark  GitHub Dark  Nord  Gruvbox Dark
 #   Gruvbox Light  Solarized Dark  Solarized Light  Rosé Pine  Kanagawa
 #   Monokai
-# theme = "Dark Modern"
+# theme = "Dark 2026"
 
 # The size of the terminal's text, in points (Ctrl = and Ctrl - change it
 # for this run).
 # font-size = 14
 
-# A caption along the bottom of each pane: its title, red for the one
+# The colour of what is picked out: the pane you are in, menus,
+# switches. A Radix colour by name, or any colour as "RRGGBB":
+#   indigo  blue  iris  violet  purple  plum  pink  crimson  ruby  red
+#   tomato  orange  amber  gold  brown  grass  green  jade  teal  cyan
+# accent = "indigo"
+
+# The terminal's font, by family, and the font of jterm's own words.
+# font-family = "Fira Code"
+# ui-font-family = "Geist"
+# ui-font-size = 13
+
+# The height of a line, as a share of the font's own: 1.1 is VS Code's.
+# line-height = 1.1
+
+# A caption along the bottom of each pane: its title, in the accent for the one
 # you are in.
 # captions = true
 

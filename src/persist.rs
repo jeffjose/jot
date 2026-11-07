@@ -141,7 +141,7 @@ pub fn shorten(path: &Path) -> String {
     }
 }
 
-fn default_font_size() -> f32 {
+pub fn default_font_size() -> f32 {
     14.0
 }
 fn default_scrollback() -> usize {
@@ -164,6 +164,20 @@ pub struct Config {
     /// The colour theme, by name.
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// The colour of what is picked out: a Radix colour by name, or RRGGBB.
+    #[serde(default = "default_accent")]
+    pub accent: String,
+    /// The terminal's font, by family.
+    #[serde(default = "default_font_family")]
+    pub font_family: String,
+    /// The font of jterm's own words: captions, menus, settings.
+    #[serde(default = "default_ui_font_family")]
+    pub ui_font_family: String,
+    /// The height of a line, as a share of the font's own: 1.1 is VS Code's.
+    #[serde(default = "default_line_height")]
+    pub line_height: f32,
+    #[serde(default = "default_ui_font_size")]
+    pub ui_font_size: f32,
     /// Folders whose folders are projects, offered by the palette to open
     /// as workspaces.
     #[serde(default = "default_projects")]
@@ -173,12 +187,32 @@ pub struct Config {
     pub workspaces: Vec<WorkspaceSpec>,
 }
 
-fn yes() -> bool {
+pub fn yes() -> bool {
     true
 }
 
-fn default_theme() -> String {
-    "Dark Modern".into()
+pub fn default_accent() -> String {
+    "indigo".into()
+}
+
+pub fn default_font_family() -> String {
+    crate::font::TERMINAL_DEFAULT.into()
+}
+
+pub fn default_ui_font_family() -> String {
+    crate::font::INTERFACE_DEFAULT.into()
+}
+
+pub fn default_line_height() -> f32 {
+    1.1
+}
+
+pub fn default_ui_font_size() -> f32 {
+    13.0
+}
+
+pub fn default_theme() -> String {
+    "Dark 2026".into()
 }
 
 fn default_projects() -> Vec<String> {
@@ -187,7 +221,7 @@ fn default_projects() -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), status_line: false, captions: true, theme: default_theme(), projects: default_projects(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), status_line: false, captions: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), projects: default_projects(), workspaces: Vec::new() }
     }
 }
 
@@ -313,5 +347,28 @@ pub fn set_config_value(key: &str, value: &str) {
     let tmp = path.with_extension("toml.tmp");
     if std::fs::write(&tmp, lines.join("\n") + "\n").is_ok() {
         let _ = std::fs::rename(tmp, path);
+    }
+}
+
+/// Takes a setting out of the config file, so it is as it started: its
+/// line is commented out again, the rest of the file left as it is.
+pub fn unset_config_value(key: &str) {
+    let path = config_path();
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let tables = lines.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(lines.len());
+    let mut changed = false;
+    for line in lines[..tables].iter_mut() {
+        let t = line.trim_start();
+        if t.strip_prefix(key).is_some_and(|rest| rest.trim_start().starts_with('=')) {
+            *line = format!("# {t}");
+            changed = true;
+        }
+    }
+    if changed {
+        let tmp = path.with_extension("toml.tmp");
+        if std::fs::write(&tmp, lines.join("\n") + "\n").is_ok() {
+            let _ = std::fs::rename(tmp, path);
+        }
     }
 }
