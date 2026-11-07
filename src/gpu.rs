@@ -141,7 +141,16 @@ impl Gpu {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
-        (self.texture, self.bind) = Self::frame(&self.device, &self.layout, width, height);
+        // The frame's texture is only made again when the window outgrows
+        // it, and then with room to spare: the shader reads it pixel for
+        // pixel from the top left, so a larger one serves as well, and a
+        // drag at the window's edge does not make one each frame.
+        let (tw, th) = (self.texture.width(), self.texture.height());
+        if width > tw || height > th {
+            let most = self.device.limits().max_texture_dimension_2d;
+            let room = |n: u32, had: u32| n.max(had).next_multiple_of(256).min(most).max(n);
+            (self.texture, self.bind) = Self::frame(&self.device, &self.layout, room(width, tw), room(height, th));
+        }
     }
 
     /// The parts of `canvas` that changed sent to the card, and the whole

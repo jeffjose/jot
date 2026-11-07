@@ -57,6 +57,9 @@ const BADGE_FG: u32 = 0x113264;
 const ACTIVITY: u32 = 0xFFCA16; // amber
 const BELL: u32 = 0xFF9592; // red 11
 const ROAM_BG: u32 = 0x6E56CF; // violet 9
+/// How long the window must keep a size before the GPU is set up for it;
+/// until then frames go up the CPU's way, as jog does with its videos.
+const RESIZE_SETTLE: Duration = Duration::from_millis(200);
 
 pub struct Pane {
     // The terminal is dropped before the PTY its replies are written to.
@@ -168,6 +171,15 @@ pub struct App {
     dividers: Vec<Divider>,
     /// Everything to be drawn again: the layout changed.
     full: bool,
+    /// The size the window was last given, taken up when the next frame
+    /// is drawn: a drag at the window's edge sends sizes faster than
+    /// frames go up, and each one taken up costs the GPU a new swapchain
+    /// and every terminal a reflow, for a size never shown.
+    resized: Option<(u32, u32)>,
+    /// While the window is being resized, when the GPU is next set up for
+    /// its size: a new swapchain for each size of a drag stalls each frame
+    /// for several milliseconds, where the CPU puts the frame up in one.
+    gpu_settle: Option<Instant>,
     damage: Vec<Rect>,
     mods: ModifiersState,
     pointer: (i32, i32),
@@ -322,6 +334,8 @@ impl App {
             next_id: 1,
             dividers: Vec::new(),
             full: true,
+            resized: None,
+            gpu_settle: None,
             damage: Vec::new(),
             mods: ModifiersState::empty(),
             pointer: (0, 0),
@@ -526,6 +540,32 @@ impl App {
     /// Lays out every workspace, so panes not shown are the right size
     /// too, and resizes the terminals whose size changed.
     fn relayout(&mut self) {
+        self.lay_out();
+        self.redraw();
+    }
+
+    /// The window's new size taken up, if it has one: the frame, the
+    /// GPU's swapchain and the layout made for it. Only from draw, so
+    /// that the sizes a drag goes through between frames cost nothing.
+    fn take_resize(&mut self) {
+        let Some((width, height)) = self.resized.take() else { return };
+        if (width.max(1) as i32, height.max(1) as i32) == (self.canvas.width, self.canvas.height) {
+            return;
+        }
+        if let Some(s) = self.surface.as_mut() {
+            let _ = s.resize(NonZeroU32::new(width.max(1)).unwrap(), NonZeroU32::new(height.max(1)).unwrap());
+        }
+        self.canvas.resize(width as i32, height as i32);
+        // The GPU is set up for the size once it holds (in about_to_wait).
+        if self.gpu.is_some() {
+            self.gpu_settle = Some(Instant::now() + RESIZE_SETTLE);
+        }
+        // Not relayout: a redraw asked for while drawing is one frame more.
+        self.lay_out();
+    }
+
+    /// The layout, without asking for a frame.
+    fn lay_out(&mut self) {
         // Panes drawn again whole after this, their tags with them; none
         // left behind for a pane no longer on screen.
         self.multi_tags.clear();
@@ -574,7 +614,6 @@ impl App {
             p.full = true;
         }
         self.full = true;
-        self.redraw();
     }
 
     fn redraw(&self) {
@@ -1564,6 +1603,7 @@ impl App {
 
     fn draw(&mut self) {
         let t0 = Instant::now();
+        self.take_resize();
         self.retint();
         self.refresh_captions();
         // With notices up, the frame is drawn whole, so panes do not draw
@@ -1991,7 +2031,9 @@ impl App {
 
     fn present(&mut self) {
         let damage = std::mem::take(&mut self.damage);
-        if let Some(g) = self.gpu.as_mut() {
+        // Mid-resize, the CPU's way, as without a GPU.
+        let settling = self.gpu_settle.is_some();
+        if let Some(g) = self.gpu.as_mut().filter(|_| !settling) {
             if g.present(&self.canvas, &damage) {
                 return;
             }
@@ -2116,14 +2158,9 @@ impl ApplicationHandler<()> for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
-                if let Some(s) = self.surface.as_mut() {
-                    let _ = s.resize(NonZeroU32::new(size.width.max(1)).unwrap(), NonZeroU32::new(size.height.max(1)).unwrap());
-                }
-                self.canvas.resize(size.width as i32, size.height as i32);
-                if let Some(g) = self.gpu.as_mut() {
-                    g.resize(size.width, size.height);
-                }
-                self.relayout();
+                // Taken up when the frame is drawn, the last size only.
+                self.resized = Some((size.width, size.height));
+                self.redraw();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.scale = scale_factor as f32;
@@ -2195,6 +2232,17 @@ impl ApplicationHandler<()> for App {
         let printing = self.print_tick();
         let soon = if due.is_empty() && !printing { Duration::from_secs(1) } else { Duration::from_millis(50) };
         event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + soon));
+        // The window has kept its size: back to the GPU, set up for it
+        // when the frame, all of it, is sent up.
+        if let Some(at) = self.gpu_settle {
+            if at <= Instant::now() {
+                self.gpu_settle = None;
+                self.full = true;
+                self.redraw();
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(at.min(Instant::now() + soon)));
+            }
+        }
         if self.captions_at.elapsed() >= Duration::from_secs(1) {
             self.redraw();
         }
