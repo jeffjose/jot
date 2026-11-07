@@ -310,6 +310,21 @@ impl App {
                 }
             }
             Action::PinRun(id, i) => self.pin_run(id, i),
+            Action::MiniRestore(id) => self.restore(id),
+            Action::MiniFocus(id) => {
+                self.restore(id);
+                let ws = self.ws_mut();
+                ws.zoom = Some(id);
+                self.changed();
+            }
+            Action::MiniRestart(id) => self.restart(id),
+            Action::MiniStop(id) => self.stop_job(id),
+            Action::MiniCopyLine(id) => {
+                if let Some(line) = self.panes.get(&id).map(|p| p.last_line.clone()) {
+                    self.clip_set(line, false);
+                }
+            }
+            Action::MiniClose(id) => self.close(id, event_loop),
             Action::PinRemove(id, i) => self.pin_remove(id, i),
             Action::PinEdit(id, i) => {
                 if let Some(cmd) = self.panes.get(&id).and_then(|p| p.pins.get(i)).map(|pin| pin.cmd.clone()) {

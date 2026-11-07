@@ -1,17 +1,9 @@
-//! Minimized panes: a pane you need not watch, shrunk to a row across the
-//! top of its workspace. It keeps running; the row shows its number, what
-//! it runs, a dot for how it is doing, how long it has gone, and the last
-//! line it printed. A click brings it back where it was.
+//! Minimized panes: a pane you need not watch, shrunk to a row where it
+//! is in the layout. It keeps running; the row shows its number, what it
+//! runs, a dot for how it is doing, how long it has gone, and the last
+//! line it printed. A click brings it back to its size.
 
 use super::*;
-
-pub struct Minimized {
-    pub pane: PaneId,
-    /// Where it was: the pane beside it, which way, and on which side.
-    pub near: Option<(PaneId, Dir, bool)>,
-    /// Its number among the workspace's panes when it was shrunk.
-    pub number: usize,
-}
 
 impl App {
     /// The height of a minimized pane's row.
@@ -19,52 +11,37 @@ impl App {
         self.fonts.ui.height + self.px(10.0)
     }
 
-    /// The room the current workspace's minimized rows take at its top.
-    pub(super) fn minis_height(&self, wi: usize) -> i32 {
-        self.workspaces.get(wi).map_or(0, |w| w.minimized.len() as i32 * self.mini_row_h())
-    }
-
     /// Whether a pane is minimized in some workspace.
     pub(super) fn is_minimized(&self, id: PaneId) -> bool {
-        self.workspaces.iter().any(|w| w.minimized.iter().any(|m| m.pane == id))
+        self.workspaces.iter().any(|w| w.minimized.contains(&id))
     }
 
-    /// A pane shrunk to a row: out of the layout, kept running. The last
-    /// pane showing in a workspace stays.
+    /// A pane shrunk to a row, kept running. The last pane showing in a
+    /// workspace stays as it is.
     pub(super) fn minimize(&mut self, id: PaneId) {
         let Some(wi) = self.workspaces.iter().position(|w| w.root.contains(id)) else { return };
         let ws = &mut self.workspaces[wi];
         let mut ids = Vec::new();
         ws.root.panes(&mut ids);
-        if ids.len() < 2 {
+        let showing: Vec<PaneId> = ids.iter().copied().filter(|p| *p != id && !ws.minimized.contains(p)).collect();
+        if showing.is_empty() {
             return self.toast("One pane left", "The last pane showing stays", None, Some(id));
         }
-        let number = ids.iter().position(|p| *p == id).map_or(0, |n| n + 1);
-        let near = ws.root.place_of(id);
-        if !ws.root.remove(id) {
-            return;
+        if !ws.minimized.contains(&id) {
+            ws.minimized.push(id);
         }
         ws.zoom = None;
         if ws.focus == id {
-            let mut left = Vec::new();
-            ws.root.panes(&mut left);
-            ws.focus = near.map(|n| n.0).filter(|n| left.contains(n)).unwrap_or(left[0]);
+            ws.focus = showing[0];
         }
-        ws.minimized.push(Minimized { pane: id, near, number });
         self.changed();
     }
 
-    /// A minimized pane back where it was, and the one typed into.
+    /// A minimized pane its size again, and the one typed into.
     pub(super) fn restore(&mut self, id: PaneId) {
-        let Some(wi) = self.workspaces.iter().position(|w| w.minimized.iter().any(|m| m.pane == id)) else { return };
+        let Some(wi) = self.workspaces.iter().position(|w| w.minimized.contains(&id)) else { return };
         let ws = &mut self.workspaces[wi];
-        let i = ws.minimized.iter().position(|m| m.pane == id).unwrap_or(0);
-        let m = ws.minimized.remove(i);
-        let placed = m.near.is_some_and(|(near, dir, before)| ws.root.split_beside(near, id, dir, before));
-        if !placed {
-            let at = ws.focus;
-            ws.root.split(at, id, Dir::Across);
-        }
+        ws.minimized.retain(|p| *p != id);
         ws.zoom = None;
         ws.focus = id;
         if wi != self.current {
@@ -73,25 +50,17 @@ impl App {
         self.changed();
     }
 
-    /// A pane gone (closed, its program ended): out of the minimized too.
+    /// A pane gone (closed, its program ended): out of the minimized too;
+    /// and if only minimized panes are left, they come back.
     pub(super) fn forget_minimized(&mut self, id: PaneId) {
         for ws in &mut self.workspaces {
-            ws.minimized.retain(|m| m.pane != id);
-        }
-    }
-
-    /// A workspace's layout as it would be with its minimized panes back,
-    /// for saving: they come back as panes when the session does.
-    pub(super) fn full_root(ws: &Workspace) -> Node {
-        let mut root = ws.root.clone();
-        for m in &ws.minimized {
-            let placed = m.near.is_some_and(|(near, dir, before)| root.split_beside(near, m.pane, dir, before));
-            if !placed {
-                let at = root.last_pane();
-                root.split(at, m.pane, Dir::Across);
+            ws.minimized.retain(|m| *m != id);
+            let mut ids = Vec::new();
+            ws.root.panes(&mut ids);
+            if ids.iter().filter(|p| **p != id).all(|p| ws.minimized.contains(p)) {
+                ws.minimized.clear();
             }
         }
-        root
     }
 
     /// The last line a pane printed, as plain text, for its row.
@@ -105,29 +74,29 @@ impl App {
         }
     }
 
-    /// The current workspace's minimized rows, across its top.
+    /// The current workspace's minimized rows, where the layout put them.
     pub(super) fn draw_minimized(&mut self) {
-        let Some(ws) = self.workspaces.get(self.current) else { return };
-        let rows: Vec<(PaneId, usize)> = ws.minimized.iter().map(|m| (m.pane, m.number)).collect();
+        let rows = self.mini_rows.clone();
         self.mini_hits.clear();
         if rows.is_empty() {
             return;
         }
+        let mut ids = Vec::new();
+        self.ws().root.panes(&mut ids);
         let c = self.cur_theme.chrome();
-        let area = self.area();
-        let h = self.mini_row_h();
         let scale = self.scale;
         let px = |v: f32| (v * scale).round() as i32;
-        let (uh, sh) = (self.fonts.ui.height, self.fonts.small.height);
+        let sh = self.fonts.small.height;
         let mh = self.fonts.mono.height;
-        for (k, (id, number)) in rows.into_iter().enumerate() {
+        for (id, r) in rows {
             let Some(p) = self.panes.get(&id) else { continue };
-            let r = Rect { x: area.x, y: area.y + k as i32 * h, w: area.w, h };
+            let h = r.h;
+            let number = ids.iter().position(|p| *p == id).map_or(0, |n| n + 1);
             let lit = self.mini_lit == Some(id);
-            self.canvas.fill(r, if lit { c.hover } else { c.side });
+            self.canvas.fill(r, if lit { mix(c.side, c.text, 10) } else { c.side });
             self.canvas.fill(Rect { y: r.y + r.h - 1, h: 1, ..r }, c.edge);
             // How it is doing: running green, its last command failed red,
-            // else grey.
+            // else quiet.
             let running = p.shell.running.is_some() && !p.shell.at_prompt;
             let failed = !running && p.shell.blocks.last().is_some_and(|b| b.exit.is_some_and(|e| e != 0));
             let dot = if running { 0x30A46C } else if failed { 0xE5484D } else { c.faint };
@@ -138,8 +107,8 @@ impl App {
             x = self.canvas.text(&mut self.fonts.small, &format!("{number}"), x as f32, r.y + (h - sh) / 2, c.faint, r) + px(10.0);
             let cmd = p.shell.running.as_ref().filter(|_| running).map(|r| r.2.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| p.caption.clone());
             let (line, elapsed) = (p.last_line.clone(), p.shell.running.as_ref().filter(|_| running).map(|r| commands::human(r.0.elapsed())));
-            // The command, then its last line, then how long, then the button.
-            let cmd_w = self.fonts.mono.width(&cmd).min(area.w / 3);
+            // The command, its last line, how long, then restore.
+            let cmd_w = self.fonts.mono.width(&cmd).min(r.w / 3);
             self.canvas.text_fit(&mut self.fonts.mono, &cmd, x, r.y + (h - mh) / 2, cmd_w, c.text, r);
             x += cmd_w + px(14.0);
             let ib = h - px(6.0);
@@ -150,14 +119,12 @@ impl App {
             let bad = ["error", "failed", "panic"].iter().any(|w| line.to_lowercase().contains(w));
             self.canvas.text_fit(&mut self.fonts.mono, &line, x, r.y + (h - mh) / 2, room.max(0), if bad { 0xF2777A } else { c.dim }, r);
             self.canvas.text(&mut self.fonts.small, &time, (right - px(8.0) - tw) as f32, r.y + (h - sh) / 2, c.faint, r);
-            // Restore: the button at the right, as the whole row is.
             let b = Rect { x: right, y: r.y + (h - ib) / 2, w: ib, h: ib };
             let size = ib * 6 / 10;
             self.canvas.icon(crate::canvas::icons::FOCUS, size, b.x + (ib - size) / 2, b.y + (ib - size) / 2, if lit { c.text } else { c.dim }, r);
             self.mini_hits.push((r, id));
-            let _ = uh;
+            self.damage.push(r);
         }
-        self.damage.push(Rect { x: area.x, y: area.y, w: area.w, h: self.minis_height(self.current) });
     }
 
     /// A click on a minimized row: the pane back. True when it was one.
@@ -182,5 +149,26 @@ impl App {
             }
         }
         at.is_some()
+    }
+
+    /// A right click on a minimized row: what can be done with the pane.
+    pub(super) fn mini_menu(&mut self) -> bool {
+        let (x, y) = self.pointer;
+        let Some(id) = self.mini_hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| *id) else { return false };
+        let running = self.panes.get(&id).is_some_and(|p| p.shell.running.is_some() && !p.shell.at_prompt);
+        let has_line = self.panes.get(&id).is_some_and(|p| !p.last_line.is_empty());
+        use crate::palette::{Action, Item};
+        let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
+        self.open_items_menu(vec![
+            c("Restore", "click", Action::MiniRestore(id)),
+            c("Focus pane", "", Action::MiniFocus(id)),
+            None,
+            if running { c("Restart", "", Action::MiniRestart(id)) } else { None },
+            if running { c("Stop", "Ctrl C", Action::MiniStop(id)) } else { None },
+            if has_line { c("Copy last line", "", Action::MiniCopyLine(id)) } else { None },
+            None,
+            c("Close pane", "", Action::MiniClose(id)),
+        ]);
+        true
     }
 }

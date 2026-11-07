@@ -124,7 +124,7 @@ pub struct Workspace {
     left_out: Vec<PaneId>,
     /// Panes shrunk to a row at the top, out of the layout but running;
     /// each with where it was, to go back there.
-    minimized: Vec<minimize::Minimized>,
+    minimized: Vec<PaneId>,
 }
 
 enum Drag {
@@ -195,6 +195,8 @@ pub struct App {
     /// Minimized panes' rows, to click, and the one the pointer is on.
     mini_hits: Vec<(Rect, PaneId)>,
     mini_lit: Option<PaneId>,
+    /// Where the current workspace's minimized rows are, as laid out.
+    mini_rows: Vec<(PaneId, Rect)>,
     /// Pin strips' buttons, and the one the pointer is on.
     pin_hits: Vec<(Rect, PaneId, usize, pin::PinHit)>,
     pin_lit: Option<(PaneId, usize, pin::PinHit)>,
@@ -337,6 +339,7 @@ impl App {
             multi_lit: None,
             mini_hits: Vec::new(),
             mini_lit: None,
+            mini_rows: Vec::new(),
             pin_hits: Vec::new(),
             pin_lit: None,
             ran: Default::default(),
@@ -531,17 +534,16 @@ impl App {
         self.lay_out_popouts();
         let area = self.area();
         let mut shown = Vec::new();
+        let row_h = self.mini_row_h();
         for (i, ws) in self.workspaces.iter().enumerate() {
-            let (mut panes, mut dividers) = (Vec::new(), Vec::new());
-            // Its minimized panes' rows across the top; the rest below them.
-            let rows = ws.minimized.len() as i32 * (self.fonts.ui.height + self.px(10.0));
-            let area = Rect { y: area.y + rows, h: (area.h - rows).max(0), ..area };
+            let (mut panes, mut dividers, mut rows) = (Vec::new(), Vec::new(), Vec::new());
             match ws.zoom {
                 Some(z) => panes.push((z, area)),
-                None => ws.root.layout(area, &mut panes, &mut dividers),
+                None => ws.root.layout_with(area, &ws.minimized, row_h, &mut panes, &mut rows, &mut dividers),
             }
             if i == self.current {
                 self.dividers = dividers;
+                self.mini_rows = rows;
             }
             shown.extend(panes);
         }
@@ -695,16 +697,6 @@ impl App {
                 ws.focus = beside.filter(|b| ids.contains(b)).unwrap_or(ids[0]);
             }
         } else {
-            // Its last pane showing gone, a minimized one comes back in its
-            // place, rather than the workspace closing.
-            if !self.workspaces[wi].minimized.is_empty() {
-                let m = self.workspaces[wi].minimized.remove(0);
-                let ws = &mut self.workspaces[wi];
-                ws.root = Node::Pane(m.pane);
-                ws.focus = m.pane;
-                ws.zoom = None;
-                return self.changed();
-            }
             self.workspaces.remove(wi);
             if self.workspaces.is_empty() {
                 self.save_scrollback();
@@ -1194,6 +1186,7 @@ impl App {
         } else {
             let mut v = Vec::new();
             self.ws().root.panes(&mut v);
+            v.retain(|p| !self.ws().minimized.contains(p));
             v
         };
         ids.into_iter().find_map(|id| {
@@ -1260,7 +1253,7 @@ impl App {
             }
         }
         // The command line's text, right clicked: a text box's menu.
-        if button == MouseButton::Right && (self.editor_menu() || self.bar_field_menu() || self.pin_menu()) {
+        if button == MouseButton::Right && (self.editor_menu() || self.bar_field_menu() || self.pin_menu() || self.mini_menu()) {
             return;
         }
         // A tag on a caption, right clicked: what can be done with it.
@@ -1596,6 +1589,10 @@ impl App {
         let floating = self.palette.is_some() || self.menu.is_some() || self.settings.is_some() || self.editor.is_some();
         if full || !(self.roam_shown || floating) {
             for (n, id) in ids.iter().enumerate() {
+                // A minimized pane is its row, drawn apart; its number kept.
+                if self.ws().minimized.contains(id) {
+                    continue;
+                }
                 self.draw_pane(*id, n + 1, full, Some(*id) == focus && !self.roam_shown);
             }
         }
@@ -2049,7 +2046,7 @@ impl App {
         let workspaces = self
             .workspaces
             .iter()
-            .map(|ws| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&Self::full_root(ws), &describe)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), ..Default::default() })
+            .map(|ws| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &describe)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), ..Default::default() })
             .collect();
         let roam = self.roam.and_then(|r| panes.get(&r)).and_then(|p| p.pty.cwd()).or(self.roam_cwd.clone()).map(|p| persist::shorten(&p));
         let popouts = self.popouts.iter().map(|po| persist::spec(&Node::Pane(po.pane), &describe)).collect();

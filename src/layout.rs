@@ -338,3 +338,106 @@ mod tests {
         assert_eq!(neighbour(&panes, 3, 0, -1), Some(1));
     }
 }
+
+impl Node {
+    /// As layout, with some panes minimized: each a row of `row_h` where it
+    /// is, in `rows`, the rest sharing the room. In a split down, a row
+    /// takes its own place; in one across, it goes over the top of the
+    /// pane beside it, so the columns keep their widths. No divider is
+    /// drawn beside a row.
+    pub fn layout_with(&self, area: Rect, minimized: &[PaneId], row_h: i32, panes: &mut Vec<(PaneId, Rect)>, rows: &mut Vec<(PaneId, Rect)>, dividers: &mut Vec<Divider>) {
+        self.layout_min(area, &mut Vec::new(), minimized, row_h, panes, rows, dividers);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn layout_min(&self, area: Rect, path: &mut Vec<usize>, min: &[PaneId], row_h: i32, panes: &mut Vec<(PaneId, Rect)>, rows: &mut Vec<(PaneId, Rect)>, dividers: &mut Vec<Divider>) {
+        let is_min = |n: &Node| matches!(n, Node::Pane(id) if min.contains(id));
+        match self {
+            Node::Pane(id) if min.contains(id) => rows.push((*id, Rect { h: row_h.min(area.h), ..area })),
+            Node::Pane(id) => panes.push((*id, area)),
+            Node::Split { dir, children, sizes } => {
+                let live: Vec<usize> = (0..children.len()).filter(|&i| !is_min(&children[i])).collect();
+                // All of them minimized: their rows, one under another.
+                if live.is_empty() {
+                    for (k, c) in children.iter().enumerate() {
+                        if let Node::Pane(id) = c {
+                            rows.push((*id, Rect { x: area.x, y: area.y + k as i32 * row_h, w: area.w, h: row_h }));
+                        }
+                    }
+                    return;
+                }
+                let share: f32 = live.iter().map(|&i| sizes[i]).sum::<f32>().max(f32::EPSILON);
+                match dir {
+                    Dir::Down => {
+                        let rows_h = (children.len() - live.len()) as i32 * row_h;
+                        let room = (area.h - rows_h - GAP * (live.len() as i32 - 1)).max(0);
+                        let (mut y, mut used, mut given, mut seen) = (area.y, 0.0f32, 0, 0);
+                        for (i, child) in children.iter().enumerate() {
+                            if is_min(child) {
+                                if let Node::Pane(id) = child {
+                                    rows.push((*id, Rect { x: area.x, y, w: area.w, h: row_h }));
+                                }
+                                y += row_h;
+                                continue;
+                            }
+                            seen += 1;
+                            used += sizes[i] / share;
+                            let end = if seen == live.len() { room } else { (used * room as f32).round() as i32 };
+                            let r = Rect { x: area.x, y, w: area.w, h: (end - given).max(0) };
+                            given = end;
+                            path.push(i);
+                            child.layout_min(r, path, min, row_h, panes, rows, dividers);
+                            path.pop();
+                            y = r.y + r.h;
+                            // A line to the next pane, when it is not a row.
+                            if i + 1 < children.len() && !is_min(&children[i + 1]) {
+                                let line = Rect { x: area.x, y, w: area.w, h: GAP };
+                                dividers.push(Divider { rect: line, path: path.clone(), gap: i, dir: *dir, span: area });
+                                y += GAP;
+                            }
+                        }
+                    }
+                    Dir::Across => {
+                        let room = (area.w - GAP * (live.len() as i32 - 1)).max(0);
+                        // Each row goes over the pane after it, or the one
+                        // before when it is last.
+                        let mut over: Vec<Vec<PaneId>> = vec![Vec::new(); children.len()];
+                        for (i, child) in children.iter().enumerate() {
+                            if let Node::Pane(id) = child {
+                                if min.contains(id) {
+                                    let to = live.iter().copied().find(|&l| l > i).or_else(|| live.iter().copied().rev().find(|&l| l < i)).unwrap_or(live[0]);
+                                    over[to].push(*id);
+                                }
+                            }
+                        }
+                        let (mut x, mut used, mut given) = (area.x, 0.0f32, 0);
+                        for (k, &i) in live.iter().enumerate() {
+                            used += sizes[i] / share;
+                            let end = if k + 1 == live.len() { room } else { (used * room as f32).round() as i32 };
+                            let mut r = Rect { x, y: area.y, w: (end - given).max(0), h: area.h };
+                            given = end;
+                            for id in &over[i] {
+                                rows.push((*id, Rect { h: row_h, ..r }));
+                                r.y += row_h;
+                                r.h = (r.h - row_h).max(0);
+                            }
+                            path.push(i);
+                            children[i].layout_min(r, path, min, row_h, panes, rows, dividers);
+                            path.pop();
+                            x = r.x + r.w;
+                            if k + 1 < live.len() {
+                                // The share a drag moves is between the two
+                                // panes either side, rows aside.
+                                let line = Rect { x, y: area.y, w: GAP, h: area.h };
+                                if live[k + 1] == i + 1 {
+                                    dividers.push(Divider { rect: line, path: path.clone(), gap: i, dir: *dir, span: area });
+                                }
+                                x += GAP;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

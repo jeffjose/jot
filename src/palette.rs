@@ -43,6 +43,14 @@ pub enum Action {
     PinRun(u64, usize),
     PinEdit(u64, usize),
     PinRemove(u64, usize),
+    /// A minimized pane's row: back, back and alone, its command
+    /// restarted or stopped, its last line copied, it closed.
+    MiniRestore(u64),
+    MiniFocus(u64),
+    MiniRestart(u64),
+    MiniStop(u64),
+    MiniCopyLine(u64),
+    MiniClose(u64),
     EditCommand,
     /// The pane's running command, stopped and run again.
     Restart,
