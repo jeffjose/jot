@@ -15,6 +15,8 @@ pub struct Block {
     pub end: u64,
     pub exit: Option<i32>,
     pub took: Duration,
+    /// Its command line.
+    pub command: String,
 }
 
 #[derive(Default)]
@@ -24,10 +26,12 @@ pub struct Shell {
     pub at_prompt: bool,
     /// Where typing began after the prompt: the cursor at the first key.
     pub input_at: Option<(u16, u64)>,
-    /// How many characters are on the command line, as far as the keys
+    /// What is on the command line, as far as the keys
     /// typed tell; None once a key does what cannot be followed (history,
     /// completion, moving along the line).
-    pub line: Option<usize>,
+    pub line: Option<String>,
+    /// The line as it was when Enter was pressed, when it was known.
+    pub entered: Option<String>,
     pub prompt_row: u64,
     pub running: Option<(Instant, u64, String)>,
     pub blocks: Vec<Block>,
@@ -64,14 +68,17 @@ impl App {
                     p.shell.marked = true;
                     p.shell.at_prompt = true;
                     p.shell.input_at = None;
-                    p.shell.line = Some(0);
+                    p.shell.line = Some(String::new());
                     p.shell.prompt_row = row;
                 }
                 ShellEvent::Input => {}
                 ShellEvent::Output(cmd) if p.shell.at_prompt => {
                     p.shell.at_prompt = false;
                     let start = p.shell.input_at.map_or(p.shell.prompt_row, |(_, r)| r);
-                    let line = if cmd.is_empty() { Self::typed(p, start, row) } else { cmd };
+                    // The command as the shell sent it, else as it was typed, else
+                    // as it reads on the screen.
+                    let entered = p.shell.entered.take().filter(|e| !e.trim().is_empty());
+                    let line = if !cmd.is_empty() { cmd } else { entered.unwrap_or_else(|| Self::typed(p, start, row)) };
                     p.shell.running = Some((Instant::now(), start, line));
                 }
                 ShellEvent::Output(_) => {}
@@ -81,7 +88,7 @@ impl App {
                     // The new prompt is drawn by now: the command's rows end
                     // the row before it.
                     let end = row.saturating_sub(1).max(start);
-                    p.shell.blocks.push(Block { row: start, end, exit, took });
+                    p.shell.blocks.push(Block { row: start, end, exit, took, command: line.trim().to_string() });
                     if p.shell.blocks.len() > 2000 {
                         p.shell.blocks.remove(0);
                     }
@@ -197,6 +204,23 @@ impl App {
             self.copy(false);
             self.copy(true);
             self.redraw();
+        }
+    }
+
+    /// The command whose rows are at a point of the window: the last one
+    /// to start at or above it and not end before it.
+    pub(super) fn command_at(&self, at: (i32, i32)) -> Option<String> {
+        let (id, cell) = self.pane_at(at.0, at.1)?;
+        let p = self.panes.get(&id)?;
+        let (_, offset, _) = p.term.scrollbar();
+        let row = offset + cell.1 as u64;
+        p.shell.blocks.iter().rev().find(|b| b.row <= row && row <= b.end).map(|b| b.command.clone()).filter(|c| !c.is_empty())
+    }
+
+    /// The command line under a point, to the clipboard.
+    pub(super) fn copy_command_at(&mut self, at: (i32, i32)) {
+        if let Some(cmd) = self.command_at(at) {
+            self.clip_set(cmd, false);
         }
     }
 

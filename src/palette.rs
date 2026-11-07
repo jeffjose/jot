@@ -34,6 +34,7 @@ pub enum Action {
     Broadcast,
     PopOut,
     CopyOutput,
+    CopyCommand,
     Settings,
     Palette,
     /// Opens the n-th submenu of the right-click menu.

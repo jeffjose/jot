@@ -296,6 +296,7 @@ impl App {
             Action::Broadcast => self.toggle_broadcast(),
             Action::PopOut => self.pop_out(event_loop),
             Action::CopyOutput => self.copy_output_at(self.menu_at),
+            Action::CopyCommand => self.copy_command_at(self.menu_at),
             Action::Palette => self.open_palette(),
             Action::Submenu(_) => {}
             Action::StatusLine => {
@@ -372,14 +373,15 @@ impl App {
         let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
         let pane = self.focused().and_then(|f| self.panes.get(&f));
         let has_selection = pane.is_some_and(|p| p.term.selection_text().is_some());
-        let marked = pane.is_some_and(|p| p.shell.marked);
+        let has_command = self.command_at(self.pointer).is_some();
         let mut items = Vec::new();
         if has_selection {
             items.push(c("Copy", "Ctrl Shift C", Action::Copy));
         }
         items.extend([
             c("Paste", "Ctrl Shift V", Action::Paste),
-            if marked { c("Copy command output", "", Action::CopyOutput) } else { None },
+            if has_command { c("Copy output", "", Action::CopyOutput) } else { None },
+            if has_command { c("Copy command", "", Action::CopyCommand) } else { None },
             None,
             c("Split right", "Alt V", Action::Split(Dir::Across)),
             c("Split down", "Alt S", Action::Split(Dir::Down)),

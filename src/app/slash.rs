@@ -64,6 +64,9 @@ pub struct Slash {
     pub typed: String,
     pub selected: usize,
     pub first: usize,
+    /// Opened after a space mid-line, not at the start: only what puts
+    /// text on the line, by the start of its name.
+    pub mid: bool,
 }
 
 const SHOWN: usize = 8;
@@ -75,8 +78,16 @@ impl App {
             Command::new("settings", "Open settings", Does::Act(Action::Settings)),
             Command::new("split", "Split right", Does::Act(Action::Split(Dir::Across))),
             Command::new("split-down", "Split down", Does::Act(Action::Split(Dir::Down))),
-            Command::new("focus", "Focus pane / show all", Does::Act(Action::Zoom)),
-            Command::new("multi", "Type into multiple panes", Does::Act(Action::Broadcast)),
+            if self.ws().zoom.is_some() {
+                Command::new("unfocus", "Show all panes", Does::Act(Action::Zoom))
+            } else {
+                Command::new("focus", "Show this pane alone", Does::Act(Action::Zoom))
+            },
+            if self.ws().broadcast {
+                Command::new("multi", "Back to typing into one pane", Does::Act(Action::Broadcast))
+            } else {
+                Command::new("multi", "Type into multiple panes", Does::Act(Action::Broadcast))
+            },
             Command::new("new-workspace", "New workspace in this folder", Does::Act(Action::NewWorkspace)),
             Command::new("rename", "Rename workspace", Does::Act(Action::Rename)),
             Command::new("clear", "Clear terminal", Does::Act(Action::Clear)),
@@ -125,7 +136,7 @@ impl App {
     /// The rows for what has been typed: commands whose names start with
     /// it, then those that have it anywhere; or, after a command that
     /// takes a word and a space, its values the same way.
-    pub(super) fn slash_rows(&self, typed: &str) -> Vec<Row> {
+    pub(super) fn slash_rows(&self, typed: &str, mid: bool) -> Vec<Row> {
         let rank = |name: &str, q: &str| -> Option<u8> {
             let (n, q) = (name.to_lowercase(), q.to_lowercase());
             if n.starts_with(&q) {
@@ -136,7 +147,10 @@ impl App {
                 None
             }
         };
-        if let Some((c, arg)) = self.slash_arg_command(typed) {
+        if mid && typed.is_empty() {
+            return Vec::new();
+        }
+        if let Some((c, arg)) = self.slash_arg_command(typed).filter(|_| !mid) {
             let mut rows: Vec<(u8, Row)> = self
                 .slash_values(&c.does)
                 .into_iter()
@@ -153,6 +167,9 @@ impl App {
             .into_iter()
             .filter_map(|c| {
                 let label = if c.takes_arg() { format!("{} …", c.name) } else { c.name.clone() };
+                if mid && !(matches!(c.does, Does::Insert(_) | Does::Date | Does::Cwd) && c.name.starts_with(typed)) {
+                    return None;
+                }
                 rank(&c.name, typed).map(|r| (r, Row { label, what: c.what.clone(), kind: kind_of(&c.does) }))
             })
             .collect();
@@ -166,15 +183,17 @@ impl App {
     /// list's and is not to go to the shell.
     pub(super) fn slash_key(&mut self, id: PaneId, code: KeyCode, text: &str, event_loop: &ActiveEventLoop) -> bool {
         let plain = !self.mods.control_key() && !self.mods.alt_key() && !self.mods.super_key();
-        let empty = self.panes.get(&id).is_some_and(|p| p.shell.at_prompt && p.shell.line == Some(0));
+        let before = self.panes.get(&id).filter(|p| p.shell.at_prompt).and_then(|p| p.shell.line.clone());
         self.follow_line(id, code, text, plain);
+        // A key the list takes leaves the line as it was.
+        let restore = |app: &mut App| {
+            if let Some(p) = app.panes.get_mut(&id) {
+                p.shell.line = before.clone();
+            }
+        };
         let Some(s) = &self.slash else {
-            // Only a `/` that is the first thing on an empty command line,
-            // in a pane typed into alone.
-            if plain && text == "/" && empty && self.input_targets(id).len() == 1 {
-                self.slash = Some(Slash { pane: id, typed: String::new(), selected: 0, first: 0 });
-                self.full = true;
-                self.redraw();
+            if plain && self.input_targets(id).len() == 1 {
+                self.slash_open(id, code, text, before.as_deref() == Some(""));
             }
             return false;
         };
@@ -182,17 +201,10 @@ impl App {
             self.close_slash();
             return false;
         }
-        let n = self.slash_rows(&s.typed).len();
-        // While it is open, the line is the slash and what follows it.
-        let on_line = 1 + s.typed.chars().count();
-        let keep_line = |app: &mut App| {
-            if let Some(p) = app.panes.get_mut(&id) {
-                p.shell.line = Some(on_line);
-            }
-        };
+        let n = self.slash_rows(&s.typed, s.mid).len();
         match code {
             KeyCode::ArrowDown | KeyCode::ArrowUp if plain => {
-                keep_line(self);
+                restore(self);
                 if let Some(s) = &mut self.slash {
                     s.selected = if code == KeyCode::ArrowDown { (s.selected + 1).min(n.saturating_sub(1)) } else { s.selected.saturating_sub(1) };
                     s.first = s.first.min(s.selected).max((s.selected + 1).saturating_sub(SHOWN));
@@ -202,12 +214,13 @@ impl App {
                 true
             }
             KeyCode::Escape => {
-                keep_line(self);
+                restore(self);
                 self.close_slash();
                 true
             }
             KeyCode::Tab | KeyCode::Enter | KeyCode::NumpadEnter if plain && n > 0 => {
-                self.slash_take(code == KeyCode::Tab, event_loop);
+                restore(self);
+                self.slash_take(event_loop);
                 true
             }
             KeyCode::Backspace => {
@@ -220,8 +233,10 @@ impl App {
                 false
             }
             _ if plain && !text.is_empty() && !text.chars().any(char::is_control) => {
-                // A second slash: a path after all.
-                if text.contains('/') {
+                // A second slash, or a space mid-line: a path, or words,
+                // after all.
+                let mid = self.slash.as_ref().is_some_and(|s| s.mid);
+                if text.contains('/') || (mid && text.contains(char::is_whitespace)) {
                     self.close_slash();
                     return false;
                 }
@@ -240,27 +255,70 @@ impl App {
         }
     }
 
-    /// How long the command line is, followed key by key: printing keys
+    /// The list opened, when the line now calls for it: a `/` typed on an
+    /// empty line; a space, a `/` and a first letter mid-line that start
+    /// the name of something that puts text on the line; or the line
+    /// rubbed back to either.
+    fn slash_open(&mut self, id: PaneId, code: KeyCode, text: &str, was_empty: bool) {
+        if text == "/" && was_empty {
+            self.slash = Some(Slash { pane: id, typed: String::new(), selected: 0, first: 0, mid: false });
+            self.full = true;
+            return self.redraw();
+        }
+        let typing = !text.is_empty() && !text.contains('/') && !text.chars().any(|c| c.is_control() || c.is_whitespace());
+        if code != KeyCode::Backspace && !typing {
+            return;
+        }
+        let Some(line) = self.panes.get(&id).filter(|p| p.shell.at_prompt).and_then(|p| p.shell.line.clone()) else { return };
+        let Some(at) = line.rfind('/') else { return };
+        let (head, typed) = (&line[..at], &line[at + 1..]);
+        if typed.contains(char::is_whitespace) {
+            return;
+        }
+        let mid = !head.is_empty();
+        // Mid-line, only right after a space, and while typing only on the
+        // first letter: words further on are left alone.
+        if mid && (!head.ends_with(char::is_whitespace) || typed.is_empty() || (code != KeyCode::Backspace && typed.chars().count() != 1)) {
+            return;
+        }
+        if !mid && code != KeyCode::Backspace {
+            return;
+        }
+        if !self.slash_rows(typed, mid).is_empty() {
+            self.slash = Some(Slash { pane: id, typed: typed.to_string(), selected: 0, first: 0, mid });
+            self.full = true;
+            self.redraw();
+        }
+    }
+
+    /// What is on the command line, followed key by key: printing keys
     /// add, Backspace takes away, Ctrl U and Ctrl C empty it; any other
     /// key makes it unknown until the next prompt.
     fn follow_line(&mut self, id: PaneId, code: KeyCode, text: &str, plain: bool) {
         let ctrl = self.mods.control_key();
         let Some(p) = self.panes.get_mut(&id) else { return };
         let line = &mut p.shell.line;
-        *line = match code {
-            KeyCode::KeyU | KeyCode::KeyC if ctrl => Some(0),
-            KeyCode::Backspace if plain => line.map(|n| n.saturating_sub(1)),
-            _ if plain && !text.is_empty() && !text.chars().any(char::is_control) => line.map(|n| n + text.chars().count()),
-            KeyCode::ShiftLeft | KeyCode::ShiftRight | KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::AltLeft | KeyCode::AltRight => *line,
+        if matches!(code, KeyCode::Enter | KeyCode::NumpadEnter) {
+            p.shell.entered = line.clone();
+        }
+        let next = match code {
+            KeyCode::KeyU | KeyCode::KeyC if ctrl => Some(String::new()),
+            KeyCode::Backspace if plain => line.take().map(|mut l| {
+                l.pop();
+                l
+            }),
+            _ if plain && !text.is_empty() && !text.chars().any(char::is_control) => line.take().map(|l| l + text),
+            KeyCode::ShiftLeft | KeyCode::ShiftRight | KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::AltLeft | KeyCode::AltRight => line.take(),
             _ => None,
         };
+        *line = next;
     }
 
     /// After what is typed changed: back to the first row, or the list
     /// gone when nothing matches.
     fn slash_narrowed(&mut self) {
-        let typed = self.slash.as_ref().map(|s| s.typed.clone()).unwrap_or_default();
-        if self.slash_rows(&typed).is_empty() && self.slash_arg_command(&typed).is_none() {
+        let (typed, mid) = self.slash.as_ref().map(|s| (s.typed.clone(), s.mid)).unwrap_or_default();
+        if self.slash_rows(&typed, mid).is_empty() && (mid || self.slash_arg_command(&typed).is_none()) {
             return self.close_slash();
         }
         if let Some(s) = &mut self.slash {
@@ -281,10 +339,10 @@ impl App {
     /// The pick taken. A command that wants a word, taken with only its
     /// name typed, is filled in on the line for the word to be picked;
     /// anything else rubs out the `/…` and is done.
-    fn slash_take(&mut self, tab: bool, event_loop: &ActiveEventLoop) {
+    fn slash_take(&mut self, event_loop: &ActiveEventLoop) {
         let Some(s) = &self.slash else { return };
-        let (id, typed, selected) = (s.pane, s.typed.clone(), s.selected);
-        let rows = self.slash_rows(&typed);
+        let (id, typed, selected, mid) = (s.pane, s.typed.clone(), s.selected, s.mid);
+        let rows = self.slash_rows(&typed, mid);
         let Some(row) = rows.get(selected) else { return };
         let write = |app: &mut App, bytes: &[u8]| {
             if let Some(p) = app.panes.get(&id) {
@@ -301,7 +359,7 @@ impl App {
             });
             write(self, add.as_bytes());
             if let Some(p) = self.panes.get_mut(&id) {
-                p.shell.line = Some(1 + rest.chars().count());
+                p.shell.line = Some(format!("/{rest}"));
             }
             if let Some(s) = &mut self.slash {
                 s.typed = rest;
@@ -311,11 +369,11 @@ impl App {
             self.full = true;
             return self.redraw();
         }
-        let _ = tab;
         let label = row.label.clone();
-        // The `/` and what follows it, rubbed out: the line empty again.
+        // The `/` and what follows it, rubbed out from the line.
         if let Some(p) = self.panes.get_mut(&id) {
-            p.shell.line = Some(0);
+            let cut = format!("/{typed}");
+            p.shell.line = p.shell.line.take().and_then(|l| l.strip_suffix(cut.as_str()).map(str::to_string));
         }
         write(self, &vec![0x7f; typed.chars().count() + 1]);
         self.slash = None;
@@ -356,14 +414,16 @@ impl App {
     fn slash_insert(&mut self, id: PaneId, text: &str) {
         if let Some(p) = self.panes.get_mut(&id) {
             p.pty.write(text.as_bytes());
-            p.shell.line = p.shell.line.map(|n| n + text.chars().count());
+            if let Some(l) = &mut p.shell.line {
+                l.push_str(text);
+            }
         }
     }
 
     /// The list, by the cursor: under it, or over it near the bottom.
     pub(super) fn draw_slash(&mut self) {
         let Some(s) = &self.slash else { return };
-        let (id, typed, selected, first) = (s.pane, s.typed.clone(), s.selected, s.first);
+        let (id, typed, selected, first, mid) = (s.pane, s.typed.clone(), s.selected, s.first, s.mid);
         let Some(p) = self.panes.get(&id) else { return };
         if !p.rect.contains(p.content.x, p.content.y) {
             return;
@@ -371,7 +431,7 @@ impl App {
         let cur = p.term.cursor();
         let (cw, ch) = (self.fonts.cell_w, self.fonts.cell_h);
         let content = p.content;
-        let rows = self.slash_rows(&typed);
+        let rows = self.slash_rows(&typed, mid);
         let c = self.cur_theme.chrome();
         let accent = self.cur_accent;
         let scale = self.scale;
