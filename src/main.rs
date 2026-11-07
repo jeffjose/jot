@@ -28,33 +28,35 @@ pub fn debug() -> bool {
 const HELP: &str = "\
 jterm: a terminal with splits and workspaces
 
-  jterm            bring back the workspaces as you left them
-  jterm --fresh    start from the workspaces in the config instead
+  jterm            start, offering to restore the last session
+  jterm --fresh    start from the workspaces in the config
   jterm --debug    print each key as it is sent to the program
   jterm list | open DIR | split [--down] [-- CMD] | run CMD
         | send PANE TEXT | focus PANE | notify TEXT
-                   drive the jterm that is running
+                   control the running jterm
   jterm --version
 
-Keys (screen's, on Alt):
-  Alt s / Alt v        split: one above another / side by side
-  Alt h j k l          move to the pane left, down, up, right
-  Ctrl t               a new pane to the right of this one
-  Ctrl w, Alt x        close the pane
-  Ctrl Shift t         bring back the pane closed last
-  Alt Shift m          the pane alone, and back
-  Alt arrows, Alt =    resize, make all equal
-  Alt 1-9, Alt , .     go to a workspace, the one before or after
-  Alt Shift n          a new workspace, in this pane's folder
-  Alt `                the roaming terminal, shown over any workspace
-  Ctrl f               find in the pane: Enter for the match above, Shift Enter below
-  Ctrl k               find a workspace, pane or project folder
-  Ctrl p               run a command
-  Ctrl ,               settings: theme, text size, captions
-  Ctrl Shift c / v     copy / paste (a selection is copied as you make it;
-                       middle click pastes it)
-  Shift PageUp/Down    scroll back
-  Ctrl = - 0           text larger, smaller, as it was
+Keys:
+  Alt v / Alt s        split right / split down
+  Alt h j k l          move to the pane left, down, up or right
+  Ctrl t               new pane to the right
+  Ctrl w, Alt x        close pane
+  Ctrl Shift t         reopen closed pane
+  Alt Shift f          focus pane / show all
+  Alt Shift m          type into multiple panes
+  Alt Shift o          move pane to a new window, and back
+  Alt arrows, Alt =    resize pane, equalize pane sizes
+  Alt 1-9, Alt , .     go to workspace, previous / next workspace
+  Alt Shift n          new workspace, in this pane's folder
+  Alt `                toggle roaming terminal
+  Alt p                copy mode
+  Ctrl f               find in pane (Enter: previous match, Shift Enter: next)
+  Ctrl k               go to workspace, pane or folder
+  Ctrl p               command palette
+  Ctrl ,               settings
+  Ctrl Shift c / v     copy / paste (selecting copies; middle click pastes)
+  Shift PageUp/Down    scroll up / down a page
+  Ctrl = - 0           zoom in, out, reset
 
 Settings and workspaces: ~/.config/jterm/config.toml";
 

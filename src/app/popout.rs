@@ -1,4 +1,4 @@
-//! A pane pulled out into a window of its own (Alt Shift O, or Pop out in
+//! A pane moved to a window of its own (Alt Shift O, or Move to new window in
 //! the right-click menu), to put on another screen or beside something
 //! else. Its program goes on as it was. Closing the window, or Alt Shift
 //! O in it, puts the pane back beside the one you are in.

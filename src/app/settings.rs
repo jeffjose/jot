@@ -114,32 +114,32 @@ pub struct Settings {
 const DANGER: u32 = 0xC9423A;
 
 const KEYS: &[(&str, &str)] = &[
-    ("Ctrl F", "Find in the pane; Enter for the match above"),
-    ("Ctrl K", "Find a workspace, pane or project folder"),
-    ("Ctrl P", "Run a command"),
+    ("Ctrl F", "Find in pane; Enter goes to the previous match"),
+    ("Ctrl K", "Go to workspace, pane or folder"),
+    ("Ctrl P", "Command palette"),
     ("Ctrl ,", "Settings"),
-    ("Alt V", "Split side by side"),
-    ("Alt S", "Split one above another"),
-    ("Alt H J K L", "Move to the pane left, down, up, right"),
-    ("Ctrl T", "New pane to the right of this one"),
-    ("Ctrl W  Alt X", "Close the pane"),
-    ("Ctrl Shift T", "Bring back the pane closed last"),
-    ("Alt Shift F", "Focus pane: it alone, and back"),
-    ("Alt Arrows", "Resize the pane"),
-    ("Alt =", "Make all panes equal"),
+    ("Alt V", "Split right"),
+    ("Alt S", "Split down"),
+    ("Alt H J K L", "Move to the pane left, down, up or right"),
+    ("Ctrl T", "New pane to the right"),
+    ("Ctrl W  Alt X", "Close pane"),
+    ("Ctrl Shift T", "Reopen closed pane"),
+    ("Alt Shift F", "Focus pane / show all"),
+    ("Alt Arrows", "Resize pane"),
+    ("Alt =", "Equalize pane sizes"),
     ("Alt 1–9", "Go to a workspace"),
-    ("Alt ,  Alt .", "The workspace before, after"),
-    ("Alt Shift N", "New workspace in this pane's folder"),
-    ("Alt Shift M", "Type into several panes (multi); click one to leave it out"),
-    ("Alt P", "Copy mode: hjkl, v or V, y to copy"),
-    ("Alt Shift O", "Pop the pane out into a window, and back"),
-    ("Ctrl Shift ↑ ↓", "The prompt before or after"),
-    ("Ctrl Shift E", "Edit the command line in a box of its own"),
-    ("Alt `", "Roaming terminal"),
+    ("Alt ,  Alt .", "Previous / next workspace"),
+    ("Alt Shift N", "New workspace, in this pane's folder"),
+    ("Alt Shift M", "Type into multiple panes; click a pane to skip it"),
+    ("Alt P", "Copy mode: hjkl to move, v or V to select, y to copy"),
+    ("Alt Shift O", "Move pane to a new window, and back"),
+    ("Ctrl Shift ↑ ↓", "Previous / next prompt"),
+    ("Ctrl Shift E", "Edit the command in a larger editor"),
+    ("Alt `", "Toggle roaming terminal"),
     ("Ctrl Shift C", "Copy"),
     ("Ctrl Shift V", "Paste"),
-    ("Shift PageUp", "Scroll back"),
-    ("Ctrl =  -  0", "Text larger, smaller, as it was"),
+    ("Shift PageUp", "Scroll up a page"),
+    ("Ctrl =  -  0", "Zoom in, out, reset"),
 ];
 
 fn config_key(key: Key) -> &'static str {
@@ -847,7 +847,7 @@ impl App {
         if section == 0 {
         // ---- Appearance ----
         heading(canvas, fonts, &mut y, &mut tops, "Appearance");
-        title(canvas, fonts, &mut page, y, "Color theme", "The terminal's colors, and the panes' around them.", Key::Theme);
+        title(canvas, fonts, &mut page, y, "Color theme", "Colors for the terminal and the window around it.", Key::Theme);
         y += row_h - row_pad / 2;
         for dark in [true, false] {
             canvas.text(&mut fonts.small, if dark { "DARK" } else { "LIGHT" }, body.x as f32, y, c.faint, view);
@@ -888,7 +888,7 @@ impl App {
         }
         canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
 
-        title(canvas, fonts, &mut page, y, "Accent", "What is picked out: the pane you are in, menus, switches.", Key::Accent);
+        title(canvas, fonts, &mut page, y, "Accent", "Highlight color for the focused pane, menus and switches.", Key::Accent);
         y += row_h - row_pad / 2;
         {
             let d = px(24.0);
@@ -911,15 +911,15 @@ impl App {
         canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
 
         {
-            let mid = title(canvas, fonts, &mut page, y, "Minimum contrast", "Text is made darker or lighter until it can be read on its ground, as in VS Code (4.5). 1 is off.", Key::Contrast);
+            let mid = title(canvas, fonts, &mut page, y, "Minimum contrast", "Adjusts text that is hard to read on its background. VS Code uses 4.5; 1 turns it off.", Key::Contrast);
             stepper(canvas, fonts, &mut page, mid, Key::Contrast, &format!("{min_contrast:.1}"));
             y += row_h;
             canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
         }
         for (name, what, key, value) in [
-            ("Captions under panes", "Each pane's title along its bottom, as screen's regions have.", Key::Captions, captions),
+            ("Pane captions", "Each pane's title along its bottom edge.", Key::Captions, captions),
             ("Status line", "Workspaces, host and clock along the bottom of the window.", Key::StatusLine, status_line),
-            ("Command bars", "A bar beside each command, green or red by how it ended, with its time when slow.", Key::CommandBars, command_bars),
+            ("Command bars", "A green or red bar beside each command for success or failure, with the time slow ones took.", Key::CommandBars, command_bars),
         ] {
             let mid = title(canvas, fonts, &mut page, y, name, what, key);
             let (sw, sh) = (px(40.0), px(22.0));
@@ -937,10 +937,10 @@ impl App {
         }
         if section == 1 {
         heading(canvas, fonts, &mut y, &mut tops, "Workspaces");
-        canvas.text(&mut fonts.small, "Click a name to rename it. Default is the accent or theme under Appearance.", body.x as f32, y - px(8.0), c.dim, view);
+        canvas.text(&mut fonts.small, "Click a name to rename it. Default uses the theme and accent from Appearance.", body.x as f32, y - px(8.0), c.dim, view);
         y += sh_ + px(12.0);
         {
-            let mid = title(canvas, fonts, &mut page, y, "A color for each", "All but the first get an accent of their own, kept by name, unless you pick one.", Key::WsColors);
+            let mid = title(canvas, fonts, &mut page, y, "Color each workspace", "Every workspace after the first gets its own accent, chosen by name. Pick one to override it.", Key::WsColors);
             let (sw, sh) = (px(40.0), px(22.0));
             let pill = Rect { x: right - sw, y: mid - sh / 2, w: sw, h: sh };
             canvas.round_fill(pill, sh / 2, if ws_colors { accent } else { c.hover }, 255);
@@ -1020,7 +1020,7 @@ impl App {
                 canvas.round_fill(keep, px(7.0), if hover == Some(Hit::WsKeep) { c.hover } else { c.field }, 255);
                 canvas.ring(keep, px(7.0), 1, c.edge);
                 canvas.text(&mut fonts.ui, "Keep", (keep.x + px(14.0)) as f32, ty, c.text, keep);
-                let ask = "Its panes close too.";
+                let ask = "This closes all its panes.";
                 let qw = fonts.small.width(ask);
                 canvas.text(&mut fonts.small, ask, (keep.x - px(12.0) - qw) as f32, cy - sh_ / 2, c.dim, view);
                 page.push((close, Hit::WsClose(wi)));
@@ -1086,12 +1086,12 @@ impl App {
         heading(canvas, fonts, &mut y, &mut tops, "Fonts");
         let field_w = px(260.0).min(body.w / 2);
         let rows: [(&str, &str, Key); 7] = [
-            ("Terminal font", "For the panes. Only fonts whose letters are all one width.", Key::Family),
-            ("Terminal font size", "In points. Ctrl = and Ctrl - change it too.", Key::Size),
-            ("Line height", "Room between lines, as a share of the font's own. VS Code's is 1.10.", Key::LineHeight),
-            ("Ligatures", "Characters joined as the font draws them: => and != in Fira Code.", Key::Ligatures),
-            ("Bold text", "In the font's bold. Off keeps all text one weight.", Key::Bold),
-            ("Interface font", "For jterm's own words: captions, menus, these settings.", Key::UiFamily),
+            ("Terminal font", "Used in panes. Monospaced fonts only.", Key::Family),
+            ("Terminal font size", "In points. Ctrl = and Ctrl - also change it.", Key::Size),
+            ("Line height", "Space between lines, relative to the font. VS Code uses 1.10.", Key::LineHeight),
+            ("Ligatures", "Draw pairs like => and != as single symbols.", Key::Ligatures),
+            ("Bold text", "Use the font's bold weight. Off keeps all text one weight.", Key::Bold),
+            ("Interface font", "Used for menus, captions and settings.", Key::UiFamily),
             ("Interface font size", "In points.", Key::UiSize),
         ];
         for (name, what, key) in rows {

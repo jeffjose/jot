@@ -89,7 +89,7 @@ impl App {
             .enumerate()
             .map(|(i, ws)| Item {
                 label: ws.name.clone(),
-                hint: if i == self.current { "workspace, here".into() } else { format!("workspace · Alt {}", i + 1) },
+                hint: if i == self.current { "current workspace".into() } else { format!("workspace · Alt {}", i + 1) },
                 action: Action::GoTo(i),
             })
             .collect();
@@ -327,8 +327,8 @@ impl App {
         let Some(p) = self.palette.as_ref() else { return };
         let (label, field, mode) = (p.label(), p.field.clone(), p.mode);
         let note = match (mode, p.matches.len()) {
-            (Mode::Rename, _) => "Enter to name it".to_string(),
-            (_, 0) => "no match".to_string(),
+            (Mode::Rename, _) => "Enter to rename".to_string(),
+            (_, 0) => "No matches".to_string(),
             (_, n) => format!("{} of {n}", p.selected + 1),
         };
         let shown: Vec<(usize, Item)> = p.matches.iter().cloned().enumerate().skip(p.first).take(l.rows).collect();
@@ -381,30 +381,30 @@ impl App {
             c("Paste", "Ctrl Shift V", Action::Paste),
             if marked { c("Copy command output", "", Action::CopyOutput) } else { None },
             None,
-            c("Split side by side", "Alt V", Action::Split(Dir::Across)),
-            c("Split one above another", "Alt S", Action::Split(Dir::Down)),
+            c("Split right", "Alt V", Action::Split(Dir::Across)),
+            c("Split down", "Alt S", Action::Split(Dir::Down)),
             c("Close pane", "Ctrl W", Action::Close),
             None,
             c("Pane", "›", Action::Submenu(0)),
             c("Workspace", "›", Action::Submenu(1)),
             None,
-            c("Settings…", "Ctrl ,", Action::Settings),
+            c("Settings", "Ctrl ,", Action::Settings),
         ]);
         let children = vec![
             vec![
                 c(if self.ws().zoom.is_some() { "Show all panes" } else { "Focus pane" }, "Alt Shift F", Action::Zoom),
                 c("New pane", "Ctrl T", Action::NewPane),
                 c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
-                c("Pop out", "Alt Shift O", Action::PopOut),
-                c("Type into several panes", "Alt Shift M", Action::Broadcast),
+                c("Move to new window", "Alt Shift O", Action::PopOut),
+                c("Type into multiple panes", "Alt Shift M", Action::Broadcast),
                 None,
-                c("Clear screen and scrollback", "", Action::Clear),
+                c("Clear terminal", "", Action::Clear),
             ],
             vec![
-                c("New workspace here", "Alt Shift N", Action::NewWorkspace),
+                c("New workspace", "Alt Shift N", Action::NewWorkspace),
                 c("Rename workspace…", "", Action::Rename),
                 None,
-                c("Roaming terminal", "Alt `", Action::Roam),
+                c("Toggle roaming terminal", "Alt `", Action::Roam),
             ],
         ];
         self.palette = None;

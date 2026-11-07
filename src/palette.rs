@@ -167,29 +167,29 @@ pub fn matching(all: Vec<Item>, typed: &str, recent: &[String]) -> Vec<Item> {
 pub fn commands() -> Vec<Item> {
     let c = |label: &str, hint: &str, action| Item { label: label.into(), hint: hint.into(), action };
     vec![
-        c("Split side by side", "Alt V", Action::Split(Dir::Across)),
-        c("Split one above another", "Alt S", Action::Split(Dir::Down)),
+        c("Split right", "Alt V", Action::Split(Dir::Across)),
+        c("Split down", "Alt S", Action::Split(Dir::Down)),
         c("New pane", "Ctrl T", Action::NewPane),
         c("Close pane", "Ctrl W", Action::Close),
-        c("Pop out into a window of its own", "Alt Shift O", Action::PopOut),
+        c("Move pane to new window", "Alt Shift O", Action::PopOut),
         c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
-        c("Focus pane, and back", "Alt Shift F", Action::Zoom),
-        c("Make panes equal", "Alt =", Action::Equalize),
-        c("Close every other pane", "", Action::Only),
-        c("New workspace here", "Alt Shift N", Action::NewWorkspace),
-        c("Rename workspace", "", Action::Rename),
+        c("Focus pane / show all", "Alt Shift F", Action::Zoom),
+        c("Equalize pane sizes", "Alt =", Action::Equalize),
+        c("Close other panes", "", Action::Only),
+        c("New workspace", "Alt Shift N", Action::NewWorkspace),
+        c("Rename workspace…", "", Action::Rename),
         c("Close workspace", "", Action::CloseWorkspace),
-        c("Roaming terminal", "Alt `", Action::Roam),
-        c("Clear screen and scrollback", "", Action::Clear),
+        c("Toggle roaming terminal", "Alt `", Action::Roam),
+        c("Clear terminal", "", Action::Clear),
         c("Copy", "Ctrl Shift C", Action::Copy),
         c("Paste", "Ctrl Shift V", Action::Paste),
-        c("Text larger", "Ctrl =", Action::FontLarger),
-        c("Text smaller", "Ctrl -", Action::FontSmaller),
-        c("Text as it was", "Ctrl 0", Action::FontReset),
-        c("Status line, on or off", "", Action::StatusLine),
-        c("Type into several panes", "Alt Shift M", Action::Broadcast),
+        c("Zoom in", "Ctrl =", Action::FontLarger),
+        c("Zoom out", "Ctrl -", Action::FontSmaller),
+        c("Reset zoom", "Ctrl 0", Action::FontReset),
+        c("Toggle status line", "", Action::StatusLine),
+        c("Type into multiple panes", "Alt Shift M", Action::Broadcast),
         c("Settings", "Ctrl ,", Action::Settings),
-        c("Find a workspace, pane or project", "Ctrl K", Action::Palette),
+        c("Go to workspace, pane or folder", "Ctrl K", Action::Palette),
     ]
 }
 
@@ -219,8 +219,8 @@ mod tests {
         let items = commands();
         let found = matching(items.clone(), ">split", &[]);
         assert!(found[0].label.starts_with("Split"));
-        let found = matching(items.clone(), ">spsd", &[]);
-        assert_eq!(found[0].label, "Split side by side");
+        let found = matching(items.clone(), ">splr", &[]);
+        assert_eq!(found[0].label, "Split right");
         let found = matching(items.clone(), ">", &["Paste".to_string()]);
         assert_eq!(found[0].label, "Paste");
         assert!(matching(items, ">zzzz", &[]).is_empty());

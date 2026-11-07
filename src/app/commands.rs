@@ -371,7 +371,7 @@ impl App {
                 self.canvas.fill(Rect { x: body.x + pad + gutter + col as i32 * cw, y, w: px(2.0).max(2), h: ch }, self.cur_accent);
             }
         }
-        let hint = "Enter  new line      Ctrl Enter  run      Shift Enter  back to the prompt      Esc  leave as it was";
+        let hint = "Enter  new line      Ctrl Enter  run      Shift Enter  back to the prompt      Esc  cancel";
         self.canvas.text(&mut self.fonts.small, hint, (r.x + pad) as f32, r.y + r.h - foot + px(9.0), c.dim, r);
         self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
     }

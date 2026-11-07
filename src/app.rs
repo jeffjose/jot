@@ -1640,7 +1640,7 @@ impl App {
         let (typing, left_out) = (into == Some(true), into == Some(false));
         let mut right = bar.x + bar.w - pad as i32;
         let copying = self.copy_mode.as_ref().is_some_and(|c| self.panes.get(&c.pane).is_some_and(|p| p.rect == rect));
-        for (on, tag, color) in [(copying, " COPY ", 0xFFC53D), (scrolled && !copying, " SCROLLED ", SCROLLED), (typing, " TYPING ", 0xE5484D), (left_out, " LEFT OUT ", 0x6F6F6F)] {
+        for (on, tag, color) in [(copying, " COPY ", 0xFFC53D), (scrolled && !copying, " SCROLLED ", SCROLLED), (typing, " TYPING ", 0xE5484D), (left_out, " SKIPPED ", 0x6F6F6F)] {
             if !on {
                 continue;
             }
