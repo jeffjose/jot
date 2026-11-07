@@ -310,7 +310,7 @@ impl App {
         self.redraw();
     }
 
-    fn settings_do(&mut self, hit: Hit) {
+    pub(super) fn settings_do(&mut self, hit: Hit) {
         match hit {
             Hit::Section(i) => {
                 if let Some(s) = &mut self.settings {

@@ -24,6 +24,10 @@ pub struct Shell {
     pub at_prompt: bool,
     /// Where typing began after the prompt: the cursor at the first key.
     pub input_at: Option<(u16, u64)>,
+    /// How many characters are on the command line, as far as the keys
+    /// typed tell; None once a key does what cannot be followed (history,
+    /// completion, moving along the line).
+    pub line: Option<usize>,
     pub prompt_row: u64,
     pub running: Option<(Instant, u64, String)>,
     pub blocks: Vec<Block>,
@@ -60,6 +64,7 @@ impl App {
                     p.shell.marked = true;
                     p.shell.at_prompt = true;
                     p.shell.input_at = None;
+                    p.shell.line = Some(0);
                     p.shell.prompt_row = row;
                 }
                 ShellEvent::Input => {}

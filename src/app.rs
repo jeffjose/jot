@@ -38,6 +38,7 @@ mod mouse;
 mod popout;
 mod restore;
 mod settings;
+mod slash;
 mod toast;
 
 // Colors from Radix, as the screen setup has them.
@@ -154,6 +155,8 @@ pub struct App {
     drag: Option<Drag>,
     /// The pane whose corner handle the pointer is over.
     handle_hover: Option<PaneId>,
+    /// Slash commands being typed at a prompt.
+    slash: Option<slash::Slash>,
     last_click: Option<(Instant, (u16, u16), u8)>,
     clipboard: Option<arboard::Clipboard>,
     /// Workspace tabs on the status line, for clicks.
@@ -279,6 +282,7 @@ impl App {
             pointer: (0, 0),
             drag: None,
             handle_hover: None,
+            slash: None,
             last_click: None,
             clipboard: None,
             tabs: Vec::new(),
@@ -1002,6 +1006,10 @@ impl App {
             _ => "",
         };
         let text = event.text.as_deref().filter(|t| !t.is_empty()).unwrap_or(if m.alt_key() { logical } else { "" });
+        // Slash commands at a prompt see the key first.
+        if event.state == ElementState::Pressed && self.slash_key(id, code, text, event_loop) {
+            return;
+        }
         // Broadcasting, every pane in the workspace gets the key, each as
         // its own program would have it.
         if event.state == ElementState::Pressed {
@@ -1388,7 +1396,7 @@ impl App {
         self.refresh_captions();
         // With notices up, the frame is drawn whole, so panes do not draw
         // over them.
-        let full = std::mem::take(&mut self.full) || !self.toasts.is_empty() || self.offered.is_some();
+        let full = std::mem::take(&mut self.full) || !self.toasts.is_empty() || self.offered.is_some() || self.slash.is_some();
         if full {
             self.canvas.fill(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height }, self.cur_theme.divider());
             self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
@@ -1438,6 +1446,7 @@ impl App {
             self.draw_editor();
             self.draw_toasts();
             self.draw_offer();
+            self.draw_slash();
         }
         let drawn = t0.elapsed();
         self.present();

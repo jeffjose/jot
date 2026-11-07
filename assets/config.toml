@@ -132,3 +132,9 @@
 # [[trigger]]
 # match = "Local: +http://localhost:[0-9]+"
 # action = "open"
+
+# Slash commands of your own, typed as the first thing at a prompt: a
+# name puts its text on the command line; a name starting with ! runs it.
+# [slash]
+# "gs" = "git status --short"
+# "!deploy" = "make deploy"
