@@ -24,7 +24,7 @@ use std::time::Duration;
 /// Bumped when the messages change: a window and a session that differ
 /// do not talk. (Hello and Refused keep their shape across versions, so
 /// that the difference can be told.)
-pub const PROTO: u32 = 2;
+pub const PROTO: u32 = 3;
 
 /// A pane's queue as both ends keep it: commands waiting for the prompt,
 /// whether a failure has held them, and those waiting on another pane's
@@ -51,7 +51,8 @@ pub struct TeeState {
 /// What the window says to the session.
 pub enum ToServer {
     Hello { proto: u32 },
-    Spawn { pane: u64, cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32) },
+    /// A new pane; the session names it, in Spawned.
+    Spawn { cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32) },
     Input { pane: u64, bytes: Vec<u8> },
     Resize { pane: u64, cols: u16, rows: u16, px: (u32, u32) },
     Close { pane: u64 },
@@ -212,7 +213,7 @@ impl ToServer {
         let mut o = Out::default();
         match self {
             ToServer::Hello { proto } => o.u8(0).u32(*proto),
-            ToServer::Spawn { pane, cmd, cwd, cols, rows, px } => o.u8(1).u64(*pane).str(cmd).str(cwd).u16(*cols).u16(*rows).u32(px.0).u32(px.1),
+            ToServer::Spawn { cmd, cwd, cols, rows, px } => o.u8(1).str(cmd).str(cwd).u16(*cols).u16(*rows).u32(px.0).u32(px.1),
             ToServer::Input { pane, bytes } => o.u8(2).u64(*pane).bytes(bytes),
             ToServer::Resize { pane, cols, rows, px } => o.u8(3).u64(*pane).u16(*cols).u16(*rows).u32(px.0).u32(px.1),
             ToServer::Close { pane } => o.u8(4).u64(*pane),
@@ -229,7 +230,7 @@ impl ToServer {
         let mut i = In(f);
         Ok(match i.u8()? {
             0 => ToServer::Hello { proto: i.u32()? },
-            1 => ToServer::Spawn { pane: i.u64()?, cmd: i.str()?, cwd: i.str()?, cols: i.u16()?, rows: i.u16()?, px: (i.u32()?, i.u32()?) },
+            1 => ToServer::Spawn { cmd: i.str()?, cwd: i.str()?, cols: i.u16()?, rows: i.u16()?, px: (i.u32()?, i.u32()?) },
             2 => ToServer::Input { pane: i.u64()?, bytes: i.bytes()? },
             3 => ToServer::Resize { pane: i.u64()?, cols: i.u16()?, rows: i.u16()?, px: (i.u32()?, i.u32()?) },
             4 => ToServer::Close { pane: i.u64()? },
@@ -364,8 +365,13 @@ pub fn dir() -> PathBuf {
     base.join(format!("jot-{}", unsafe { libc::getuid() }))
 }
 
-/// The sessions there are, by number, lowest first.
-fn sessions() -> Vec<(u32, PathBuf)> {
+/// The machine's session's socket.
+pub fn socket() -> PathBuf {
+    dir().join("session.sock")
+}
+
+/// Sessions left by older versions of jot, one socket each, by number.
+fn old_sessions() -> Vec<(u32, PathBuf)> {
     let mut found: Vec<(u32, PathBuf)> = std::fs::read_dir(dir())
         .into_iter()
         .flatten()
@@ -380,16 +386,6 @@ fn sessions() -> Vec<(u32, PathBuf)> {
     found
 }
 
-/// Which session a window takes up.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Pick {
-    /// The first no window has, else a new one.
-    Free,
-    /// This one.
-    Number(u32),
-    New,
-}
-
 /// What the window's side hears from the session, handed on to it.
 pub enum Heard {
     Output(u64, Vec<u8>),
@@ -402,7 +398,7 @@ pub enum Heard {
     Gone,
 }
 
-/// The window's end of a session.
+/// A window's end of the session.
 pub struct Client {
     writer: Mutex<UnixStream>,
     spawned: Mutex<Receiver<(u64, i32)>>,
@@ -412,63 +408,45 @@ pub struct Client {
     /// Output being replayed: what the terminals answer to it was
     /// answered long ago, and is not sent.
     pub mute: AtomicBool,
-    /// The session's number, as its socket is named.
-    #[allow(dead_code)]
-    pub name: u32,
 }
 
-/// A session taken up: its client, what it held, and what is worth
-/// telling about the others.
+/// The session taken up: the window's end of it, the workspaces and panes
+/// no other window has, and what is worth telling.
 pub struct Attached {
     pub client: Arc<Client>,
     pub layout: String,
     pub panes: Vec<Held>,
     pub notes: Vec<String>,
+    /// The session was started for this window: nothing ran before it.
+    pub fresh: bool,
 }
 
-type Found = (UnixStream, u32, String, Vec<Held>);
-
 impl Client {
-    /// Takes up the session asked for. `hear` is given what the session
-    /// says from then on, on a thread of its own.
-    pub fn open(pick: Pick, hear: impl Fn(Heard) + Send + 'static) -> io::Result<Attached> {
-        let mut notes = Vec::new();
-        let (stream, name, layout, panes) = match pick {
-            Pick::Free => Self::find(&mut notes).or_else(|_| Self::start())?,
-            Pick::New => Self::start()?,
-            Pick::Number(n) => {
-                let path = dir().join(format!("{n}.sock"));
-                let (s, layout, panes) = Self::hello(UnixStream::connect(&path).map_err(|e| io::Error::new(e.kind(), format!("no session {n}")))?)?;
-                (s, n, layout, panes)
+    /// The machine's session, started if it is not running. `hear` is
+    /// given what it says from then on, on a thread of its own.
+    pub fn open(hear: impl Fn(Heard) + Send + 'static) -> io::Result<Attached> {
+        let path = socket();
+        let (stream, layout, panes, fresh) = match UnixStream::connect(&path) {
+            Ok(s) => {
+                let (s, l, p) = Self::hello(s)?;
+                (s, l, p, false)
+            }
+            Err(_) => {
+                // Not running: its socket, if left behind, goes.
+                let _ = std::fs::remove_file(&path);
+                let (s, l, p) = Self::start(&path)?;
+                (s, l, p, true)
             }
         };
-        // Others no window has: said, so they are not forgotten.
-        let free: Vec<String> = list().into_iter().filter(|s| s.number != name && !s.attached && s.error.is_empty()).map(|s| s.number.to_string()).collect();
-        if !free.is_empty() {
-            notes.push(format!("Also running, with no window: session {} (jot attach N)", free.join(", ")));
+        let mut notes = Vec::new();
+        let old: Vec<String> = old_sessions().into_iter().filter(|(_, p)| UnixStream::connect(p).is_ok()).map(|(n, _)| n.to_string()).collect();
+        if !old.is_empty() {
+            notes.push(format!("Panes from an older jot are still running (session {}). jot kill ends them.", old.join(", ")));
         }
         let (tx, rx) = channel();
         let reader = stream.try_clone()?;
         std::thread::Builder::new().name("mux".into()).spawn(move || listen(reader, tx, hear))?;
-        Ok(Attached { client: Arc::new(Client { writer: Mutex::new(stream), spawned: Mutex::new(rx), detached: AtomicBool::new(false), mute: AtomicBool::new(false), name }), layout, panes, notes })
-    }
-
-    /// The first session that takes this window.
-    fn find(notes: &mut Vec<String>) -> io::Result<Found> {
-        for (n, path) in sessions() {
-            match UnixStream::connect(&path) {
-                Ok(s) => match Self::hello(s) {
-                    Ok((s, layout, panes)) => return Ok((s, n, layout, panes)),
-                    Err(e) if e.kind() == io::ErrorKind::Unsupported => notes.push(format!("Session {n} is from another version of jot; its panes run on there. jot kill {n} ends it.")),
-                    Err(_) => {}
-                },
-                Err(_) => {
-                    // Gone: its socket left behind.
-                    let _ = std::fs::remove_file(&path);
-                }
-            }
-        }
-        Err(io::Error::new(io::ErrorKind::NotFound, "no session free"))
+        Ok(Attached { client: Arc::new(Client { writer: Mutex::new(stream), spawned: Mutex::new(rx), detached: AtomicBool::new(false), mute: AtomicBool::new(false) }), layout, panes, notes, fresh })
     }
 
     fn hello(mut s: UnixStream) -> io::Result<(UnixStream, String, Vec<Held>)> {
@@ -478,25 +456,19 @@ impl Client {
         s.set_read_timeout(None)?;
         match ToClient::decode(&f) {
             Ok(ToClient::Welcome { layout, panes }) => Ok((s, layout, panes)),
-            Ok(ToClient::Refused { why }) if why.starts_with("proto") || why.contains(" speaks ") => Err(io::Error::new(io::ErrorKind::Unsupported, why)),
-            Ok(ToClient::Refused { why }) => Err(io::Error::other(why)),
-            // A welcome in another version's shape.
-            _ => Err(io::Error::new(io::ErrorKind::Unsupported, "another version")),
+            Ok(ToClient::Refused { why }) => Err(io::Error::new(io::ErrorKind::Unsupported, format!("the session running is from another version of jot ({why}); jot kill ends it"))),
+            _ => Err(io::Error::new(io::ErrorKind::Unsupported, "the session running is from another version of jot; jot kill ends it")),
         }
     }
 
-    /// A new session, its server started apart from this window so that
-    /// it outlives it.
-    fn start() -> io::Result<Found> {
-        let taken: Vec<u32> = sessions().into_iter().map(|(n, _)| n).collect();
-        let n = (1..).find(|n| !taken.contains(n)).unwrap();
+    /// The session's server started, apart from this window so that it
+    /// outlives it.
+    fn start(path: &std::path::Path) -> io::Result<(UnixStream, String, Vec<Held>)> {
         std::fs::create_dir_all(dir())?;
-        let path = dir().join(format!("{n}.sock"));
-        server::launch(&path)?;
+        server::launch(path)?;
         for _ in 0..200 {
-            if let Ok(s) = UnixStream::connect(&path) {
-                let (s, layout, panes) = Self::hello(s)?;
-                return Ok((s, n, layout, panes));
+            if let Ok(s) = UnixStream::connect(path) {
+                return Self::hello(s);
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -509,16 +481,15 @@ impl Client {
         }
     }
 
-    /// A pane started in the session; its shell's process id.
-    pub fn spawn(&self, pane: u64, cmd: &str, cwd: &std::path::Path, cols: u16, rows: u16, px: (u32, u32)) -> io::Result<i32> {
+    /// A pane started in the session: the name it gave it, and its
+    /// shell's process id.
+    pub fn spawn(&self, cmd: &str, cwd: &std::path::Path, cols: u16, rows: u16, px: (u32, u32)) -> io::Result<(u64, i32)> {
         let rx = self.spawned.lock().map_err(|_| io::Error::other("poisoned"))?;
-        self.send(ToServer::Spawn { pane, cmd: cmd.into(), cwd: cwd.display().to_string(), cols, rows, px });
-        loop {
-            match rx.recv_timeout(Duration::from_secs(5)) {
-                Ok((p, pid)) if p == pane => return if pid > 0 { Ok(pid) } else { Err(io::Error::other("could not start a shell")) },
-                Ok(_) => continue,
-                Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "the session did not answer")),
-            }
+        self.send(ToServer::Spawn { cmd: cmd.into(), cwd: cwd.display().to_string(), cols, rows, px });
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok((pane, pid)) if pid > 0 => Ok((pane, pid)),
+            Ok(_) => Err(io::Error::other("could not start a shell")),
+            Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "the session did not answer")),
         }
     }
 
@@ -577,81 +548,57 @@ fn listen(mut r: UnixStream, spawned: Sender<(u64, i32)>, hear: impl Fn(Heard)) 
     hear(Heard::Gone);
 }
 
-/// A session, as `jot sessions` lists it.
-pub struct Listed {
-    pub number: u32,
-    pub attached: bool,
-    pub panes: u32,
-    pub names: String,
-    /// Why it could not be asked: another version, mostly.
-    pub error: String,
-}
-
-/// The sessions running, asked what they hold.
-pub fn list() -> Vec<Listed> {
-    let mut out = Vec::new();
-    for (n, path) in sessions() {
-        let Ok(mut s) = UnixStream::connect(&path) else {
-            let _ = std::fs::remove_file(&path);
-            continue;
-        };
-        // Peek, so that asking does not take the session up.
-        let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
-        let info = s.write_all(&ToServer::Peek.encode()).and_then(|_| read_frame(&mut s)).and_then(|f| ToClient::decode(&f));
-        match info {
-            Ok(ToClient::Info { attached, panes, names }) => out.push(Listed { number: n, attached, panes, names, error: String::new() }),
-            _ => out.push(Listed { number: n, attached: false, panes: 0, names: String::new(), error: "another version of jot".into() }),
-        }
-    }
-    out
-}
-
-/// The process at the other end of a session's socket: its server,
+/// The process at the other end of a socket: a session's server,
 /// whatever its version.
-fn server_pid(n: u32) -> Option<i32> {
+fn server_pid(path: &std::path::Path) -> Option<i32> {
     use std::os::fd::AsRawFd;
-    let s = UnixStream::connect(dir().join(format!("{n}.sock"))).ok()?;
+    let s = UnixStream::connect(path).ok()?;
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     let ok = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) } == 0;
     (ok && cred.pid > 0).then_some(cred.pid)
 }
 
-/// `jot sessions`, `jot kill N`: the sessions listed, or one ended with
-/// its panes.
+/// What the session holds, asked without taking anything up.
+fn peek() -> io::Result<ToClient> {
+    let mut s = UnixStream::connect(socket())?;
+    s.set_read_timeout(Some(Duration::from_secs(2)))?;
+    s.write_all(&ToServer::Peek.encode())?;
+    ToClient::decode(&read_frame(&mut s)?)
+}
+
+/// `jot status`: the session, what it holds and whether a window shows
+/// it. `jot kill`: it ended, every pane with it, and any left by older
+/// versions of jot.
 pub fn command(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
-        Some("sessions") => {
-            let all = list();
-            if all.is_empty() {
-                println!("No sessions running.");
+        Some("status") => match peek() {
+            Ok(ToClient::Info { attached, panes, names }) => {
+                let panes = if panes == 1 { "1 pane".to_string() } else { format!("{panes} panes") };
+                let shown = if attached { "in a window" } else { "no window" };
+                println!("{panes} · {shown}{}", if names.is_empty() { String::new() } else { format!(" · {names}") });
+                0
             }
-            for s in all {
-                if !s.error.is_empty() {
-                    println!("{}  ({})", s.number, s.error);
-                } else {
-                    let panes = if s.panes == 1 { "1 pane".to_string() } else { format!("{} panes", s.panes) };
-                    println!("{}  {}  {}{}", s.number, panes, s.names, if s.attached { "  (in a window)" } else { "" });
-                }
+            Ok(_) => {
+                println!("The session running is from another version of jot (jot kill ends it).");
+                0
             }
-            0
-        }
+            Err(_) => {
+                println!("No session running.");
+                0
+            }
+        },
         Some("kill") => {
-            let Some(n) = args.get(1).and_then(|a| a.parse::<u32>().ok()) else {
-                eprintln!("jot kill: which session? (jot sessions lists them)");
-                return 2;
-            };
-            match server_pid(n) {
-                Some(pid) => {
+            let mut ended = 0;
+            for path in std::iter::once(socket()).chain(old_sessions().into_iter().map(|(_, p)| p)) {
+                if let Some(pid) = server_pid(&path) {
                     unsafe { libc::kill(pid, libc::SIGTERM) };
-                    println!("Session {n} ended.");
-                    0
+                    ended += 1;
                 }
-                None => {
-                    eprintln!("jot kill: no session {n}");
-                    1
-                }
+                let _ = std::fs::remove_file(&path);
             }
+            println!("{}", if ended == 0 { "No session running.".to_string() } else { "The session ended, and its panes.".to_string() });
+            0
         }
         _ => 2,
     }

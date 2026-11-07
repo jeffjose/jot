@@ -1,6 +1,6 @@
 //! `jot serve`: a session. It starts each pane's shell on a PTY of its
 //! own, keeps what it prints, and passes keys and output between the
-//! shells and the one window attached. It runs on when the window goes,
+//! shells and the windows showing them. It runs on when the windows go,
 //! and ends with its last pane.
 //!
 //! What has to go on with no window is done here: /tee writes its file,
@@ -217,6 +217,8 @@ struct Pane {
     at_prompt: bool,
     queue: Queue,
     tee: Option<Tee>,
+    /// The window it is in, if one has it.
+    owner: Option<u64>,
 }
 
 enum Ev {
@@ -231,8 +233,13 @@ enum Ev {
 struct Server {
     panes: HashMap<u64, Pane>,
     conns: HashMap<u64, UnixStream>,
-    attached: Option<u64>,
-    layout: String,
+    /// The windows: connections that said hello.
+    windows: Vec<u64>,
+    /// Each window's workspaces, as it last said.
+    layouts: HashMap<u64, String>,
+    /// The workspaces of windows that went, for the next to take up.
+    left: Vec<String>,
+    next_pane: u64,
 }
 
 impl Server {
@@ -244,8 +251,9 @@ impl Server {
         }
     }
 
-    fn tell(&mut self, m: ToClient) {
-        if let Some(c) = self.attached {
+    /// Said to the window a pane is in, if one has it.
+    fn tell(&mut self, pane: u64, m: ToClient) {
+        if let Some(c) = self.panes.get(&pane).and_then(|p| p.owner) {
             self.send(c, m);
         }
     }
@@ -260,7 +268,7 @@ impl Server {
         let cmd = p.queue.items.remove(0);
         let _ = p.keys.send(format!("\x15{cmd}\r").into_bytes());
         p.at_prompt = false;
-        self.tell(ToClient::Ran { pane: id, cmd });
+        self.tell(id, ToClient::Ran { pane: id, cmd });
     }
 
     fn output(&mut self, id: u64, b: Vec<u8>) {
@@ -295,7 +303,7 @@ impl Server {
         }
         if let Some(error) = tee_end {
             let lines = p.tee.take().map_or(0, |t| t.state.lines);
-            self.tell(ToClient::TeeEnd { pane: id, lines, error });
+            self.tell(id, ToClient::TeeEnd { pane: id, lines, error });
         }
         // A failed command holds the queue behind it (as the window does,
         // but before the next is typed), unless it was being restarted.
@@ -308,10 +316,10 @@ impl Server {
                 p.queue.restarting = false;
             }
         }
-        // With no window, the commands waiting on this one go on.
-        if let (Some(exit), None) = (ended, self.attached) {
+        // Commands waiting on this one, in panes no window has, go on.
+        if let Some(exit) = ended {
             let failed = exit.is_some_and(|e| e != 0);
-            for (_, other) in self.panes.iter_mut() {
+            for (_, other) in self.panes.iter_mut().filter(|(_, o)| o.owner.is_none()) {
                 let (go, stay): (Vec<_>, Vec<_>) = std::mem::take(&mut other.queue.after).into_iter().partition(|(t, _)| *t == id);
                 other.queue.after = stay;
                 if !go.is_empty() {
@@ -322,36 +330,52 @@ impl Server {
                 }
             }
         }
-        if let Some(c) = self.attached {
-            self.send(c, ToClient::Output { pane: id, bytes: b });
-        }
+        self.tell(id, ToClient::Output { pane: id, bytes: b });
         self.fire(id);
     }
 
+    /// A window come: the panes no window has, and the workspaces they
+    /// were in, are its.
     fn welcome(&mut self, c: u64) {
         let mut held: Vec<Held> = self
             .panes
             .iter()
+            .filter(|(_, p)| p.owner.is_none())
             .map(|(id, p)| Held { pane: *id, pid: p.pty.pid, cmd: p.cmd.clone(), log: p.log.encode(), tee: p.tee.as_ref().map(|t| t.state.clone()), queue: p.queue.clone() })
             .collect();
         held.sort_by_key(|h| h.pane);
-        for p in self.panes.values_mut() {
+        for p in self.panes.values_mut().filter(|p| p.owner.is_none()) {
+            p.owner = Some(c);
             p.raw = None;
             if let Some(t) = &mut p.tee {
                 t.told = t.state.lines;
             }
         }
-        let layout = self.layout.clone();
+        let left = std::mem::take(&mut self.left);
+        let layout = merge(left.iter().map(String::as_str)).and_then(|s| toml::to_string(&s).ok()).unwrap_or_default();
+        self.layouts.insert(c, layout.clone());
         self.send(c, ToClient::Welcome { layout, panes: held });
     }
 
-    fn info(&self) -> ToClient {
-        let names = toml::from_str::<crate::persist::Session>(&self.layout).map(|s| s.workspaces.iter().map(|w| w.name.clone()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
-        ToClient::Info { attached: self.attached.is_some(), panes: self.panes.len() as u32, names }
+    /// Every window's workspaces, and those left, as one session: saved,
+    /// to be offered back after the machine restarts.
+    fn save(&self) {
+        if let Some(s) = merge(self.layouts.values().chain(self.left.iter()).map(String::as_str)) {
+            crate::persist::save_session(&s);
+        }
     }
 
-    fn spawn(&mut self, tx: &Sender<Ev>, pane: u64, cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32)) -> i32 {
-        match Local::spawn(&cmd, Path::new(&cwd), cols, rows, px) {
+    fn info(&self) -> ToClient {
+        let names = merge(self.layouts.values().chain(self.left.iter()).map(String::as_str)).map(|s| s.workspaces.iter().map(|w| w.name.clone()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+        ToClient::Info { attached: !self.windows.is_empty(), panes: self.panes.len() as u32, names }
+    }
+
+    /// A new pane for window `c`: its name and its shell's process id (-1 if
+    /// it could not start).
+    fn spawn(&mut self, tx: &Sender<Ev>, c: u64, cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32)) -> (u64, i32) {
+        let pane = self.next_pane;
+        self.next_pane += 1;
+        let pid = match Local::spawn(&cmd, Path::new(&cwd), cols, rows, px) {
             Ok(pty) => {
                 let pid = pty.pid;
                 let tx2 = tx.clone();
@@ -371,14 +395,15 @@ impl Server {
                 });
                 let mut log = Log::default();
                 log.size(cols, rows);
-                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None });
+                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, owner: Some(c) });
                 pid
             }
             Err(e) => {
                 eprintln!("jot serve: could not start a shell: {e}");
                 -1
             }
-        }
+        };
+        (pane, pid)
     }
 
     fn tee(&mut self, pane: u64, state: TeeState) {
@@ -389,7 +414,7 @@ impl Server {
         }
         match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
             Ok(file) => p.tee = Some(Tee { state, file, told: 0 }),
-            Err(e) => self.tell(ToClient::TeeEnd { pane, lines: 0, error: e.to_string() }),
+            Err(e) => self.tell(pane, ToClient::TeeEnd { pane, lines: 0, error: e.to_string() }),
         }
     }
 }
@@ -425,7 +450,7 @@ pub fn run(path: &Path) {
             }
         });
     }
-    let mut s = Server { panes: HashMap::new(), conns: HashMap::new(), attached: None, layout: String::new() };
+    let mut s = Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), left: Vec::new(), next_pane: 1 };
     let mut next_conn = 0u64;
     let started = Instant::now();
     while let Ok(ev) = rx.recv() {
@@ -458,26 +483,21 @@ pub fn run(path: &Path) {
                 }
             }
             Ev::Said(c, ToServer::Hello { proto }) => {
-                let why = if proto != PROTO {
-                    Some(format!("protocol {PROTO} here, {proto} in the window"))
-                } else if s.attached.is_some_and(|a| a != c) {
-                    Some("another window has it".into())
-                } else {
-                    None
-                };
-                if let Some(why) = why {
-                    s.send(c, ToClient::Refused { why });
+                if proto != PROTO {
+                    s.send(c, ToClient::Refused { why: format!("protocol {PROTO} here, {proto} in the window") });
                     if let Some(st) = s.conns.remove(&c) {
                         let _ = st.shutdown(std::net::Shutdown::Both);
                     }
                     continue;
                 }
-                s.attached = Some(c);
+                if !s.windows.contains(&c) {
+                    s.windows.push(c);
+                }
                 s.welcome(c);
             }
-            Ev::Said(c, m) if s.attached == Some(c) => match m {
-                ToServer::Spawn { pane, cmd, cwd, cols, rows, px } => {
-                    let pid = s.spawn(&tx, pane, cmd, cwd, cols, rows, px);
+            Ev::Said(c, m) if s.windows.contains(&c) => match m {
+                ToServer::Spawn { cmd, cwd, cols, rows, px } => {
+                    let (pane, pid) = s.spawn(&tx, c, cmd, cwd, cols, rows, px);
                     s.send(c, ToClient::Spawned { pane, pid });
                 }
                 ToServer::Input { pane, bytes } => {
@@ -495,7 +515,10 @@ pub fn run(path: &Path) {
                     // Dropped: its shell hung up on.
                     s.panes.remove(&pane);
                 }
-                ToServer::Layout { text } => s.layout = text,
+                ToServer::Layout { text } => {
+                    s.layouts.insert(c, text);
+                    s.save();
+                }
                 ToServer::Tee { pane, tee } => s.tee(pane, tee),
                 ToServer::TeeStop { pane } => {
                     if let Some(t) = s.panes.get_mut(&pane).and_then(|p| p.tee.take()) {
@@ -513,20 +536,34 @@ pub fn run(path: &Path) {
             Ev::Said(..) => {}
             Ev::Left(c) => {
                 s.conns.remove(&c);
-                if s.attached == Some(c) {
-                    s.attached = None;
-                    if s.panes.is_empty() {
+                if let Some(i) = s.windows.iter().position(|w| *w == c) {
+                    s.windows.remove(i);
+                    // Its panes and workspaces, for the next window; none if
+                    // all its panes ended.
+                    let mut any = false;
+                    for p in s.panes.values_mut().filter(|p| p.owner == Some(c)) {
+                        p.owner = None;
+                        any = true;
+                    }
+                    if let Some(l) = s.layouts.remove(&c).filter(|_| any) {
+                        s.left.push(l);
+                    }
+                    s.save();
+                    if s.panes.is_empty() && s.windows.is_empty() {
                         break;
                     }
                 }
             }
             Ev::Out(id, b) => s.output(id, b),
             Ev::Ended(id) => {
+                let owner = s.panes.get(&id).and_then(|p| p.owner);
                 if s.panes.remove(&id).is_some() {
-                    s.tell(ToClient::Exit { pane: id });
+                    if let Some(c) = owner {
+                        s.send(c, ToClient::Exit { pane: id });
+                    }
                 }
                 crate::pty::reap();
-                if s.panes.is_empty() && s.attached.is_none() {
+                if s.panes.is_empty() && s.windows.is_empty() {
                     break;
                 }
             }
@@ -536,6 +573,9 @@ pub fn run(path: &Path) {
                 for id in ids {
                     s.fire(id);
                     let Some(p) = s.panes.get_mut(&id) else { continue };
+                    if p.owner.is_none() {
+                        continue;
+                    }
                     let raw = p.pty.raw();
                     let mode = (p.raw != Some(raw)).then(|| {
                         p.raw = Some(raw);
@@ -546,15 +586,34 @@ pub fn run(path: &Path) {
                         ToClient::TeeLines { pane: id, lines: t.state.lines }
                     });
                     for m in [mode, lines].into_iter().flatten() {
-                        s.tell(m);
+                        s.tell(id, m);
                     }
                 }
                 // Started but never taken up: nothing to keep it.
-                if s.attached.is_none() && s.panes.is_empty() && started.elapsed() > Duration::from_secs(30) {
+                if s.windows.is_empty() && s.panes.is_empty() && started.elapsed() > Duration::from_secs(30) {
                     break;
                 }
             }
         }
     }
     let _ = std::fs::remove_file(path);
+}
+
+/// Sessions' workspaces, one after another: several windows' layouts as
+/// one. None when there are none.
+fn merge<'a>(texts: impl Iterator<Item = &'a str>) -> Option<crate::persist::Session> {
+    let mut out: Option<crate::persist::Session> = None;
+    for s in texts.filter_map(|t| toml::from_str::<crate::persist::Session>(t).ok()) {
+        match &mut out {
+            None => out = Some(s),
+            Some(o) => {
+                o.workspaces.extend(s.workspaces);
+                o.popouts.extend(s.popouts);
+                if o.roam.is_none() {
+                    o.roam = s.roam;
+                }
+            }
+        }
+    }
+    out
 }

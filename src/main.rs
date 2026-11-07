@@ -36,9 +36,8 @@ jot: a terminal with splits and workspaces
         | send PANE TEXT | focus PANE | notify TEXT
                    control the running jot
   jot setup      add jot and its icon to the desktop's programs
-  jot sessions    the sessions running, and which have a window
-  jot attach N    take up session N; jot new: a new session
-  jot kill N      end session N and its panes
+  jot status      what the session holds, and whether a window shows it
+  jot kill        end the session and every pane in it
   jot serve SOCK  a session (started by jot itself)
   jot --version
 
@@ -93,23 +92,13 @@ fn main() {
         let Some(path) = args.get(1) else { return eprintln!("jot serve: which socket?") };
         return mux::server::run(std::path::Path::new(path));
     }
-    // The sessions: listed, or one ended.
-    if args.first().is_some_and(|a| a == "sessions" || a == "kill") {
+    // The session: what it holds, or ended.
+    if args.first().is_some_and(|a| a == "status" || a == "kill") {
         std::process::exit(mux::command(&args));
     }
     let mut fresh = false;
-    let mut pick = mux::Pick::Free;
-    let mut rest = std::env::args().skip(1);
-    while let Some(arg) = rest.next() {
+    for arg in std::env::args().skip(1) {
         match arg.as_str() {
-            "new" => pick = mux::Pick::New,
-            "attach" => match rest.next().and_then(|n| n.parse().ok()) {
-                Some(n) => pick = mux::Pick::Number(n),
-                None => {
-                    eprintln!("jot attach: which session? (jot sessions lists them)");
-                    std::process::exit(2);
-                }
-            },
             "--fresh" => fresh = true,
             "--debug" => DEBUG.store(true, std::sync::atomic::Ordering::Relaxed),
             "-V" | "--version" => return println!("{}", version()),
@@ -125,7 +114,7 @@ fn main() {
     vt::set_up();
     app::catch_end_signals();
     let event_loop = EventLoop::<()>::with_user_event().build().expect("no display to open a window on");
-    let mut app = app::App::new(event_loop.create_proxy(), config, session, pick);
+    let mut app = app::App::new(event_loop.create_proxy(), config, session);
     event_loop.run_app(&mut app).expect("event loop");
 }
 

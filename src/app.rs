@@ -170,7 +170,6 @@ pub struct App {
     roam: Option<PaneId>,
     roam_shown: bool,
     roam_cwd: Option<PathBuf>,
-    next_id: PaneId,
     dividers: Vec<Divider>,
     /// Everything to be drawn again: the layout changed.
     full: bool,
@@ -283,6 +282,9 @@ pub struct App {
     /// Panes taken up whose output is yet to be replayed.
     replays: Vec<(PaneId, Vec<u8>)>,
     replaying: bool,
+    /// The session began with this window: the config's workspaces are
+    /// opened, not only a shell.
+    fresh_session: bool,
     /// The time the output being replayed was printed, for how long its
     /// commands took.
     replay_at: Option<Instant>,
@@ -316,7 +318,7 @@ fn folder_name(p: &std::path::Path) -> String {
 }
 
 impl App {
-    pub fn new(proxy: EventLoopProxy<()>, config: Config, session: Option<Session>, pick: crate::mux::Pick) -> App {
+    pub fn new(proxy: EventLoopProxy<()>, config: Config, session: Option<Session>) -> App {
         let (tx, rx) = channel();
         // The `jot` command's requests, each waking the window.
         let (req_tx, requests) = channel();
@@ -330,7 +332,7 @@ impl App {
         let woken = Arc::new(AtomicBool::new(false));
         let attached = {
             let (tx, proxy, woken) = (tx.clone(), proxy.clone(), woken.clone());
-            crate::mux::Client::open(pick, move |heard| {
+            crate::mux::Client::open(move |heard| {
                 let out = match heard {
                     crate::mux::Heard::Output(id, b) => Output::Bytes(id, b),
                     crate::mux::Heard::Exit(id) => Output::Exit(id),
@@ -355,9 +357,12 @@ impl App {
         };
         // Taking up a session that has panes: its layout, not the last
         // one saved, and nothing offered.
+        // A session already running, with other windows on it: the last
+        // one saved is not offered (it is what they show), and this window
+        // begins with one shell.
         let taking_up = !attached.panes.is_empty();
-        let session = if taking_up { toml::from_str::<Session>(&attached.layout).ok() } else { session };
-        let next_id = attached.panes.iter().map(|h| h.pane + 1).max().unwrap_or(1);
+        let fresh = attached.fresh;
+        let session = if taking_up { toml::from_str::<Session>(&attached.layout).ok() } else if fresh { session } else { None };
         let held: HashMap<u64, crate::mux::Held> = attached.panes.into_iter().map(|h| (h.pane, h)).collect();
         let notes = attached.notes;
         let font_size = config.font_size;
@@ -385,7 +390,6 @@ impl App {
             roam: None,
             roam_shown: false,
             roam_cwd: None,
-            next_id,
             dividers: Vec::new(),
             full: true,
             resized: None,
@@ -431,7 +435,8 @@ impl App {
             wheel_streak: 0,
             toasts: Vec::new(),
             offered: None,
-            may_offer: !taking_up,
+            may_offer: fresh && !taking_up,
+            fresh_session: fresh,
             pictures: HashMap::new(),
             triggers: Vec::new(),
             fired: HashMap::new(),
@@ -493,10 +498,8 @@ impl App {
                 (h.pane, h.pid, h.cmd)
             }
             None => {
-                let id = self.next_id;
-                self.next_id += 1;
-                match self.mux.spawn(id, &start.cmd, &start.cwd, cols, rows, (0, 0)) {
-                    Ok(pid) => (id, pid, start.cmd),
+                match self.mux.spawn(&start.cmd, &start.cwd, cols, rows, (0, 0)) {
+                    Ok((id, pid)) => (id, pid, start.cmd),
                     Err(e) => {
                         eprintln!("jot: could not start a shell: {e}");
                         std::process::exit(1);
@@ -628,7 +631,7 @@ impl App {
                 (s.workspaces, s.current, s.roam)
             }
             None if taking_up => (Vec::new(), 0, None),
-            None if !self.config.workspaces.is_empty() => (std::mem::take(&mut self.config.workspaces), 0, None),
+            None if self.fresh_session && !self.config.workspaces.is_empty() => (std::mem::take(&mut self.config.workspaces), 0, None),
             None => {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| pty::home());
                 (vec![WorkspaceSpec { name: String::new(), cwd: Some(cwd.display().to_string()), panes: vec![], split: None, layout: None, ..Default::default() }], 0, None)
@@ -2262,11 +2265,11 @@ impl App {
         let roam = self.roam.and_then(|r| panes.get(&r)).and_then(|p| p.pty.cwd()).or(self.roam_cwd.clone()).map(|p| persist::shorten(&p));
         let popouts = self.popouts.iter().map(|po| persist::spec(&Node::Pane(po.pane), &describe)).collect();
         let session = Session { current: self.current, roam, workspaces, popouts };
-        // The session keeps it too, for the next window to take up.
+        // The session keeps it, for the next window to take up, and saves
+        // every window's together for after a restart.
         if let Ok(text) = toml::to_string(&session) {
             self.mux.layout(text);
         }
-        persist::save_session(&session);
         self.saved_at = Instant::now();
         self.unsaved = false;
     }
