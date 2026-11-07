@@ -53,7 +53,6 @@ const BADGE_BG: u32 = 0x8EC8F6; // blue 7
 const BADGE_FG: u32 = 0x113264;
 const ACTIVITY: u32 = 0xFFCA16; // amber
 const BELL: u32 = 0xFF9592; // red 11
-const SCROLLED: u32 = 0xFFC53D;
 const ROAM_BG: u32 = 0x6E56CF; // violet 9
 
 pub struct Pane {
@@ -1743,12 +1742,11 @@ impl App {
         }
         // The caption, along the bottom of the pane, as screen's is.
         let caption = p.caption.clone();
-        let scrolled = !p.term.at_bottom();
         let activity = p.activity;
         if full {
             if self.config.captions {
                 let into = self.typed_into(id);
-                self.draw_caption(id, rect, n, &caption, focused, scrolled, activity, into);
+                self.draw_caption(id, rect, n, &caption, focused, activity, into);
             }
         }
         if full {
@@ -1759,7 +1757,7 @@ impl App {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_caption(&mut self, id: PaneId, rect: Rect, n: usize, caption: &str, focused: bool, scrolled: bool, activity: bool, into: Option<bool>) {
+    fn draw_caption(&mut self, id: PaneId, rect: Rect, n: usize, caption: &str, focused: bool, activity: bool, into: Option<bool>) {
         let h = self.caption_h();
         let bar = Rect { x: rect.x, y: rect.y + rect.h - h, w: rect.w, h };
         let (bg, fg) = if focused {
@@ -1822,7 +1820,7 @@ impl App {
             self.multi_tags.push((body, id, kind));
             right = r.x - pad as i32 / 2;
         }
-        for (on, tag, color) in [(copying, " COPY ", 0xFFC53D), (scrolled && !copying, " SCROLLED ", SCROLLED)] {
+        for (on, tag, color) in [(copying, " COPY ", 0xFFC53D)] {
             if !on {
                 continue;
             }

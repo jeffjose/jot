@@ -168,8 +168,9 @@ impl App {
             if matches!(c.does, Does::Tee | Does::Filter | Does::Grep | Does::Rename) {
                 let arg = arg.trim();
                 let what = match (&c.does, arg.is_empty()) {
-                    (Does::Tee, true) => "Stop writing to the file".to_string(),
-                    (Does::Tee, false) => "Write this pane's output here too".to_string(),
+                    (Does::Tee, true) if self.focused().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.tee.is_some()) => "Stop".to_string(),
+                    (Does::Tee, true) => "Save the next command's output to a new file".to_string(),
+                    (Does::Tee, false) => "Save the command's output here too (--all: everything)".to_string(),
                     (Does::Filter, true) => "Stop filtering".to_string(),
                     (Does::Filter, false) => "Show only lines with this".to_string(),
                     (Does::Rename, true) => "Type the new name, or Enter for the rename box".to_string(),
@@ -195,8 +196,9 @@ impl App {
             .slash_commands()
             .into_iter()
             .filter_map(|c| {
-                let label = if c.takes_arg() { format!("{} …", c.name) } else { c.name.clone() };
-                if mid && !(matches!(c.does, Does::Insert(_) | Does::Edit) && c.name.starts_with(typed)) {
+                // Mid-line, /tee takes no word: it is the line's own command.
+                let label = if c.takes_arg() && !mid { format!("{} …", c.name) } else { c.name.clone() };
+                if mid && !(matches!(c.does, Does::Insert(_) | Does::Edit | Does::Tee) && c.name.starts_with(typed)) {
                     return None;
                 }
                 rank(&c.name, typed).map(|r| (r, Row { label, what: c.what.clone(), kind: kind_of(&c.does) }))
@@ -249,7 +251,7 @@ impl App {
             }
             KeyCode::Tab | KeyCode::Enter | KeyCode::NumpadEnter if plain && n > 0 => {
                 restore(self);
-                self.slash_take(event_loop);
+                self.slash_take(event_loop, code != KeyCode::Tab);
                 true
             }
             KeyCode::Backspace => {
@@ -369,7 +371,7 @@ impl App {
     /// The pick taken. A command that wants a word, taken with only its
     /// name typed, is filled in on the line for the word to be picked;
     /// anything else rubs out the `/…` and is done.
-    fn slash_take(&mut self, event_loop: &ActiveEventLoop) {
+    fn slash_take(&mut self, event_loop: &ActiveEventLoop, enter: bool) {
         let Some(s) = &self.slash else { return };
         let (id, typed, selected, mid) = (s.pane, s.typed.clone(), s.selected, s.mid);
         let rows = self.slash_rows(&typed, mid);
@@ -412,7 +414,15 @@ impl App {
         self.full = true;
         let (name, arg) = label.split_once(' ').map(|(n, a)| (n.to_string(), a.to_string())).unwrap_or((label.clone(), String::new()));
         let Some(c) = self.slash_commands().into_iter().find(|c| c.name == name) else { return };
+        // /tee at the end of a line, taken with Enter: the line run, teed.
+        let run = mid && enter && matches!(c.does, Does::Tee);
         self.slash_apply(id, c.does, &arg, event_loop);
+        if run {
+            write(self, b"\r");
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.shell.entered = p.shell.line.take();
+            }
+        }
     }
 
     /// A slash command done, for pane `id`; `arg` is the word after it.

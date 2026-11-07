@@ -13,6 +13,33 @@ pub struct Tee {
     pub lines: usize,
     /// When its tag was last drawn, its count with it.
     shown_at: Instant,
+    /// Everything the pane prints, until stopped; else one command's
+    /// output, that ends it.
+    pub all: bool,
+    /// Not yet on: waiting for the next command to start.
+    pub armed: bool,
+}
+
+impl Tee {
+    /// What of these bytes goes to the file: all of them, or only what
+    /// the command printed, from its start mark to its end mark. The
+    /// second is true once the command ended.
+    fn take<'a>(&mut self, bytes: &'a [u8]) -> (&'a [u8], bool) {
+        if self.all {
+            return (bytes, false);
+        }
+        let mut rest = bytes;
+        if self.armed {
+            let Some(at) = mark(rest, b"\x1b]133;C") else { return (&[], false) };
+            let end = rest[at..].iter().position(|b| *b == 0x07).map_or(rest.len(), |e| at + e + 1);
+            rest = &rest[end..];
+            self.armed = false;
+        }
+        match mark(rest, b"\x1b]133;D") {
+            Some(at) => (&rest[..at], true),
+            None => (rest, false),
+        }
+    }
 }
 
 /// A pane's command's lines, only those with `text` in them shown.
@@ -94,7 +121,8 @@ impl App {
     pub(super) fn watch_output(&mut self, id: PaneId, bytes: Vec<u8>) -> Vec<u8> {
         let Some(p) = self.panes.get_mut(&id) else { return bytes };
         if let Some(t) = &mut p.tee {
-            let text = automate::plain(&bytes);
+            let (part, ended) = t.take(&bytes);
+            let text = automate::plain(part);
             t.lines += text.matches('\n').count();
             // Its count on the caption, kept up a few times a second.
             if t.shown_at.elapsed() > Duration::from_millis(250) {
@@ -107,6 +135,10 @@ impl App {
                 self.toast("Tee stopped", &format!("Could not write to {path}"), Some(0xE5484D), Some(id));
                 return bytes;
             }
+            // Its command ended: so does the tee, saying where it went.
+            if ended {
+                self.stop_tee(id);
+            }
         }
         let Some(p) = self.panes.get_mut(&id) else { return bytes };
         let Some(f) = &mut p.filter else { return bytes };
@@ -118,20 +150,33 @@ impl App {
         shown
     }
 
-    /// /tee FILE: the pane's output to the file as well, from now on.
-    /// /tee alone: stopped.
+    /// /tee FILE: the running command's output written to the file as
+    /// well, until it ends; at a prompt, the next command's. With --all,
+    /// everything the pane prints, until stopped. With no file, a new one
+    /// in /tmp/jterm named for the command; with one going, it stops.
     pub(super) fn tee(&mut self, id: PaneId, arg: &str) {
-        let arg = arg.trim();
-        if arg.is_empty() {
+        let mut words: Vec<&str> = arg.split_whitespace().collect();
+        let all = words.iter().any(|w| *w == "--all");
+        words.retain(|w| *w != "--all");
+        let file = words.join(" ");
+        if file.is_empty() && !all && self.panes.get(&id).is_some_and(|p| p.tee.is_some()) {
             return self.stop_tee(id);
         }
+        let running = self.panes.get(&id).is_some_and(|p| !p.shell.at_prompt);
         let cwd = self.panes.get(&id).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
-        let path = persist::expand(arg);
-        let path = if path.is_absolute() { path } else { cwd.join(path) };
+        let path = if file.is_empty() {
+            self.tee_file(id)
+        } else {
+            let p = persist::expand(&file);
+            if p.is_absolute() { p } else { cwd.join(p) }
+        };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
         match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
             Ok(file) => {
                 if let Some(p) = self.panes.get_mut(&id) {
-                    p.tee = Some(Tee { path: path.clone(), file, lines: 0, shown_at: Instant::now() });
+                    p.tee = Some(Tee { path: path.clone(), file, lines: 0, shown_at: Instant::now(), all, armed: !all && !running });
                     p.full = true;
                 }
             }
@@ -141,12 +186,27 @@ impl App {
         self.redraw();
     }
 
+    /// A new file for a tee with none named: /tmp/jterm/COMMAND-TIME.log,
+    /// the command as the line has it, its first word.
+    fn tee_file(&self, id: PaneId) -> PathBuf {
+        let word = self
+            .panes
+            .get(&id)
+            .and_then(|p| p.shell.line.clone().or_else(|| p.shell.running.as_ref().map(|r| r.2.clone())))
+            .and_then(|l| l.split_whitespace().next().map(str::to_string))
+            .map(|w| w.rsplit('/').next().unwrap_or(&w).chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect::<String>())
+            .filter(|w| !w.is_empty())
+            .unwrap_or_else(|| "output".into());
+        let stamp = std::process::Command::new("date").arg("+%Y%m%d-%H%M%S").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        std::env::temp_dir().join("jterm").join(format!("{word}-{stamp}.log"))
+    }
+
     pub(super) fn stop_tee(&mut self, id: PaneId) {
         let Some(t) = self.panes.get_mut(&id).and_then(|p| p.tee.take()) else { return };
         if let Some(p) = self.panes.get_mut(&id) {
             p.full = true;
         }
-        self.toast("Tee stopped", &format!("{} lines in {}", t.lines, persist::shorten(&t.path)), None, Some(id));
+        self.toast("Saved", &format!("{} lines · {}", t.lines, persist::shorten(&t.path)), None, Some(id));
         self.full = true;
         self.redraw();
     }
