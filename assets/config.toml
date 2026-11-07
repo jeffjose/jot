@@ -1,0 +1,44 @@
+# jterm: settings.
+#
+# Nothing here is set until you take the # off the front of a line. Each
+# setting is shown with its usual value.
+
+# ---- Look -----------------------------------------------------------
+
+# The size of the terminal's text, in points (Ctrl = and Ctrl - change it
+# for this run).
+# font-size = 14
+
+# Lines kept above the screen, in each pane.
+# scrollback = 40960
+
+# ---- Workspaces -----------------------------------------------------
+#
+# The workspaces jterm starts with when it has none saved. After that it
+# brings back the workspaces as you left them (in
+# ~/.local/state/jterm/session.toml); start it with --fresh to begin
+# from these again.
+#
+# A workspace has a folder its panes start in, and its panes: each the
+# command it runs, "" for your shell. Laid out side by side:
+#
+# [[workspace]]
+# name = "jterm"
+# cwd = "~/scripts/jterm"
+# panes = ["claude", "claude", ""]
+#
+# or one above another, with split = "h":
+#
+# [[workspace]]
+# name = "notes"
+# cwd = "~/notes"
+# panes = ["", ""]
+# split = "h"
+#
+# Any mix of the two is a layout: v for side by side, h for stacked,
+# nested as deep as you like, with each part's share if not equal.
+#
+# [[workspace]]
+# name = "hotshot"
+# cwd = "~/scripts/hotshot"
+# layout = { v = [ { h = ["claude", "claude"] }, "", "" ], sizes = [2, 1, 1] }
