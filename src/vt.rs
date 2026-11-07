@@ -383,6 +383,107 @@ impl Terminal {
     }
 }
 
+/// A search through a terminal's screen and scrollback, as Ctrl F does
+/// it. It borrows the terminal: drop it before the terminal goes.
+pub struct Search {
+    raw: GhosttySearch,
+    term: GhosttyTerminal,
+}
+
+/// A match on screen: its row, and the columns it covers, end included.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Span {
+    pub y: u16,
+    pub x0: u16,
+    pub x1: u16,
+}
+
+impl Terminal {
+    pub fn search(&self) -> Search {
+        let mut raw = null_mut();
+        unsafe { ghostty_search_new(null(), &mut raw, self.raw) };
+        Search { raw, term: self.raw }
+    }
+}
+
+impl Search {
+    /// Searches for `needle`, case aside for ASCII letters, through all of
+    /// what the terminal holds.
+    pub fn set(&mut self, needle: &str) {
+        unsafe {
+            let s = GhosttyString { ptr: needle.as_ptr(), len: needle.len() };
+            ghostty_search_set(self.raw, GHOSTTY_SEARCH_OPT_NEEDLE, &s as *const _ as *const c_void);
+            if !needle.is_empty() {
+                ghostty_search_run(self.raw);
+            }
+        }
+    }
+
+    /// Takes in what the terminal was written since.
+    pub fn update(&mut self) {
+        unsafe { ghostty_search_run(self.raw) };
+    }
+
+    /// The match before (`older`) or after the one picked, scrolling the
+    /// view to it.
+    pub fn step(&mut self, older: bool) -> bool {
+        unsafe { (if older { ghostty_search_select_next(self.raw) } else { ghostty_search_select_prev(self.raw) }) == GHOSTTY_SUCCESS }
+    }
+
+    pub fn total(&self) -> usize {
+        let mut n: usize = 0;
+        unsafe { ghostty_search_get(self.raw, GHOSTTY_SEARCH_DATA_TOTAL_MATCHES, &mut n as *mut usize as *mut c_void) };
+        n
+    }
+
+    /// Which match is picked, counted from the newest.
+    pub fn picked(&self) -> Option<usize> {
+        let mut i: usize = 0;
+        unsafe { (ghostty_search_get(self.raw, GHOSTTY_SEARCH_DATA_SELECTED_INDEX, &mut i as *mut usize as *mut c_void) == GHOSTTY_SUCCESS).then_some(i) }
+    }
+
+    fn spans(&self, sel: &GhosttySelection, rows: u16, cols: u16, out: &mut Vec<Span>) {
+        unsafe {
+            let (mut a, mut b): (GhosttyPointCoordinate, GhosttyPointCoordinate) = (std::mem::zeroed(), std::mem::zeroed());
+            if ghostty_terminal_point_from_grid_ref(self.term, &sel.start, GHOSTTY_POINT_TAG_VIEWPORT, &mut a) != GHOSTTY_SUCCESS
+                || ghostty_terminal_point_from_grid_ref(self.term, &sel.end, GHOSTTY_POINT_TAG_VIEWPORT, &mut b) != GHOSTTY_SUCCESS
+            {
+                return;
+            }
+            for y in a.y..=b.y.min(rows as u32 - 1) {
+                let x0 = if y == a.y { a.x } else { 0 };
+                let x1 = if y == b.y { b.x } else { cols.saturating_sub(1) };
+                out.push(Span { y: y as u16, x0, x1 });
+            }
+        }
+    }
+
+    /// The matches on screen, and of them the one picked.
+    pub fn on_screen(&self, rows: u16, cols: u16) -> (Vec<Span>, Vec<Span>) {
+        let (mut all, mut picked) = (Vec::new(), Vec::new());
+        unsafe {
+            let mut store: Vec<GhosttySelection> = vec![std::mem::zeroed(); 256];
+            let mut buf = GhosttySelectionBuffer { ptr: store.as_mut_ptr(), cap: store.len(), len: 0 };
+            if ghostty_search_get(self.raw, GHOSTTY_SEARCH_DATA_VIEWPORT_MATCHES, &mut buf as *mut _ as *mut c_void) == GHOSTTY_SUCCESS {
+                for sel in &store[..buf.len.min(store.len())] {
+                    self.spans(sel, rows, cols, &mut all);
+                }
+            }
+            let mut sel: GhosttySelection = std::mem::zeroed();
+            if ghostty_search_get(self.raw, GHOSTTY_SEARCH_DATA_SELECTED_MATCH, &mut sel as *mut _ as *mut c_void) == GHOSTTY_SUCCESS {
+                self.spans(&sel, rows, cols, &mut picked);
+            }
+        }
+        (all, picked)
+    }
+}
+
+impl Drop for Search {
+    fn drop(&mut self) {
+        unsafe { ghostty_search_free(self.raw) };
+    }
+}
+
 impl Drop for Terminal {
     fn drop(&mut self) {
         unsafe {

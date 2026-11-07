@@ -28,6 +28,7 @@ use crate::theme::Theme;
 use crate::vt::{self, sys, Cell, Terminal};
 
 mod overlay;
+mod find;
 mod settings;
 
 // Colours from Radix, as the screen setup has them.
@@ -122,6 +123,7 @@ pub struct App {
     palette: Option<crate::palette::Palette>,
     menu: Option<overlay::Menu>,
     settings: Option<settings::Settings>,
+    find: Option<find::Find>,
     /// What was run from the palette lately, the latest first.
     recent: Vec<String>,
     /// Panes closed, the last last, for Ctrl Shift T.
@@ -199,6 +201,7 @@ impl App {
             palette: None,
             menu: None,
             settings: None,
+            find: None,
             recent: Vec::new(),
             closed: Vec::new(),
             copied: (None, None),
@@ -431,6 +434,10 @@ impl App {
     /// Closes a pane, its workspace with it when it was the last; jterm
     /// with the last workspace.
     fn close(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // A search borrows its pane's terminal, so it goes first.
+        if self.find.as_ref().is_some_and(|f| f.pane == id) {
+            self.find = None;
+        }
         self.panes.remove(&id);
         if self.roam == Some(id) {
             self.roam = None;
@@ -525,6 +532,7 @@ impl App {
 
     /// Every pane but the focused one closed: screen's `only`.
     fn only(&mut self) {
+        self.find = None;
         if self.roam_shown {
             return;
         }
@@ -685,6 +693,10 @@ impl App {
             self.open_settings();
             return true;
         }
+        if ctrl && !shift && !alt && code == KeyCode::KeyF {
+            self.open_find();
+            return true;
+        }
         if ctrl && !shift && !alt && code == KeyCode::KeyW {
             self.close_pane(event_loop);
             return true;
@@ -724,6 +736,12 @@ impl App {
         if self.palette.is_some() {
             if event.state == ElementState::Pressed {
                 self.palette_key(&event, event_loop);
+            }
+            return;
+        }
+        if self.find.is_some() && self.palette.is_none() && self.settings.is_none() {
+            if event.state == ElementState::Pressed {
+                self.find_key(&event);
             }
             return;
         }
@@ -796,7 +814,7 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
-        if self.settings_click() || self.overlay_click(button, event_loop) {
+        if self.settings_click() || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
             return;
         }
         let (x, y) = self.pointer;
@@ -835,6 +853,7 @@ impl App {
                     p.term.select_word(cell);
                     self.drag = None;
                     self.copy(true);
+                    self.copy(false);
                 } else {
                     p.term.clear_selection();
                     self.drag = Some(Drag::Select { pane: id, from: cell });
@@ -848,7 +867,7 @@ impl App {
 
     fn mouse_move(&mut self, x: i32, y: i32) {
         self.pointer = (x, y);
-        if self.settings_hover(x, y) || self.overlay_hover(x, y) {
+        if self.find_hover(x, y) || self.settings_hover(x, y) || self.overlay_hover(x, y) {
             if let Some(w) = &self.window {
                 w.set_cursor(CursorIcon::Default);
             }
@@ -896,7 +915,10 @@ impl App {
     fn mouse_release(&mut self) {
         self.settings_release();
         if let Some(Drag::Select { .. }) = self.drag.take() {
+            // What is selected is copied, to the clipboard and to the
+            // selection a middle click pastes.
             self.copy(true);
+            self.copy(false);
         }
     }
 
@@ -931,11 +953,14 @@ impl App {
             v
         };
         let mut any = false;
+        let searched = self.find.as_ref().map(|f| f.pane);
+        let mut search_again = false;
         while let Ok(out) = self.rx.try_recv() {
             match out {
                 Output::Bytes(id, bytes) => {
                     if let Some(p) = self.panes.get_mut(&id) {
                         p.term.write(&bytes);
+                        search_again |= searched == Some(id);
                         if !shown.contains(&id) && !p.activity && p.started.elapsed() > Duration::from_secs(3) {
                             p.activity = true;
                             self.full = true;
@@ -945,6 +970,9 @@ impl App {
                 }
                 Output::Exit(id) => exited.push(id),
             }
+        }
+        if let (true, Some(id)) = (search_again, searched) {
+            self.find_output(id);
         }
         for id in exited {
             if self.panes.contains_key(&id) {
@@ -1030,6 +1058,9 @@ impl App {
         if full && self.config.status_line {
             self.draw_status();
         }
+        if self.find.is_some() && (full || !floating) {
+            self.draw_find();
+        }
         if full {
             self.draw_palette();
             self.draw_menu();
@@ -1043,6 +1074,8 @@ impl App {
         let cap_h = self.caption_h();
         let (sel, tfg) = (self.theme.selection, self.theme.fg);
         let min_contrast = self.config.min_contrast;
+        let (rows, cols) = self.panes.get(&id).map_or((0, 0), |p| (p.rows, p.cols));
+        let (hl_all, hl_pick) = self.find_spans(id, rows, cols);
         let Some(p) = self.panes.get_mut(&id) else { return };
         let full = full || p.full;
         p.full = false;
@@ -1076,7 +1109,7 @@ impl App {
             let line = Rect { x: rect.x, y: top, w: rect.w, h: ch };
             canvas.fill(line, dbg);
             let clip = Rect { x: rect.x, y: top, w: rect.w, h: ch };
-            let colors = |c: &Cell| {
+            let colors = |c: &Cell, x: u16, y: u16| {
                 let (mut fg, mut bg) = (c.fg.unwrap_or(dfg), c.bg.unwrap_or(dbg));
                 if c.flags & vt::INVERSE != 0 {
                     std::mem::swap(&mut fg, &mut bg);
@@ -1087,17 +1120,18 @@ impl App {
                 if c.flags & vt::FAINT != 0 {
                     fg = mix(bg, fg, 150);
                 }
+                let (fg, bg) = App::match_colors(&hl_all, &hl_pick, x, y, fg, bg);
                 (crate::canvas::readable(fg, bg, min_contrast), bg)
             };
             for (x, c) in cells.iter().enumerate() {
-                let (_, bg) = colors(c);
+                let (_, bg) = colors(c, x as u16, y);
                 if bg != dbg {
                     canvas.fill(Rect { x: content.x + x as i32 * cw, y: top, w: cw, h: ch }, bg);
                 }
             }
             for (x, c) in cells.iter().enumerate() {
                 let left = content.x + x as i32 * cw;
-                let (mut fg, bg) = colors(c);
+                let (mut fg, bg) = colors(c, x as u16, y);
                 let on_cursor = cursor.visible && focused && cursor.y == y && cursor.x as usize == x && cursor.style == sys::GHOSTTY_CURSOR_STYLE_BLOCK;
                 if on_cursor {
                     canvas.fill(Rect { x: left, y: top, w: cw, h: ch }, cursor.color.unwrap_or(tfg));

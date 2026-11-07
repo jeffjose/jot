@@ -41,6 +41,7 @@ Keys (screen's, on Alt):
   Alt 1-9, Alt , .     go to a workspace, the one before or after
   Alt Shift n          a new workspace, in this pane's folder
   Alt `                the roaming terminal, shown over any workspace
+  Ctrl f               find in the pane: Enter for the match above, Shift Enter below
   Ctrl k               find a workspace, pane or project folder
   Ctrl p               run a command
   Ctrl ,               settings: theme, text size, captions

@@ -82,6 +82,7 @@ pub struct Settings {
 }
 
 const KEYS: &[(&str, &str)] = &[
+    ("Ctrl F", "Find in the pane; Enter for the match above"),
     ("Ctrl K", "Find a workspace, pane or project folder"),
     ("Ctrl P", "Run a command"),
     ("Ctrl ,", "Settings"),
