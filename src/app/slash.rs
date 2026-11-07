@@ -7,7 +7,7 @@
 use super::settings::Hit;
 use super::*;
 use crate::canvas::on;
-use crate::palette::{self, Action};
+use crate::palette::Action;
 use crate::theme::THEMES;
 
 /// What a slash command does.
@@ -15,16 +15,12 @@ use crate::theme::THEMES;
 pub enum Does {
     /// One of jterm's own, as the palette and the menu run them.
     Act(Action),
-    /// A theme or a project folder: chosen from a list after a
-    /// space.
+    /// A theme, chosen from a list after a space.
     Theme,
-    Cd,
     /// Text put on the command line, not run.
     Insert(String),
     /// A command line typed and run.
     Run(String),
-    /// The date put on the line.
-    Date,
     /// The pane's running job: Ctrl C to it, or killed.
     Stop,
     /// What is running in the pane, and the pane itself.
@@ -60,7 +56,7 @@ impl Command {
 
     /// Whether it takes a word after it, picked from a list.
     fn takes_arg(&self) -> bool {
-        matches!(self.does, Does::Theme | Does::Cd | Does::Tee | Does::Filter | Does::Grep | Does::Rename)
+        matches!(self.does, Does::Theme | Does::Tee | Does::Filter | Does::Grep | Does::Rename)
     }
 }
 
@@ -112,12 +108,10 @@ impl App {
             Command::new("rename", "Rename this workspace", Does::Rename),
             Command::new("clear", "Clear terminal", Does::Act(Action::Clear)),
             Command::new("theme", "Set the color theme", Does::Theme),
-            Command::new("cd", "Go to a project folder", Does::Cd),
             Command::new("edit", "Edit this command in a larger editor", Does::Edit),
             Command::new("tee", "Write this pane's output to a file as well", Does::Tee),
             Command::new("filter", "Show only the running command's lines with some text", Does::Filter),
             Command::new("grep", "Find and light matches, as Ctrl F", Does::Grep),
-            Command::new("date", "Insert today's date", Does::Date),
         ];
         // For a pane's own command line: its running job stopped or killed.
         if self.bar.is_some() {
@@ -148,10 +142,6 @@ impl App {
     fn slash_values(&self, does: &Does) -> Vec<(String, String)> {
         match does {
             Does::Theme => THEMES.iter().map(|t| (t.name.to_lowercase().replace(' ', "-"), String::new())).collect(),
-            Does::Cd => {
-                let roots: Vec<PathBuf> = self.config.projects.iter().map(|p| persist::expand(p)).collect();
-                palette::projects(&roots).into_iter().map(|d| (folder_name(&d), persist::shorten(&d))).collect()
-            }
             _ => Vec::new(),
         }
     }
@@ -206,7 +196,7 @@ impl App {
             .into_iter()
             .filter_map(|c| {
                 let label = if c.takes_arg() { format!("{} …", c.name) } else { c.name.clone() };
-                if mid && !(matches!(c.does, Does::Insert(_) | Does::Date | Does::Edit) && c.name.starts_with(typed)) {
+                if mid && !(matches!(c.does, Does::Insert(_) | Does::Edit) && c.name.starts_with(typed)) {
                     return None;
                 }
                 rank(&c.name, typed).map(|r| (r, Row { label, what: c.what.clone(), kind: kind_of(&c.does) }))
@@ -441,12 +431,6 @@ impl App {
                     self.settings_do(Hit::Theme(i));
                 }
             }
-            Does::Cd => {
-                let roots: Vec<PathBuf> = self.config.projects.iter().map(|p| persist::expand(p)).collect();
-                if let Some(dir) = palette::projects(&roots).into_iter().find(|d| folder_name(d) == arg) {
-                    write(self, format!("cd '{}'\r", dir.display().to_string().replace('\'', "'\\''")).as_bytes());
-                }
-            }
             Does::Insert(text) => self.slash_insert(id, &text),
             Does::Run(cmd) => write(self, format!("{cmd}\r").as_bytes()),
             Does::Stop => self.stop_job(id),
@@ -483,7 +467,6 @@ impl App {
                 self.open_editor_with(id, &text, false);
             }
             Does::Kill => self.kill_job(id),
-            Does::Date => self.slash_insert(id, &date_today()),
         }
         self.redraw();
     }
@@ -568,8 +551,7 @@ fn kind_of(d: &Does) -> &'static str {
     match d {
         Does::Act(_) => "jterm",
         Does::Theme => "setting",
-        Does::Cd => "go",
-        Does::Insert(_) | Does::Date => "insert",
+        Does::Insert(_) => "insert",
         Does::Edit => "edit",
         Does::Tee | Does::Filter => "watch",
         Does::Grep => "find",
@@ -577,9 +559,4 @@ fn kind_of(d: &Does) -> &'static str {
         Does::Run(_) => "run",
         Does::Stop | Does::Kill | Does::Info | Does::Notify | Does::Tree | Does::Ports | Does::Files => "job",
     }
-}
-
-/// Today as YYYY-MM-DD, from the system's clock and zone.
-pub(super) fn date_today() -> String {
-    std::process::Command::new("date").arg("+%F").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
 }

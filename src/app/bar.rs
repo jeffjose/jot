@@ -10,7 +10,6 @@
 use super::slash::Row;
 use super::*;
 use crate::field::TextField;
-use crate::palette;
 
 /// The command line open, for a pane.
 pub struct Bar {
@@ -290,17 +289,9 @@ impl App {
         };
         match c.does {
             Does::Insert(text) => put(self, &text),
-            Does::Date => put(self, &super::slash::date_today()),
             Does::Run(cmd) => {
                 put(self, &cmd);
                 self.bar_submit();
-            }
-            Does::Cd => {
-                let roots: Vec<PathBuf> = self.config.projects.iter().map(|p| persist::expand(p)).collect();
-                if let Some(dir) = palette::projects(&roots).into_iter().find(|d| folder_name(d) == arg) {
-                    put(self, &format!("cd '{}'", dir.display().to_string().replace('\'', "'\\''")));
-                    self.bar_submit();
-                }
             }
             Does::Stop => {
                 self.stop_job(id);
