@@ -29,6 +29,7 @@ use crate::vt::{self, sys, Cell, Terminal};
 
 mod overlay;
 mod find;
+mod links;
 mod settings;
 
 // Colours from Radix, as the screen setup has them.
@@ -62,6 +63,8 @@ pub struct Pane {
     activity: bool,
     /// When it started: what it prints at first, its prompt, is not news.
     started: Instant,
+    /// The characters of each row as last drawn, to find links in.
+    lines: Vec<Vec<char>>,
 }
 
 /// A pane closed, to bring back.
@@ -124,6 +127,8 @@ pub struct App {
     menu: Option<overlay::Menu>,
     settings: Option<settings::Settings>,
     find: Option<find::Find>,
+    /// The link lit under the pointer, with Ctrl held.
+    link: Option<links::Link>,
     /// What was run from the palette lately, the latest first.
     recent: Vec<String>,
     /// Panes closed, the last last, for Ctrl Shift T.
@@ -202,6 +207,7 @@ impl App {
             menu: None,
             settings: None,
             find: None,
+            link: None,
             recent: Vec::new(),
             closed: Vec::new(),
             copied: (None, None),
@@ -261,7 +267,7 @@ impl App {
         let caption = folder_name(&start.cwd);
         self.panes.insert(
             id,
-            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, caption, activity: false, started: Instant::now() },
+            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, caption, activity: false, started: Instant::now(), lines: Vec::new() },
         );
         id
     }
@@ -347,6 +353,7 @@ impl App {
                 p.term.resize(cols, rows, cw as u32, ch as u32);
                 p.pty.resize(cols, rows, ((cols as i32 * cw) as u32, (rows as i32 * ch) as u32));
                 p.cols = cols;
+                p.lines.clear();
                 p.rows = rows;
             }
             p.rect = rect;
@@ -369,12 +376,18 @@ impl App {
     }
 
     fn split(&mut self, dir: Dir) {
+        let at = self.focused().unwrap_or(0);
+        let cwd = self.panes.get(&at).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
+        self.split_with(dir, Start { cmd: String::new(), cwd });
+    }
+
+    /// Splits the pane you are in, the new one running `start`.
+    pub(super) fn split_with(&mut self, dir: Dir, start: Start) {
         if self.roam_shown {
             return;
         }
         let at = self.ws().focus;
-        let cwd = self.panes.get(&at).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
-        let id = self.spawn(Start { cmd: String::new(), cwd });
+        let id = self.spawn(start);
         let ws = self.ws_mut();
         ws.zoom = None;
         ws.root.split(at, id, dir);
@@ -818,6 +831,9 @@ impl App {
             return;
         }
         let (x, y) = self.pointer;
+        if button == MouseButton::Left && self.mods.control_key() && self.open_link() {
+            return;
+        }
         if button == MouseButton::Right {
             if let Some((id, _)) = self.pane_at(x, y) {
                 if !self.roam_shown {
@@ -895,6 +911,10 @@ impl App {
                 }
             }
             None => {
+                self.update_link();
+                if self.link.is_some() {
+                    return;
+                }
                 let g = self.px(3.0);
                 let on_divider = if self.roam_shown {
                     None
@@ -1076,6 +1096,7 @@ impl App {
         let min_contrast = self.config.min_contrast;
         let (rows, cols) = self.panes.get(&id).map_or((0, 0), |p| (p.rows, p.cols));
         let (hl_all, hl_pick) = self.find_spans(id, rows, cols);
+        let (link_sp, link_color) = (self.link_spans(id), self.accent);
         let Some(p) = self.panes.get_mut(&id) else { return };
         let full = full || p.full;
         p.full = false;
@@ -1100,7 +1121,17 @@ impl App {
         let canvas = &mut self.canvas;
         let fonts = &mut self.fonts;
         let damage = &mut self.damage;
+        let cols_n = p.cols as usize;
+        let lines = &mut p.lines;
+        if lines.len() != p.rows as usize {
+            lines.resize(p.rows as usize, Vec::new());
+        }
         p.term.rows(full || dirty == 2, &extra, &mut row, |y, cells: &[Cell]| {
+            // The row's characters, one a column, for finding links in.
+            if let Some(l) = lines.get_mut(y as usize) {
+                l.clear();
+                l.extend(cells.iter().take(cols_n).map(|c| c.text.chars().next().unwrap_or(' ')));
+            }
             let top = content.y + y as i32 * ch;
             if top + ch > content.y + content.h + ch {
                 return;
@@ -1145,7 +1176,9 @@ impl App {
                         }
                     }
                 }
-                if c.underline() {
+                if link_sp.iter().any(|s| s.y == y && (x as u16) >= s.x0 && (x as u16) <= s.x1) {
+                    canvas.fill(Rect { x: left, y: top + ch - (ch / 10).max(2), w: cw, h: (ch / 16).max(1) }, link_color);
+                } else if c.underline() {
                     canvas.fill(Rect { x: left, y: top + ch - (ch / 10).max(2), w: cw, h: (ch / 16).max(1) }, fg);
                 }
                 if c.flags & vt::STRIKE != 0 {
@@ -1343,7 +1376,10 @@ impl ApplicationHandler<()> for App {
                 self.scale = scale_factor as f32;
                 self.set_font_size(self.font_size);
             }
-            WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
+            WindowEvent::ModifiersChanged(m) => {
+                self.mods = m.state();
+                self.update_link();
+            }
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } => self.key(event, event_loop),
             WindowEvent::CursorMoved { position, .. } => self.mouse_move(position.x as i32, position.y as i32),
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => self.mouse_press(button, event_loop),

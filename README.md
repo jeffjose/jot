@@ -47,6 +47,7 @@ jterm --fresh    # the workspaces in the config instead
 | `Alt Shift n` | a new workspace, in this pane's folder |
 | ``Alt ` `` | the roaming terminal |
 | `Ctrl f` | find in the pane, Enter for the match above, Shift Enter below |
+| `Ctrl` click | open a link in the browser, a file in your editor at its line, a folder in a new pane |
 | `Ctrl k` | find a workspace, pane or project folder |
 | `Ctrl p` | run a command |
 | `Ctrl ,` | settings: theme, text size, captions, status line |
