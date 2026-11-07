@@ -19,6 +19,8 @@ ttf-parser = "0.25"
 ab_glyph_rasterizer = "0.1"
 png = "0.18"
 regex = "1"
+wgpu = { version = "30.0.1", default-features = false, features = ["wgsl", "vulkan", "gles", "dx12", "metal"] }
+pollster = "0.4"
 
 [build-dependencies]
 vergen-gitcl = "10.0.3"

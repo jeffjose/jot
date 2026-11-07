@@ -6,6 +6,7 @@ mod canvas;
 mod field;
 mod emoji;
 mod font;
+mod gpu;
 mod keys;
 mod layout;
 mod persist;

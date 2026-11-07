@@ -110,6 +110,9 @@ pub struct App {
     /// Set while a wake is on its way, so a burst of output wakes the
     /// window once.
     woken: Arc<AtomicBool>,
+    /// The GPU the main window is drawn with, when there is one: before
+    /// the window, so that it goes first.
+    gpu: Option<crate::gpu::Gpu>,
     window: Option<Rc<Window>>,
     surface: Option<Surface<Rc<Window>, Rc<Window>>>,
     canvas: Canvas,
@@ -223,6 +226,7 @@ impl App {
             tx,
             rx,
             woken: Arc::new(AtomicBool::new(false)),
+            gpu: None,
             window: None,
             surface: None,
             canvas: Canvas::new(),
@@ -1544,6 +1548,17 @@ impl App {
 
     fn present(&mut self) {
         let damage = std::mem::take(&mut self.damage);
+        if let Some(g) = self.gpu.as_mut() {
+            if g.present(&self.canvas, &damage) {
+                return;
+            }
+            // Not drawn this time: all of it goes up the other way.
+            let whole = Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height };
+            if let (Some(surface), Some(window)) = (self.surface.as_mut(), self.window.as_ref()) {
+                present_frame(surface, window, &self.canvas, vec![whole]);
+            }
+            return;
+        }
         if let (Some(surface), Some(window)) = (self.surface.as_mut(), self.window.as_ref()) {
             present_frame(surface, window, &self.canvas, damage);
         }
@@ -1584,6 +1599,16 @@ impl ApplicationHandler<()> for App {
         if let Some(s) = self.surface.as_mut() {
             let _ = s.resize(NonZeroU32::new(size.width.max(1)).unwrap(), NonZeroU32::new(size.height.max(1)).unwrap());
         }
+        // The GPU, unless the settings say the CPU; the CPU too when there
+        // is no GPU to use.
+        if self.config.renderer != "cpu" {
+            // The window is kept in self.window, and the GPU, declared
+            // before it, goes first.
+            self.gpu = unsafe { crate::gpu::Gpu::new(&window, event_loop.owned_display_handle(), size.width, size.height) };
+        }
+        if crate::debug() {
+            eprintln!("drawn with {}", self.gpu.as_ref().map_or("the CPU".to_string(), |g| format!("the GPU: {}", g.name)));
+        }
         self.window = Some(window);
         self.start();
         self.load_recent();
@@ -1619,6 +1644,9 @@ impl ApplicationHandler<()> for App {
                     let _ = s.resize(NonZeroU32::new(size.width.max(1)).unwrap(), NonZeroU32::new(size.height.max(1)).unwrap());
                 }
                 self.canvas.resize(size.width as i32, size.height as i32);
+                if let Some(g) = self.gpu.as_mut() {
+                    g.resize(size.width, size.height);
+                }
                 self.relayout();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {

@@ -47,6 +47,11 @@
 # A status line along the bottom of the window: host, workspaces, clock.
 # status-line = false
 
+# What puts frames on the screen: "gpu", through Vulkan or OpenGL on
+# NVIDIA, AMD or Intel alike, with the CPU when there is no GPU to use;
+# or "cpu". jterm --debug says which it is using.
+# renderer = "gpu"
+
 # Lines kept above the screen, in each pane.
 # scrollback = 40960
 

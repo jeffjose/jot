@@ -199,6 +199,10 @@ pub struct Config {
     /// as workspaces.
     #[serde(default = "default_projects")]
     pub projects: Vec<String>,
+    /// What puts frames on the screen: "gpu" (with the CPU when there
+    /// is no GPU to use), or "cpu".
+    #[serde(default = "default_renderer")]
+    pub renderer: String,
     /// Patterns looked for in what panes print, and what to do on them.
     #[serde(default, rename = "trigger")]
     pub triggers: Vec<TriggerSpec>,
@@ -245,7 +249,7 @@ fn default_projects() -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), status_line: false, captions: true, ligatures: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), status_line: false, captions: true, ligatures: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), workspaces: Vec::new() }
     }
 }
 
@@ -408,6 +412,10 @@ pub struct TriggerSpec {
     pub action: String,
     #[serde(default)]
     pub command: Option<String>,
+}
+
+fn default_renderer() -> String {
+    "gpu".into()
 }
 
 fn default_action() -> String {
