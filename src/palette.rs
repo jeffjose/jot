@@ -162,8 +162,8 @@ pub fn score(name: &str, query: &str, loose: bool) -> Option<i32> {
 /// typed, those run lately first and the rest in their order.
 pub fn matching(all: Vec<Item>, typed: &str, recent: &[String]) -> Vec<Item> {
     let (query, filter): (&str, Box<dyn Fn(&Item) -> bool>) = match typed.chars().next() {
-        Some('>') => (&typed[1..], Box::new(|i: &Item| !matches!(i.action, Action::GoTo(_) | Action::Open(_) | Action::Pane(..)))),
-        Some('@') => (&typed[1..], Box::new(|i: &Item| matches!(i.action, Action::GoTo(_)))),
+        Some('>') => (typed[1..].trim_start(), Box::new(|i: &Item| !matches!(i.action, Action::GoTo(_) | Action::Open(_) | Action::Pane(..)))),
+        Some('@') => (typed[1..].trim_start(), Box::new(|i: &Item| matches!(i.action, Action::GoTo(_)))),
         // Plain words find places: workspaces, panes, project folders.
         _ => (typed, Box::new(|i: &Item| matches!(i.action, Action::GoTo(_) | Action::Open(_) | Action::Pane(..)))),
     };

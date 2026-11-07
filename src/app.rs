@@ -986,7 +986,7 @@ impl App {
             return true;
         }
         if ctrl && !shift && !alt && code == KeyCode::KeyP {
-            self.open_palette_with(">");
+            self.open_palette_with("> ");
             return true;
         }
         if ctrl && !shift && !alt && code == KeyCode::Comma {
