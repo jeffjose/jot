@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::process::Command;
 
 use fontdue::{Font, FontSettings};
+use swash::scale::{Render, ScaleContext, Source};
+use swash::zeno::Format;
 
 const FIRA: &[u8] = include_bytes!("../assets/FiraCode-Medium.ttf");
 const FIRA_BOLD: &[u8] = include_bytes!("../assets/FiraCode-Bold.ttf");
@@ -27,6 +29,9 @@ pub struct Choice {
     pub ui_size: f32,
     /// Joined characters, as Fira Code draws => and !=.
     pub ligatures: bool,
+    /// Bold text in the font's bold; else in its usual weight, as VS Code
+    /// draws it with a family that has no bold, like Fira Code Medium.
+    pub bold: bool,
     /// The height of a line, as a share of the font's own.
     pub line_height: f32,
 }
@@ -51,7 +56,7 @@ pub struct Fonts {
     regular: Face,
     bold: Face,
     /// Fonts found for characters the terminal's font lacks, by file.
-    fallback: Vec<Font>,
+    fallback: Vec<Face>,
     fallback_files: HashMap<String, usize>,
     /// Which font has each character: None for the terminal's own, else
     /// a fallback; a character no font has is drawn with its blank.
@@ -63,15 +68,14 @@ pub struct Fonts {
     /// Runs of text shaped, by text and boldness: a glyph a character.
     shaped: [HashMap<String, Option<Vec<u16>>>; 2],
     pub ligatures: bool,
+    /// Rasterizes the terminal's glyphs, hinted: outlines snapped to the
+    /// pixel grid up and down, as FreeType's light hinting does.
+    scaler: ScaleContext,
     /// The interface: its text, headings, and the smaller words under
     /// a setting.
     pub ui: UiFont,
     pub heading: UiFont,
     pub small: UiFont,
-}
-
-fn load(bytes: &[u8]) -> Font {
-    Font::from_bytes(bytes, FontSettings::default()).expect("bundled font")
 }
 
 /// The file fontconfig has for `family` in a weight, if it has that family
@@ -102,10 +106,38 @@ impl Face {
         let font = Font::from_bytes(bytes.as_slice(), FontSettings { collection_index: index, ..FontSettings::default() }).ok()?;
         Some(Face { font, bytes, index })
     }
+
+    /// A glyph by number, hinted, as coverage: where its box starts right
+    /// of the pen and above the baseline.
+    fn raster(&self, ctx: &mut ScaleContext, id: u16, px: f32) -> Raster {
+        let image = swash::FontRef::from_index(&self.bytes, self.index as usize).and_then(|font| {
+            let mut scaler = ctx.builder(font).size(px).hint(true).build();
+            Render::new(&[Source::Outline]).format(Format::Alpha).render(&mut scaler, id)
+        });
+        match image {
+            Some(img) => Raster { left: img.placement.left, top: img.placement.top, width: img.placement.width as usize, height: img.placement.height as usize, coverage: img.data },
+            None => Raster { left: 0, top: 0, width: 0, height: 0, coverage: Vec::new() },
+        }
+    }
+}
+
+/// A glyph's coverage as rasterized, before it is placed in a cell.
+struct Raster {
+    left: i32,
+    /// From the baseline up to the top of its box.
+    top: i32,
+    width: usize,
+    height: usize,
+    coverage: Vec<u8>,
 }
 
 /// The terminal's font, regular and bold.
-fn terminal_font(family: &str) -> (Face, Face) {
+fn terminal_font(family: &str, with_bold: bool) -> (Face, Face) {
+    if !with_bold {
+        let (regular, _) = terminal_font(family, true);
+        let again = Face::new(regular.bytes.clone(), regular.index).unwrap();
+        return (regular, again);
+    }
     if !family.eq_ignore_ascii_case(TERMINAL_DEFAULT) {
         if let Some(regular) = find(family, "medium").or_else(|| find(family, "regular")) {
             let bold = find(family, "bold").unwrap_or_else(|| find(family, "regular").unwrap_or_else(|| Face::new(FIRA.to_vec(), 0).unwrap()));
@@ -115,13 +147,13 @@ fn terminal_font(family: &str) -> (Face, Face) {
     (Face::new(FIRA.to_vec(), 0).unwrap(), Face::new(FIRA_BOLD.to_vec(), 0).unwrap())
 }
 
-fn interface_font(family: &str) -> Font {
+fn interface_font(family: &str) -> Face {
     if !family.eq_ignore_ascii_case(INTERFACE_DEFAULT) {
-        if let Some(f) = find(family, "medium").or_else(|| find(family, "regular")).map(|f| f.font) {
+        if let Some(f) = find(family, "medium").or_else(|| find(family, "regular")) {
             return f;
         }
     }
-    load(GEIST)
+    Face::new(GEIST.to_vec(), 0).unwrap()
 }
 
 /// The font families installed, by name, each once, A to Z: only those
@@ -144,7 +176,7 @@ impl Fonts {
     pub fn new(choice: &Choice, scale: f32) -> Fonts {
         let px = choice.size * scale;
         let ui_px = choice.ui_size * scale;
-        let (regular, bold) = terminal_font(&choice.family);
+        let (regular, bold) = terminal_font(&choice.family, choice.bold);
         let m = regular.font.horizontal_line_metrics(px).expect("line metrics");
         let cell_w = regular.font.metrics('M', px).advance_width.round().max(1.0) as i32;
         let natural = m.ascent - m.descent + m.line_gap;
@@ -166,9 +198,10 @@ impl Fonts {
             by_id: HashMap::new(),
             shaped: [HashMap::new(), HashMap::new()],
             ligatures: choice.ligatures,
-            heading: UiFont::new(ui.clone(), ui_px * 1.3),
-            small: UiFont::new(ui.clone(), ui_px * 0.88),
-            ui: UiFont::new(ui, ui_px),
+            scaler: ScaleContext::new(),
+            heading: UiFont::new(&ui, ui_px * 1.3),
+            small: UiFont::new(&ui, ui_px * 0.88),
+            ui: UiFont::new(&ui, ui_px),
         }
     }
 
@@ -187,13 +220,13 @@ impl Fonts {
         let out = Command::new("fc-match").args(["-f", "%{file}", &pattern]).output().ok()?;
         let file = String::from_utf8(out.stdout).ok()?;
         if let Some(&i) = self.fallback_files.get(&file) {
-            return (self.fallback[i].lookup_glyph_index(c) != 0).then_some(i);
+            return (self.fallback[i].font.lookup_glyph_index(c) != 0).then_some(i);
         }
-        let font = Font::from_bytes(std::fs::read(&file).ok()?, FontSettings::default()).ok()?;
+        let font = Face::new(std::fs::read(&file).ok()?, 0)?;
         let i = self.fallback.len();
         self.fallback.push(font);
         self.fallback_files.insert(file, i);
-        (self.fallback[i].lookup_glyph_index(c) != 0).then_some(i)
+        (self.fallback[i].font.lookup_glyph_index(c) != 0).then_some(i)
     }
 
     /// A character's glyph in a style: 1 bold, 2 italic, 4 an emoji in one
@@ -217,13 +250,13 @@ impl Fonts {
                 Some(g) => g,
                 None => {
                     let which = self.font_for(c);
-                    let font = match which {
+                    let face = match which {
                         Some(i) => &self.fallback[i],
-                        None if style & 1 != 0 => &self.bold.font,
-                        None => &self.regular.font,
+                        None if style & 1 != 0 => &self.bold,
+                        None => &self.regular,
                     };
-                    let (m, coverage) = font.rasterize(c, self.px);
-                    self.place(m, coverage, style)
+                    let r = face.raster(&mut self.scaler, face.font.lookup_glyph_index(c), self.px);
+                    self.place(r, style)
                 }
             };
             self.cache.insert((c, style), g);
@@ -234,9 +267,9 @@ impl Fonts {
     /// A glyph by its number in the terminal's font, as a ligature makes.
     pub fn glyph_id(&mut self, id: u16, style: u8) -> &Glyph {
         if !self.by_id.contains_key(&(id, style)) {
-            let font = if style & 1 != 0 { &self.bold.font } else { &self.regular.font };
-            let (m, coverage) = font.rasterize_indexed(id, self.px);
-            let g = self.place(m, coverage, style);
+            let face = if style & 1 != 0 { &self.bold } else { &self.regular };
+            let r = face.raster(&mut self.scaler, id, self.px);
+            let g = self.place(r, style);
             self.by_id.insert((id, style), g);
         }
         &self.by_id[&(id, style)]
@@ -244,23 +277,23 @@ impl Fonts {
 
     /// A glyph placed in its cell; slanted when italic, there being no
     /// italic face: each row shifted right the higher it is.
-    fn place(&self, m: fontdue::Metrics, coverage: Vec<u8>, style: u8) -> Glyph {
-        let top = self.baseline - (m.height as i32 + m.ymin);
-        if style & 2 == 0 || m.width == 0 {
-            return Glyph { left: m.xmin, top, width: m.width, height: m.height, coverage, color: None };
+    fn place(&self, r: Raster, style: u8) -> Glyph {
+        let top = self.baseline - r.top;
+        if style & 2 == 0 || r.width == 0 {
+            return Glyph { left: r.left, top, width: r.width, height: r.height, coverage: r.coverage, color: None };
         }
         let slant = 0.2;
-        let extra = (m.height as f32 * slant).ceil() as usize;
-        let w = m.width + extra;
-        let mut out = vec![0u8; w * m.height];
+        let extra = (r.height as f32 * slant).ceil() as usize;
+        let w = r.width + extra;
+        let mut out = vec![0u8; w * r.height];
         // The shift is measured from the baseline, so the glyph leans
         // about where it stands.
-        let base = (m.height as i32 + m.ymin) as f32;
-        for y in 0..m.height {
+        let base = r.top as f32;
+        for y in 0..r.height {
             let shift = ((base - y as f32) * slant).max(0.0);
             let (whole, frac) = (shift.floor() as usize, shift.fract());
-            for x in 0..m.width {
-                let v = coverage[y * m.width + x] as f32;
+            for x in 0..r.width {
+                let v = r.coverage[y * r.width + x] as f32;
                 let at = x + whole;
                 if at < w {
                     out[y * w + at] = (out[y * w + at] as f32 + v * (1.0 - frac)).min(255.0) as u8;
@@ -270,7 +303,7 @@ impl Fonts {
                 }
             }
         }
-        Glyph { left: m.xmin, top, width: w, height: m.height, coverage: out, color: None }
+        Glyph { left: r.left, top, width: w, height: r.height, coverage: out, color: None }
     }
 
     /// The glyph numbers for a run of text as the font's ligatures draw
@@ -308,7 +341,8 @@ impl Fonts {
 
 /// An interface font at one size, for jterm's own words.
 pub struct UiFont {
-    font: Font,
+    face: Face,
+    scaler: ScaleContext,
     pub px: f32,
     pub ascent: i32,
     pub height: i32,
@@ -316,14 +350,26 @@ pub struct UiFont {
 }
 
 impl UiFont {
-    fn new(font: Font, px: f32) -> UiFont {
-        let m = font.horizontal_line_metrics(px).expect("line metrics");
-        UiFont { font, px, ascent: m.ascent.round() as i32, height: (m.ascent - m.descent).ceil() as i32, cache: HashMap::new() }
+    fn new(face: &Face, px: f32) -> UiFont {
+        let face = Face::new(face.bytes.clone(), face.index).expect("interface font");
+        let m = face.font.horizontal_line_metrics(px).expect("line metrics");
+        // The ascent on a whole pixel, as hinting puts the tops of letters.
+        UiFont { face, scaler: ScaleContext::new(), px, ascent: m.ascent.round() as i32, height: (m.ascent - m.descent).ceil() as i32, cache: HashMap::new() }
     }
 
+    /// A character's coverage, hinted as the terminal's are, with the
+    /// font's own advance so words keep their width.
     pub fn glyph(&mut self, c: char) -> &(fontdue::Metrics, Vec<u8>) {
-        let (font, px) = (&self.font, self.px);
-        self.cache.entry(c).or_insert_with(|| font.rasterize(c, px))
+        if !self.cache.contains_key(&c) {
+            let mut m = self.face.font.metrics(c, self.px);
+            let r = self.face.raster(&mut self.scaler, self.face.font.lookup_glyph_index(c), self.px);
+            m.xmin = r.left;
+            m.width = r.width;
+            m.height = r.height;
+            m.ymin = r.top - r.height as i32;
+            self.cache.insert(c, (m, r.coverage));
+        }
+        &self.cache[&c]
     }
 
     pub fn width(&mut self, text: &str) -> i32 {

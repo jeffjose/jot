@@ -213,6 +213,11 @@ impl Canvas {
     #[allow(clippy::too_many_arguments)]
     fn coverage(&mut self, cov: &[u8], w: usize, h: usize, x: i32, y: i32, color: u32, clip: Rect) {
         let (cx0, cy0, cx1, cy1) = self.bounds(clip);
+        // Blended as sRGB, as browsers and editors blend text; light text
+        // has its edges filled a little more, as Skia does, so that on a
+        // dark ground it is not thinner than the same text dark on light.
+        let (lift, text_l) = (text_lift(), luminance(color));
+        let mut ground = (u32::MAX, false);
         for gy in 0..h as i32 {
             let py = y + gy;
             if py < cy0 || py >= cy1 {
@@ -224,10 +229,20 @@ impl Canvas {
                 if px < cx0 || px >= cx1 {
                     continue;
                 }
-                let a = cov[(gy * w as i32 + gx) as usize] as u32;
+                let mut a = cov[(gy * w as i32 + gx) as usize] as u32;
                 if a > 0 {
                     let p = &mut self.pixels[row + px as usize];
-                    *p = blend_linear(*p, color, a);
+                    if a < 255 {
+                        // Whether the text is lighter than its ground, kept
+                        // while the ground stays the same color.
+                        if ground.0 != *p {
+                            ground = (*p, text_l > luminance(*p));
+                        }
+                        if ground.1 {
+                            a = lift[a as usize] as u32;
+                        }
+                    }
+                    *p = blend(*p, color, a);
                 }
             }
         }
@@ -280,18 +295,6 @@ fn tables() -> &'static ([u16; 256], [u8; 4096]) {
     })
 }
 
-/// `src` laid over `dst` at coverage `a`, mixed in linear light.
-fn blend_linear(dst: u32, src: u32, a: u32) -> u32 {
-    if a >= 255 {
-        return src;
-    }
-    let (lin, srgb) = tables();
-    let ch = |shift: u32| {
-        let (s, d) = (lin[(src >> shift & 0xff) as usize] as u32, lin[(dst >> shift & 0xff) as usize] as u32);
-        (srgb[((s * a + d * (255 - a)) / 255) as usize] as u32) << shift
-    };
-    ch(16) | ch(8) | ch(0)
-}
 
 /// How light a color is to the eye, 0 to 1, as WCAG reckons it.
 fn luminance(c: u32) -> f32 {
@@ -324,3 +327,15 @@ pub fn readable(fg: u32, bg: u32, min: f32) -> u32 {
     }
     toward
 }
+
+/// Coverage for light text: partly covered pixels taken further on, as
+/// a gamma of TEXT_LIFT would.
+fn text_lift() -> &'static [u8; 256] {
+    static T: std::sync::OnceLock<[u8; 256]> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let g = std::env::var("JTERM_TEXT_LIFT").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(TEXT_LIFT);
+        std::array::from_fn(|i| ((i as f64 / 255.0).powf(1.0 / g) * 255.0).round() as u8)
+    })
+}
+
+const TEXT_LIFT: f64 = 1.3;

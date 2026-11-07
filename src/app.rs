@@ -247,7 +247,7 @@ impl App {
         let theme = Theme::by_name(&config.theme);
         let accent = crate::theme::accent(&config.accent);
         App {
-            fonts: Fonts::new(&crate::font::Choice { family: config.font_family.clone(), size: font_size, ui_family: config.ui_font_family.clone(), ui_size: config.ui_font_size, line_height: config.line_height, ligatures: config.ligatures }, 1.0),
+            fonts: Fonts::new(&crate::font::Choice { family: config.font_family.clone(), size: font_size, ui_family: config.ui_font_family.clone(), ui_size: config.ui_font_size, line_height: config.line_height, ligatures: config.ligatures, bold: config.bold_text }, 1.0),
             font_size,
             config,
             proxy,
@@ -701,7 +701,7 @@ impl App {
     }
 
     fn font_choice(&self) -> crate::font::Choice {
-        crate::font::Choice { family: self.config.font_family.clone(), size: self.font_size, ui_family: self.config.ui_font_family.clone(), ui_size: self.config.ui_font_size, line_height: self.config.line_height, ligatures: self.config.ligatures }
+        crate::font::Choice { family: self.config.font_family.clone(), size: self.font_size, ui_family: self.config.ui_font_family.clone(), ui_size: self.config.ui_font_size, line_height: self.config.line_height, ligatures: self.config.ligatures, bold: self.config.bold_text }
     }
 
     /// Every pane drawn again in full, after a setting of how they look

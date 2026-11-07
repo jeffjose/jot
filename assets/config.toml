@@ -44,6 +44,10 @@
 # Characters joined as the font draws them: => and != in Fira Code.
 # ligatures = true
 
+# Bold text in the font's bold; off draws it in the usual weight, as
+# VS Code draws Fira Code Medium. Bold still takes the bright colors.
+# bold-text = false
+
 # A bar beside each command and its output, green or red by how it
 # ended, with its time when it failed or was slow (shell integration).
 # command-bars = false

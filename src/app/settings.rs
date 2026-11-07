@@ -31,9 +31,10 @@ pub enum Key {
     Ligatures,
     CommandBars,
     WsColors,
+    Bold,
 }
 
-const ALL_KEYS: [Key; 13] = [Key::WsColors, Key::CommandBars, Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine];
+const ALL_KEYS: [Key; 14] = [Key::Bold, Key::WsColors, Key::CommandBars, Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
@@ -157,6 +158,7 @@ fn config_key(key: Key) -> &'static str {
         Key::Ligatures => "ligatures",
         Key::CommandBars => "command-bars",
         Key::WsColors => "workspace-colors",
+        Key::Bold => "bold-text",
     }
 }
 
@@ -195,6 +197,7 @@ impl App {
             Key::Ligatures => !c.ligatures,
             Key::CommandBars => c.command_bars,
             Key::WsColors => !c.workspace_colors,
+            Key::Bold => c.bold_text,
         }
     }
 
@@ -257,6 +260,10 @@ impl App {
                 self.relayout();
             }
             Key::WsTheme => {}
+            Key::Bold => {
+                self.config.bold_text = false;
+                self.reload_fonts();
+            }
             Key::WsColors => {
                 self.config.workspace_colors = true;
                 self.retint();
@@ -325,6 +332,10 @@ impl App {
                         self.config.captions = !self.config.captions;
                         self.config.captions
                     }
+                    Key::Bold => {
+                        self.config.bold_text = !self.config.bold_text;
+                        self.config.bold_text
+                    }
                     Key::WsColors => {
                         self.config.workspace_colors = !self.config.workspace_colors;
                         self.config.workspace_colors
@@ -349,7 +360,7 @@ impl App {
                 if key == Key::CommandBars {
                     self.refresh_panes();
                 }
-                if key == Key::Ligatures {
+                if key == Key::Ligatures || key == Key::Bold {
                     self.reload_fonts();
                 }
                 self.relayout();
@@ -731,6 +742,7 @@ impl App {
         let (ws_given, ws_colors) = (self.ws_accents(), self.config.workspace_colors);
         let min_contrast = self.config.min_contrast;
         let ligatures = self.config.ligatures;
+        let bold_text = self.config.bold_text;
         let command_bars = self.config.command_bars;
         let version = crate::version();
         let canvas_h = self.canvas.height;
@@ -1073,11 +1085,12 @@ impl App {
         // ---- Fonts ----
         heading(canvas, fonts, &mut y, &mut tops, "Fonts");
         let field_w = px(260.0).min(body.w / 2);
-        let rows: [(&str, &str, Key); 6] = [
+        let rows: [(&str, &str, Key); 7] = [
             ("Terminal font", "For the panes. Only fonts whose letters are all one width.", Key::Family),
             ("Terminal font size", "In points. Ctrl = and Ctrl - change it too.", Key::Size),
             ("Line height", "Room between lines, as a share of the font's own. VS Code's is 1.10.", Key::LineHeight),
             ("Ligatures", "Characters joined as the font draws them: => and != in Fira Code.", Key::Ligatures),
+            ("Bold text", "In the font's bold. Off keeps one weight, as VS Code does with Fira Code Medium.", Key::Bold),
             ("Interface font", "For jterm's own words: captions, menus, these settings.", Key::UiFamily),
             ("Interface font size", "In points.", Key::UiSize),
         ];
@@ -1100,12 +1113,13 @@ impl App {
                 }
                 Key::Size => stepper(canvas, fonts, &mut page, mid, key, &format!("{size}")),
                 Key::LineHeight => stepper(canvas, fonts, &mut page, mid, key, &format!("{line_height:.2}")),
-                Key::Ligatures => {
+                Key::Ligatures | Key::Bold => {
+                    let on = if key == Key::Bold { bold_text } else { ligatures };
                     let (sw, sh) = (px(40.0), px(22.0));
                     let pill = Rect { x: right - sw, y: mid - sh / 2, w: sw, h: sh };
-                    canvas.round_fill(pill, sh / 2, if ligatures { accent } else { c.hover }, 255);
+                    canvas.round_fill(pill, sh / 2, if on { accent } else { c.hover }, 255);
                     let k = sh - px(6.0);
-                    let kx = if ligatures { pill.x + sw - k - px(3.0) } else { pill.x + px(3.0) };
+                    let kx = if on { pill.x + sw - k - px(3.0) } else { pill.x + px(3.0) };
                     canvas.round_fill(Rect { x: kx, y: pill.y + px(3.0), w: k, h: k }, k / 2, 0xFFFFFF, 255);
                     page.push((Rect { x: pill.x - px(4.0), y: pill.y - px(4.0), w: sw + px(8.0), h: sh + px(8.0) }, Hit::Toggle(key)));
                 }

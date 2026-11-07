@@ -77,6 +77,9 @@ pub struct Terminal {
     event: GhosttyKeyEvent,
     /// Kept boxed so its address, handed to libghostty, holds still.
     hooks: Box<Hooks>,
+    /// Bold text in the first eight colors drawn in their bright
+    /// eight, as xterm and VS Code draw it.
+    pub bold_bright: bool,
 }
 
 /// What the terminal hands back through libghostty's callbacks: replies to
@@ -139,7 +142,7 @@ impl Terminal {
             ghostty_key_encoder_new(null(), &mut encoder);
             let mut event = null_mut();
             ghostty_key_event_new(null(), &mut event);
-            let mut term = Terminal { raw, render, rows: row_iter, cells, encoder, event, hooks: Box::new(Hooks { reply, events: Vec::new() }) };
+            let mut term = Terminal { raw, render, rows: row_iter, cells, encoder, event, hooks: Box::new(Hooks { reply, events: Vec::new() }), bold_bright: true };
             let user: *mut Hooks = &mut *term.hooks;
             ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_USERDATA, user as *const c_void);
             let sp: GhosttyTerminalSemanticPromptFn = Some(on_semantic_prompt);
@@ -326,6 +329,12 @@ impl Terminal {
             ghostty_render_state_get(self.render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &mut self.rows as *mut _ as *mut c_void);
             let mut y: u16 = 0;
             let mut codepoints = [0u32; 16];
+            let palette = self.bold_bright.then(|| {
+                let mut colors: GhosttyRenderStateColors = std::mem::zeroed();
+                colors.size = std::mem::size_of::<GhosttyRenderStateColors>();
+                ghostty_render_state_get(self.render, GHOSTTY_RENDER_STATE_DATA_COLORS, &mut colors as *mut _ as *mut c_void);
+                colors.palette
+            });
             while ghostty_render_state_row_iterator_next(self.rows) {
                 let mut dirty = false;
                 ghostty_render_state_row_get(self.rows, GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY, &mut dirty as *mut bool as *mut c_void);
@@ -350,6 +359,14 @@ impl Terminal {
                             let mut c = GhosttyColorRgb { r: 0, g: 0, b: 0 };
                             if ghostty_render_state_row_cells_get(self.cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR, &mut c as *mut _ as *mut c_void) == GHOSTTY_SUCCESS {
                                 cell.fg = Some(rgb(c));
+                            }
+                            if let Some(p) = &palette {
+                                if style.flags & BOLD != 0 && style.fg_color.tag == GHOSTTY_STYLE_COLOR_PALETTE as u8 {
+                                    let i = style.fg_color.value.palette as usize;
+                                    if i < 8 {
+                                        cell.fg = Some(rgb(p[i + 8]));
+                                    }
+                                }
                             }
                             if ghostty_render_state_row_cells_get(self.cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &mut c as *mut _ as *mut c_void) == GHOSTTY_SUCCESS {
                                 cell.bg = Some(rgb(c));
