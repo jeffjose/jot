@@ -29,6 +29,11 @@
 # ui-font-family = "Geist"
 # ui-font-size = 13
 
+# Text is made darker or lighter until it has this much contrast with
+# its ground, as VS Code's terminal does (its 4.5), so a prompt made for
+# a dark theme can still be read on a light one. 1 leaves colours alone.
+# min-contrast = 4.5
+
 # The height of a line, as a share of the font's own: 1.1 is VS Code's.
 # line-height = 1.1
 

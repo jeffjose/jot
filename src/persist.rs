@@ -174,6 +174,10 @@ pub struct Config {
     #[serde(default = "default_ui_font_family")]
     pub ui_font_family: String,
     /// The height of a line, as a share of the font's own: 1.1 is VS Code's.
+    /// Text is made darker or lighter until it has this much contrast
+    /// with its ground, as VS Code's terminal does; 1 leaves it as it is.
+    #[serde(default = "default_min_contrast")]
+    pub min_contrast: f32,
     #[serde(default = "default_line_height")]
     pub line_height: f32,
     #[serde(default = "default_ui_font_size")]
@@ -203,6 +207,10 @@ pub fn default_ui_font_family() -> String {
     crate::font::INTERFACE_DEFAULT.into()
 }
 
+pub fn default_min_contrast() -> f32 {
+    4.5
+}
+
 pub fn default_line_height() -> f32 {
     1.1
 }
@@ -221,7 +229,7 @@ fn default_projects() -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), status_line: false, captions: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), projects: default_projects(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), status_line: false, captions: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), workspaces: Vec::new() }
     }
 }
 

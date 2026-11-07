@@ -32,10 +32,11 @@ jterm: a terminal with splits and workspaces
 Keys (screen's, on Alt):
   Alt s / Alt v        split: one above another / side by side
   Alt h j k l          move to the pane left, down, up, right
-  Alt x                close the pane
+  Ctrl t               a new pane beside this one
+  Ctrl w, Alt x        close the pane
+  Ctrl Shift t         bring back the pane closed last
   Alt Shift m          the pane alone, and back
   Alt arrows, Alt =    resize, make all equal
-  Ctrl q               close every pane but this one
   Alt 1-9, Alt , .     go to a workspace, the one before or after
   Alt Shift n          a new workspace, in this pane's folder
   Alt `                the roaming terminal, shown over any workspace

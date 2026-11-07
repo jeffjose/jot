@@ -63,6 +63,14 @@ pub struct Pane {
     started: Instant,
 }
 
+/// A pane closed, to bring back.
+struct Closed {
+    workspace: String,
+    near: Option<(PaneId, Dir, bool)>,
+    cmd: String,
+    cwd: PathBuf,
+}
+
 pub struct Workspace {
     name: String,
     root: Node,
@@ -116,6 +124,8 @@ pub struct App {
     settings: Option<settings::Settings>,
     /// What was run from the palette lately, the latest first.
     recent: Vec<String>,
+    /// Panes closed, the last last, for Ctrl Shift T.
+    closed: Vec<Closed>,
     saved_at: Instant,
     unsaved: bool,
     captions_at: Instant,
@@ -188,6 +198,7 @@ impl App {
             menu: None,
             settings: None,
             recent: Vec::new(),
+            closed: Vec::new(),
             saved_at: Instant::now(),
             unsaved: false,
             captions_at: Instant::now() - Duration::from_secs(10),
@@ -365,6 +376,57 @@ impl App {
         self.changed();
     }
 
+    /// A new pane beside the one you are in, as a new tab is: split along
+    /// its longer side, in its folder.
+    fn new_pane(&mut self) {
+        let Some(p) = self.focused().and_then(|f| self.panes.get(&f)) else { return };
+        let dir = if p.rect.w >= p.rect.h * 2 { Dir::Across } else { Dir::Down };
+        self.split(dir);
+    }
+
+    /// Closes the pane you are in, as Ctrl W closes a tab, remembering
+    /// where it was and what ran in it for Ctrl Shift T.
+    fn close_pane(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(id) = self.focused() else { return };
+        if self.roam != Some(id) {
+            if let (Some(ws), Some(p)) = (self.workspaces.iter().find(|w| w.root.contains(id)), self.panes.get(&id)) {
+                self.closed.push(Closed { workspace: ws.name.clone(), near: ws.root.place_of(id), cmd: p.cmd.clone(), cwd: p.pty.cwd().unwrap_or_else(pty::home) });
+                if self.closed.len() > 20 {
+                    self.closed.remove(0);
+                }
+            }
+        }
+        self.close(id, event_loop);
+    }
+
+    /// The pane closed last, back where it was, its command started
+    /// afresh in its folder, as Ctrl Shift T brings back a tab.
+    fn reopen(&mut self) {
+        let Some(c) = self.closed.pop() else { return };
+        let id = self.spawn(Start { cmd: c.cmd, cwd: c.cwd });
+        let wi = self.workspaces.iter().position(|w| w.name == c.workspace);
+        match wi {
+            Some(wi) => {
+                let ws = &mut self.workspaces[wi];
+                let placed = c.near.is_some_and(|(near, dir, before)| ws.root.split_beside(near, id, dir, before));
+                if !placed {
+                    let at = ws.focus;
+                    ws.root.split(at, id, Dir::Across);
+                }
+                ws.zoom = None;
+                ws.focus = id;
+                self.go_to(wi);
+            }
+            // Its workspace was closed with it: it comes back as one.
+            None => {
+                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None });
+                self.go_to(self.workspaces.len() - 1);
+            }
+        }
+        self.roam_shown = false;
+        self.changed();
+    }
+
     /// Closes a pane, its workspace with it when it was the last; jterm
     /// with the last workspace.
     fn close(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
@@ -378,14 +440,16 @@ impl App {
         }
         let Some(wi) = self.workspaces.iter().position(|w| w.root.contains(id)) else { return };
         let ws = &mut self.workspaces[wi];
+        let beside = ws.root.place_of(id).map(|(near, _, _)| near);
         if ws.root.remove(id) {
             if ws.zoom == Some(id) {
                 ws.zoom = None;
             }
+            // The pane beside the one closed is the one you are in now.
             if ws.focus == id {
                 let mut ids = Vec::new();
                 ws.root.panes(&mut ids);
-                ws.focus = ids[0];
+                ws.focus = beside.filter(|b| ids.contains(b)).unwrap_or(ids[0]);
             }
         } else {
             self.workspaces.remove(wi);
@@ -479,6 +543,16 @@ impl App {
         crate::font::Choice { family: self.config.font_family.clone(), size: self.font_size, ui_family: self.config.ui_font_family.clone(), ui_size: self.config.ui_font_size, line_height: self.config.line_height }
     }
 
+    /// Every pane drawn again in full, after a setting of how they look
+    /// changed.
+    fn refresh_panes(&mut self) {
+        for p in self.panes.values_mut() {
+            p.full = true;
+        }
+        self.full = true;
+        self.redraw();
+    }
+
     /// The fonts made again, after a setting of theirs changed.
     fn reload_fonts(&mut self) {
         self.fonts = Fonts::new(&self.font_choice(), self.scale);
@@ -532,9 +606,7 @@ impl App {
                 (KeyCode::KeyK, false) => self.focus_dir(0, -1),
                 (KeyCode::KeyL, false) => self.focus_dir(1, 0),
                 (KeyCode::KeyX, false) => {
-                    if let Some(id) = self.focused() {
-                        self.close(id, event_loop);
-                    }
+                    self.close_pane(event_loop);
                 }
                 (KeyCode::KeyM, true) => {
                     if !self.roam_shown {
@@ -580,6 +652,7 @@ impl App {
             match code {
                 KeyCode::KeyC => self.copy(false),
                 KeyCode::KeyV => self.paste(false),
+                KeyCode::KeyT => self.reopen(),
                 _ => return false,
             }
             return true;
@@ -596,8 +669,12 @@ impl App {
             self.open_settings();
             return true;
         }
-        if ctrl && !shift && !alt && code == KeyCode::KeyQ {
-            self.only();
+        if ctrl && !shift && !alt && code == KeyCode::KeyW {
+            self.close_pane(event_loop);
+            return true;
+        }
+        if ctrl && !shift && !alt && code == KeyCode::KeyT {
+            self.new_pane();
             return true;
         }
         if ctrl && !alt {
@@ -949,6 +1026,7 @@ impl App {
         let (cw, ch) = (self.fonts.cell_w, self.fonts.cell_h);
         let cap_h = self.caption_h();
         let (sel, tfg) = (self.theme.selection, self.theme.fg);
+        let min_contrast = self.config.min_contrast;
         let Some(p) = self.panes.get_mut(&id) else { return };
         let full = full || p.full;
         p.full = false;
@@ -993,7 +1071,7 @@ impl App {
                 if c.flags & vt::FAINT != 0 {
                     fg = mix(bg, fg, 150);
                 }
-                (fg, bg)
+                (crate::canvas::readable(fg, bg, min_contrast), bg)
             };
             for (x, c) in cells.iter().enumerate() {
                 let (_, bg) = colors(c);

@@ -223,3 +223,35 @@ fn blend_linear(dst: u32, src: u32, a: u32) -> u32 {
     };
     ch(16) | ch(8) | ch(0)
 }
+
+/// How light a colour is to the eye, 0 to 1, as WCAG reckons it.
+fn luminance(c: u32) -> f32 {
+    let (lin, _) = tables();
+    let l = |shift: u32| lin[(c >> shift & 0xff) as usize] as f32 / 4095.0;
+    0.2126 * l(16) + 0.7152 * l(8) + 0.0722 * l(0)
+}
+
+/// The contrast between two colours, 1 to 21.
+pub fn contrast(a: u32, b: u32) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// `fg`, made darker or lighter, away from `bg`, until it has at least
+/// `min` contrast with it, as VS Code's terminal does (its 4.5): bright
+/// yellow on white is still read.
+pub fn readable(fg: u32, bg: u32, min: f32) -> u32 {
+    if min <= 1.0 || contrast(fg, bg) >= min {
+        return fg;
+    }
+    let toward = if luminance(bg) > 0.5 { 0x000000 } else { 0xFFFFFF };
+    let mut share = 16;
+    while share < 256 {
+        let c = blend(fg, toward, share);
+        if contrast(c, bg) >= min {
+            return c;
+        }
+        share += 16;
+    }
+    toward
+}

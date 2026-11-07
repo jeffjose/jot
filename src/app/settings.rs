@@ -1,6 +1,6 @@
 //! Settings, on Ctrl , or from the right-click menu and the palette: a
-//! window over the panes, its sections down the left and one page of
-//! settings on the right that scrolls as a whole. Each setting is a row:
+//! window over the panes, its sections as tabs down the left, each a page
+//! of its own on the right that scrolls when it is long. Each setting is a row:
 //! its name, a line on what it does, its control at the right, and Reset
 //! when it is not as it started. What is changed is seen at once and
 //! written to the config.
@@ -10,14 +10,6 @@ use crate::canvas::{mix, on};
 use crate::font;
 use crate::theme::{ACCENTS, THEMES};
 
-const PANEL: u32 = 0x1F2023;
-const SIDE: u32 = 0x18191B;
-const EDGE: u32 = 0x34363C;
-const FIELD: u32 = 0x2A2C31;
-const FIELD_HOVER: u32 = 0x33363C;
-const TEXT: u32 = 0xEEEEEE;
-const DIM: u32 = 0x9A9DA6;
-const FAINT: u32 = 0x6B6E77;
 
 const SECTIONS: [&str; 4] = ["Appearance", "Fonts", "Keys", "About"];
 
@@ -29,13 +21,14 @@ pub enum Key {
     Family,
     Size,
     LineHeight,
+    Contrast,
     UiFamily,
     UiSize,
     Captions,
     StatusLine,
 }
 
-const ALL_KEYS: [Key; 9] = [Key::Theme, Key::Accent, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine];
+const ALL_KEYS: [Key; 10] = [Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
@@ -78,6 +71,8 @@ pub struct Settings {
     pub view_h: i32,
     /// Where each section starts on the page.
     pub tops: Vec<i32>,
+    /// The page shown: Appearance, Fonts, Keys or About.
+    pub section: usize,
     pub dropdown: Option<Dropdown>,
     /// The scrollbar's thumb being dragged: where from, and the scroll then.
     pub drag: Option<(i32, i32)>,
@@ -93,11 +88,12 @@ const KEYS: &[(&str, &str)] = &[
     ("Alt V", "Split side by side"),
     ("Alt S", "Split one above another"),
     ("Alt H J K L", "Move to the pane left, down, up, right"),
-    ("Alt X", "Close the pane"),
+    ("Ctrl T", "New pane beside this one"),
+    ("Ctrl W  Alt X", "Close the pane"),
+    ("Ctrl Shift T", "Bring back the pane closed last"),
     ("Alt Shift M", "The pane alone, and back"),
     ("Alt Arrows", "Resize the pane"),
     ("Alt =", "Make all panes equal"),
-    ("Ctrl Q", "Close every pane but this one"),
     ("Alt 1–9", "Go to a workspace"),
     ("Alt ,  Alt .", "The workspace before, after"),
     ("Alt Shift N", "New workspace in this pane's folder"),
@@ -115,6 +111,7 @@ fn config_key(key: Key) -> &'static str {
         Key::Family => "font-family",
         Key::Size => "font-size",
         Key::LineHeight => "line-height",
+        Key::Contrast => "min-contrast",
         Key::UiFamily => "ui-font-family",
         Key::UiSize => "ui-font-size",
         Key::Captions => "captions",
@@ -126,7 +123,7 @@ impl App {
     pub(super) fn open_settings(&mut self) {
         self.palette = None;
         self.menu = None;
-        self.settings = Some(Settings { scroll: 0, hover: None, hits: Vec::new(), content_h: 0, view_h: 1, tops: Vec::new(), dropdown: None, drag: None, mono: None, all: None });
+        self.settings = Some(Settings { scroll: 0, hover: None, hits: Vec::new(), content_h: 0, view_h: 1, tops: Vec::new(), section: 0, dropdown: None, drag: None, mono: None, all: None });
         self.full = true;
         self.redraw();
     }
@@ -148,6 +145,7 @@ impl App {
             Key::Family => !c.font_family.eq_ignore_ascii_case(font::TERMINAL_DEFAULT),
             Key::Size => self.font_size != persist::default_font_size(),
             Key::LineHeight => (c.line_height - persist::default_line_height()).abs() > 0.001,
+            Key::Contrast => (c.min_contrast - persist::default_min_contrast()).abs() > 0.001,
             Key::UiFamily => !c.ui_font_family.eq_ignore_ascii_case(font::INTERFACE_DEFAULT),
             Key::UiSize => c.ui_font_size != persist::default_ui_font_size(),
             Key::Captions => !c.captions,
@@ -198,6 +196,10 @@ impl App {
                 self.config.font_size = persist::default_font_size();
                 self.set_font_size(self.config.font_size);
             }
+            Key::Contrast => {
+                self.config.min_contrast = persist::default_min_contrast();
+                self.refresh_panes();
+            }
             Key::LineHeight => {
                 self.config.line_height = persist::default_line_height();
                 self.reload_fonts();
@@ -222,8 +224,9 @@ impl App {
         match hit {
             Hit::Section(i) => {
                 if let Some(s) = &mut self.settings {
-                    let top = s.tops.get(i).copied().unwrap_or(0);
-                    s.scroll = top.clamp(0, (s.content_h - s.view_h).max(0));
+                    s.section = i;
+                    s.scroll = 0;
+                    s.dropdown = None;
                 }
             }
             Hit::Theme(i) => self.set_theme(i),
@@ -248,6 +251,12 @@ impl App {
                 self.set_font_size(self.font_size + by as f32);
                 self.config.font_size = self.font_size;
                 persist::set_config_value("font-size", &format!("{}", self.font_size));
+            }
+            Hit::Step(Key::Contrast, by) => {
+                let v = ((self.config.min_contrast * 2.0).round() + by as f32) / 2.0;
+                self.config.min_contrast = v.clamp(1.0, 21.0);
+                persist::set_config_value("min-contrast", &format!("{:.1}", self.config.min_contrast));
+                self.refresh_panes();
             }
             Hit::Step(Key::LineHeight, by) => {
                 let v = ((self.config.line_height * 20.0).round() + by as f32) / 20.0;
@@ -337,8 +346,9 @@ impl App {
             KeyCode::End => self.scroll_by(1_000_000),
             KeyCode::Tab => {
                 let Some(s) = &self.settings else { return };
-                let now = s.tops.iter().rposition(|&t| t <= s.scroll + 2).unwrap_or(0);
-                let next = if self.mods.shift_key() { now.saturating_sub(1) } else { (now + 1).min(SECTIONS.len() - 1) };
+                let now = s.section;
+                let n = SECTIONS.len();
+                let next = if self.mods.shift_key() { (now + n - 1) % n } else { (now + 1) % n };
                 self.settings_do(Hit::Section(next));
             }
             _ => {}
@@ -442,6 +452,7 @@ impl App {
     }
 
     pub(super) fn draw_settings(&mut self) {
+        let c = self.theme.chrome();
         let Some(mut st) = self.settings.take() else { return };
         let scale = self.scale;
         let px = |v: f32| (v * scale).round() as i32;
@@ -455,23 +466,25 @@ impl App {
         let current_accent = ACCENTS.iter().position(|(_, c)| *c == self.accent);
         let (family, size, ui_family, ui_size, line_height) = (self.config.font_family.clone(), self.font_size, self.config.ui_font_family.clone(), self.config.ui_font_size, self.config.line_height);
         let (captions, status_line) = (self.config.captions, self.config.status_line);
+        let min_contrast = self.config.min_contrast;
         let version = crate::version();
         let canvas_h = self.canvas.height;
         let canvas = &mut self.canvas;
         let fonts = &mut self.fonts;
         let (uh, sh_, hh) = (fonts.ui.height, fonts.small.height, fonts.heading.height);
 
-        canvas.panel(r, px(12.0), PANEL, EDGE);
+        canvas.panel(r, px(12.0), c.panel, c.edge);
 
         // Down the left: the sections, the one in view picked out.
         let side_w = px(210.0).min(r.w / 3);
         let side = Rect { x: r.x + 1, y: r.y + 1, w: side_w, h: r.h - 2 };
-        canvas.round_fill(side, px(11.0), SIDE, 255);
-        canvas.fill(Rect { x: side.x + side.w - px(12.0), y: side.y, w: px(12.0), h: side.h }, SIDE);
-        canvas.fill(Rect { x: side.x + side.w, y: side.y, w: 1, h: side.h }, EDGE);
+        canvas.round_fill(side, px(11.0), c.side, 255);
+        canvas.fill(Rect { x: side.x + side.w - px(12.0), y: side.y, w: px(12.0), h: side.h }, c.side);
+        canvas.fill(Rect { x: side.x + side.w, y: side.y, w: 1, h: side.h }, c.edge);
         let pad = px(20.0);
-        canvas.text(&mut fonts.heading, "Settings", (side.x + pad) as f32, side.y + pad, TEXT, side);
-        let in_view = st.tops.iter().rposition(|&t| t <= st.scroll + px(8.0)).unwrap_or(0);
+        canvas.text(&mut fonts.heading, "Settings", (side.x + pad) as f32, side.y + pad, c.text, side);
+        let in_view = st.section;
+        let section = st.section;
         let nav_h = uh + px(16.0);
         let mut ny = side.y + pad + hh + pad;
         for (i, name) in SECTIONS.iter().enumerate() {
@@ -479,9 +492,9 @@ impl App {
             if i == in_view {
                 canvas.round_fill(row, px(7.0), accent, 255);
             } else if hover == Some(Hit::Section(i)) {
-                canvas.round_fill(row, px(7.0), FIELD, 255);
+                canvas.round_fill(row, px(7.0), c.field, 255);
             }
-            let fg = if i == in_view { on(accent) } else { TEXT };
+            let fg = if i == in_view { on(accent) } else { c.text };
             canvas.text(&mut fonts.ui, name, (row.x + px(12.0)) as f32, row.y + (nav_h - uh) / 2, fg, row);
             hits.push((row, Hit::Section(i)));
             ny += nav_h + px(2.0);
@@ -491,11 +504,11 @@ impl App {
         let cs = px(30.0);
         let close = Rect { x: r.x + r.w - cs - px(12.0), y: r.y + px(12.0), w: cs, h: cs };
         if hover == Some(Hit::Close) {
-            canvas.round_fill(close, cs / 2, FIELD_HOVER, 255);
+            canvas.round_fill(close, cs / 2, c.hover, 255);
         }
         let arm = px(5.0);
         let (cx, cy) = (close.x + cs / 2, close.y + cs / 2);
-        let stroke = if hover == Some(Hit::Close) { TEXT } else { DIM };
+        let stroke = if hover == Some(Hit::Close) { c.text } else { c.dim };
         let dot = px(2.0).max(2);
         for t in -arm..=arm {
             canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy + t - dot / 2, w: dot, h: dot }, dot / 2, stroke, 255);
@@ -513,27 +526,27 @@ impl App {
         let mut page: Vec<(Rect, Hit)> = Vec::new();
         let field_h = uh + px(14.0);
         let row_h = uh + px(4.0) + sh_ + 2 * row_pad;
-        let rule = mix(PANEL, EDGE, 160);
+        let rule = mix(c.panel, c.edge, 160);
         let scroll = st.scroll;
 
         // A heading for each section.
         let heading = |canvas: &mut Canvas, fonts: &mut font::Fonts, y: &mut i32, tops: &mut Vec<i32>, name: &str| {
             tops.push(*y + scroll - view.y - px(16.0));
-            canvas.text(&mut fonts.heading, name, body.x as f32, *y + px(8.0), TEXT, view);
+            canvas.text(&mut fonts.heading, name, body.x as f32, *y + px(8.0), c.text, view);
             *y += hh + px(20.0);
         };
         // A setting's name and what it does, with Reset after the name when
         // it has been changed. Returns the middle of the row, for its control.
         let title = |canvas: &mut Canvas, fonts: &mut font::Fonts, page: &mut Vec<(Rect, Hit)>, y: i32, name: &str, what: &str, key: Key| {
-            let end = canvas.text(&mut fonts.ui, name, body.x as f32, y + row_pad, TEXT, view);
+            let end = canvas.text(&mut fonts.ui, name, body.x as f32, y + row_pad, c.text, view);
             if modified.contains(&key) {
                 let rx = end + px(10.0);
                 let rw = fonts.small.width("Reset");
-                let color = if hover == Some(Hit::Reset(key)) { TEXT } else { accent_text };
+                let color = if hover == Some(Hit::Reset(key)) { c.text } else { accent_text };
                 canvas.text(&mut fonts.small, "Reset", rx as f32, y + row_pad + (uh - sh_) / 2, color, view);
                 page.push((Rect { x: rx - px(4.0), y: y + row_pad - px(2.0), w: rw + px(8.0), h: uh + px(4.0) }, Hit::Reset(key)));
             }
-            canvas.text(&mut fonts.small, what, body.x as f32, y + row_pad + uh + px(4.0), DIM, view);
+            canvas.text(&mut fonts.small, what, body.x as f32, y + row_pad + uh + px(4.0), c.dim, view);
             y + row_h / 2
         };
         let stepper = |canvas: &mut Canvas, fonts: &mut font::Fonts, page: &mut Vec<(Rect, Hit)>, mid: i32, key: Key, value: &str| {
@@ -543,22 +556,24 @@ impl App {
             let minus = Rect { x: plus.x - vw - b, y: plus.y, w: b, h: b };
             for (rect, by, glyph) in [(minus, -1, "−"), (plus, 1, "+")] {
                 let hit = Hit::Step(key, by);
-                canvas.round_fill(rect, px(7.0), if hover == Some(hit) { FIELD_HOVER } else { FIELD }, 255);
-                canvas.ring(rect, px(7.0), 1, EDGE);
+                canvas.round_fill(rect, px(7.0), if hover == Some(hit) { c.hover } else { c.field }, 255);
+                canvas.ring(rect, px(7.0), 1, c.edge);
                 let gw = fonts.ui.width(glyph);
-                canvas.text(&mut fonts.ui, glyph, (rect.x + (b - gw) / 2) as f32, rect.y + (b - uh) / 2, TEXT, rect);
+                canvas.text(&mut fonts.ui, glyph, (rect.x + (b - gw) / 2) as f32, rect.y + (b - uh) / 2, c.text, rect);
                 page.push((rect, hit));
             }
             let w = fonts.ui.width(value);
-            canvas.text(&mut fonts.ui, value, (minus.x + b + (vw - w) / 2) as f32, mid - uh / 2, TEXT, view);
+            canvas.text(&mut fonts.ui, value, (minus.x + b + (vw - w) / 2) as f32, mid - uh / 2, c.text, view);
         };
 
+        // Each section is a page of its own.
+        if section == 0 {
         // ---- Appearance ----
         heading(canvas, fonts, &mut y, &mut tops, "Appearance");
         title(canvas, fonts, &mut page, y, "Color theme", "The terminal's colours, and the panes' around them.", Key::Theme);
         y += row_h - row_pad / 2;
         for dark in [true, false] {
-            canvas.text(&mut fonts.small, if dark { "DARK" } else { "LIGHT" }, body.x as f32, y, FAINT, view);
+            canvas.text(&mut fonts.small, if dark { "DARK" } else { "LIGHT" }, body.x as f32, y, c.faint, view);
             y += sh_ + px(10.0);
             let gap = px(12.0);
             let cols = ((body.w + gap) / (px(180.0) + gap)).max(2);
@@ -587,7 +602,7 @@ impl App {
                 } else if hover == Some(Hit::Theme(*i)) {
                     canvas.ring(card, px(8.0), 1, mix(t.bg, t.fg, 110));
                 } else {
-                    canvas.ring(card, px(8.0), 1, mix(PANEL, EDGE, 200));
+                    canvas.ring(card, px(8.0), 1, mix(c.panel, c.edge, 200));
                 }
                 page.push((card, Hit::Theme(*i)));
             }
@@ -607,9 +622,9 @@ impl App {
                 let dot = Rect { x: body.x + px(4.0) + col * (d + gap), y: y + rowi * (d + gap), w: d, h: d };
                 canvas.round_fill(dot, d / 2, *color, 255);
                 if Some(i) == current_accent {
-                    canvas.ring(Rect { x: dot.x - px(4.0), y: dot.y - px(4.0), w: d + px(8.0), h: d + px(8.0) }, d, px(2.0), TEXT);
+                    canvas.ring(Rect { x: dot.x - px(4.0), y: dot.y - px(4.0), w: d + px(8.0), h: d + px(8.0) }, d, px(2.0), c.text);
                 } else if hover == Some(Hit::Accent(i)) {
-                    canvas.ring(Rect { x: dot.x - px(3.0), y: dot.y - px(3.0), w: d + px(6.0), h: d + px(6.0) }, d, 1, DIM);
+                    canvas.ring(Rect { x: dot.x - px(3.0), y: dot.y - px(3.0), w: d + px(6.0), h: d + px(6.0) }, d, 1, c.dim);
                 }
                 page.push((dot, Hit::Accent(i)));
             }
@@ -618,6 +633,12 @@ impl App {
         }
         canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
 
+        {
+            let mid = title(canvas, fonts, &mut page, y, "Minimum contrast", "Text is made darker or lighter until it can be read on its ground, as in VS Code (4.5). 1 is off.", Key::Contrast);
+            stepper(canvas, fonts, &mut page, mid, Key::Contrast, &format!("{min_contrast:.1}"));
+            y += row_h;
+            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
+        }
         for (name, what, key, value) in [
             ("Captions under panes", "Each pane's title along its bottom, as screen's regions have.", Key::Captions, captions),
             ("Status line", "Workspaces, host and clock along the bottom of the window.", Key::StatusLine, status_line),
@@ -625,7 +646,7 @@ impl App {
             let mid = title(canvas, fonts, &mut page, y, name, what, key);
             let (sw, sh) = (px(40.0), px(22.0));
             let pill = Rect { x: right - sw, y: mid - sh / 2, w: sw, h: sh };
-            canvas.round_fill(pill, sh / 2, if value { accent } else { FIELD_HOVER }, 255);
+            canvas.round_fill(pill, sh / 2, if value { accent } else { c.hover }, 255);
             let k = sh - px(6.0);
             let kx = if value { pill.x + sw - k - px(3.0) } else { pill.x + px(3.0) };
             canvas.round_fill(Rect { x: kx, y: pill.y + px(3.0), w: k, h: k }, k / 2, 0xFFFFFF, 255);
@@ -635,6 +656,8 @@ impl App {
         }
         y += px(32.0);
 
+        }
+        if section == 1 {
         // ---- Fonts ----
         heading(canvas, fonts, &mut y, &mut tops, "Fonts");
         let field_w = px(260.0).min(body.w / 2);
@@ -651,14 +674,14 @@ impl App {
                 Key::Family | Key::UiFamily => {
                     let value = if key == Key::Family { &family } else { &ui_family };
                     let field = Rect { x: right - field_w, y: mid - field_h / 2, w: field_w, h: field_h };
-                    canvas.round_fill(field, px(7.0), if hover == Some(Hit::Open(key)) { FIELD_HOVER } else { FIELD }, 255);
-                    canvas.ring(field, px(7.0), 1, EDGE);
-                    canvas.text_fit(&mut fonts.ui, value, field.x + px(12.0), field.y + (field_h - uh) / 2, field_w - px(44.0), TEXT, field);
+                    canvas.round_fill(field, px(7.0), if hover == Some(Hit::Open(key)) { c.hover } else { c.field }, 255);
+                    canvas.ring(field, px(7.0), 1, c.edge);
+                    canvas.text_fit(&mut fonts.ui, value, field.x + px(12.0), field.y + (field_h - uh) / 2, field_w - px(44.0), c.text, field);
                     // A chevron at its right.
                     let (vx, vy) = (field.x + field.w - px(18.0), mid + px(2.0));
                     for t in 0..px(5.0) {
-                        canvas.fill(Rect { x: vx - t - 1, y: vy - t, w: 2, h: 2 }, DIM);
-                        canvas.fill(Rect { x: vx + t - 1, y: vy - t, w: 2, h: 2 }, DIM);
+                        canvas.fill(Rect { x: vx - t - 1, y: vy - t, w: 2, h: 2 }, c.dim);
+                        canvas.fill(Rect { x: vx + t - 1, y: vy - t, w: 2, h: 2 }, c.dim);
                     }
                     page.push((field, Hit::Open(key)));
                 }
@@ -671,6 +694,8 @@ impl App {
         }
         y += px(32.0);
 
+        }
+        if section == 2 {
         // ---- Keys ----
         heading(canvas, fonts, &mut y, &mut tops, "Keys");
         let key_h = sh_ + px(10.0);
@@ -679,16 +704,18 @@ impl App {
             for cap in keys.split("  ") {
                 let w = fonts.small.width(cap) + px(14.0);
                 let chip = Rect { x: kx, y: y + px(6.0), w, h: key_h };
-                canvas.round_fill(chip, px(5.0), FIELD, 255);
-                canvas.ring(chip, px(5.0), 1, EDGE);
-                canvas.text(&mut fonts.small, cap, (chip.x + px(7.0)) as f32, chip.y + px(5.0), TEXT, view);
+                canvas.round_fill(chip, px(5.0), c.field, 255);
+                canvas.ring(chip, px(5.0), 1, c.edge);
+                canvas.text(&mut fonts.small, cap, (chip.x + px(7.0)) as f32, chip.y + px(5.0), c.text, view);
                 kx += w + px(6.0);
             }
-            canvas.text(&mut fonts.ui, what, (body.x + body.w * 2 / 5) as f32, y + px(6.0) + (key_h - uh) / 2, DIM, view);
+            canvas.text(&mut fonts.ui, what, (body.x + body.w * 2 / 5) as f32, y + px(6.0) + (key_h - uh) / 2, c.dim, view);
             y += key_h + px(12.0);
         }
         y += px(32.0);
 
+        }
+        if section == 3 {
         // ---- About ----
         heading(canvas, fonts, &mut y, &mut tops, "About");
         for (k, v) in [
@@ -697,12 +724,13 @@ impl App {
             ("Settings file", persist::shorten(&persist::config_path())),
             ("Shell", std::env::var("SHELL").unwrap_or_default()),
         ] {
-            canvas.text(&mut fonts.ui, k, body.x as f32, y, DIM, view);
-            canvas.text(&mut fonts.ui, &v, (body.x + body.w * 2 / 5) as f32, y, TEXT, view);
+            canvas.text(&mut fonts.ui, k, body.x as f32, y, c.dim, view);
+            canvas.text(&mut fonts.ui, &v, (body.x + body.w * 2 / 5) as f32, y, c.text, view);
             y += uh + px(14.0);
         }
-        // Room below the last, so the last section can come to the top.
-        y += view.h - px(200.0).min(view.h);
+        }
+        // A little room below the last row.
+        y += px(24.0);
 
         st.content_h = y + st.scroll - view.y;
         st.view_h = view.h;
@@ -724,7 +752,7 @@ impl App {
             let thumb_y = track.y + (track.h - thumb_h) * st.scroll / (st.content_h - st.view_h).max(1);
             let thumb = Rect { x: track.x + px(1.0), y: thumb_y, w: px(6.0), h: thumb_h };
             let busy = st.drag.is_some() || hover == Some(Hit::Thumb);
-            canvas.round_fill(thumb, px(3.0), if busy { DIM } else { FAINT }, 255);
+            canvas.round_fill(thumb, px(3.0), if busy { c.dim } else { c.faint }, 255);
             hits.push((track, Hit::Track));
             hits.push((Rect { x: track.x - px(4.0), y: thumb.y, w: track.w + px(8.0), h: thumb.h }, Hit::Thumb));
         }
@@ -738,15 +766,15 @@ impl App {
             let below = d.anchor.y + d.anchor.h + px(4.0);
             let top = if below + h <= canvas_h { below } else { (d.anchor.y - h - px(4.0)).max(0) };
             let list = Rect { x: (d.anchor.x + d.anchor.w - w).max(0), y: top, w, h };
-            canvas.panel(list, px(10.0), PANEL, EDGE);
+            canvas.panel(list, px(10.0), c.panel, c.edge);
             let filter = Rect { x: list.x + px(8.0), y: list.y + px(8.0), w: list.w - px(16.0), h: field_h };
-            canvas.round_fill(filter, px(6.0), FIELD, 255);
+            canvas.round_fill(filter, px(6.0), c.field, 255);
             let ty = filter.y + (field_h - uh) / 2;
             if d.filter.is_empty() {
-                canvas.text(&mut fonts.ui, "Type to filter", (filter.x + px(10.0)) as f32, ty, FAINT, filter);
+                canvas.text(&mut fonts.ui, "Type to filter", (filter.x + px(10.0)) as f32, ty, c.faint, filter);
             } else {
-                let end = canvas.text(&mut fonts.ui, &d.filter, (filter.x + px(10.0)) as f32, ty, TEXT, filter);
-                canvas.fill(Rect { x: end + 1, y: ty, w: px(2.0).max(2), h: uh }, TEXT);
+                let end = canvas.text(&mut fonts.ui, &d.filter, (filter.x + px(10.0)) as f32, ty, c.text, filter);
+                canvas.fill(Rect { x: end + 1, y: ty, w: px(2.0).max(2), h: uh }, c.text);
             }
             let shown = d.shown();
             d.selected = d.selected.min(shown.len().saturating_sub(1));
@@ -763,14 +791,14 @@ impl App {
                 if k == d.selected {
                     canvas.round_fill(rr, px(6.0), accent, 255);
                 } else if hover == Some(Hit::Item(*i)) {
-                    canvas.round_fill(rr, px(6.0), FIELD, 255);
+                    canvas.round_fill(rr, px(6.0), c.field, 255);
                 }
-                let fg = if k == d.selected { on(accent) } else if name.eq_ignore_ascii_case(current) { accent_text } else { TEXT };
+                let fg = if k == d.selected { on(accent) } else if name.eq_ignore_ascii_case(current) { accent_text } else { c.text };
                 canvas.text_fit(&mut fonts.ui, name, rr.x + px(10.0), rr.y + (row - uh) / 2, rr.w - px(20.0), fg, rr);
                 hits.push((rr, Hit::Item(*i)));
             }
             if shown.is_empty() {
-                canvas.text(&mut fonts.ui, "No font by that name", (list.x + px(16.0)) as f32, filter.y + field_h + px(14.0), FAINT, list);
+                canvas.text(&mut fonts.ui, "No font by that name", (list.x + px(16.0)) as f32, filter.y + field_h + px(14.0), c.faint, list);
             }
         }
 

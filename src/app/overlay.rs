@@ -5,11 +5,6 @@ use super::*;
 use crate::canvas::on;
 use crate::palette::{self, Action, Item, Mode, Palette};
 
-const MENU_BG: u32 = 0x1C1D21;
-const MENU_EDGE: u32 = 0x3A3C43;
-const TEXT: u32 = 0xEEEEEE;
-const DIM: u32 = 0x8E9199;
-const FAINT: u32 = 0x5C5F67;
 
 /// The right-click menu: items, with lines between groups (None).
 pub struct Menu {
@@ -188,11 +183,9 @@ impl App {
         self.full = true;
         match action {
             Action::Split(dir) => self.split(dir),
-            Action::Close => {
-                if let Some(id) = self.focused() {
-                    self.close(id, event_loop);
-                }
-            }
+            Action::Close => self.close_pane(event_loop),
+            Action::NewPane => self.new_pane(),
+            Action::Reopen => self.reopen(),
             Action::Zoom => {
                 if !self.roam_shown {
                     let ws = self.ws_mut();
@@ -274,6 +267,7 @@ impl App {
     }
 
     pub(super) fn draw_palette(&mut self) {
+        let c = self.theme.chrome();
         let Some(l) = self.palette_layout() else { return };
         let Some(p) = self.palette.as_ref() else { return };
         let (label, typed, mode) = (p.label(), p.typed.clone(), p.mode);
@@ -285,23 +279,23 @@ impl App {
         let shown: Vec<(usize, Item)> = p.matches.iter().cloned().enumerate().skip(p.first).take(l.rows).collect();
         let selected = p.selected;
         let r = l.panel;
-        self.canvas.panel(r, l.pad * 2 / 3, MENU_BG, MENU_EDGE);
+        self.canvas.panel(r, l.pad * 2 / 3, c.panel, c.edge);
         let ui = &mut self.fonts.ui;
         let (x, y) = (r.x + l.pad, r.y + l.pad);
-        let after_label = self.canvas.text(ui, label, x as f32, y, DIM, r);
+        let after_label = self.canvas.text(ui, label, x as f32, y, c.dim, r);
         let typed_x = after_label + l.pad;
-        let end = self.canvas.text(ui, &typed, typed_x as f32, y, TEXT, r);
+        let end = self.canvas.text(ui, &typed, typed_x as f32, y, c.text, r);
         // The caret, after what is typed.
-        self.canvas.fill(Rect { x: end + 1, y, w: (l.pad / 6).max(2), h: ui.height }, TEXT);
+        self.canvas.fill(Rect { x: end + 1, y, w: (l.pad / 6).max(2), h: ui.height }, c.text);
         let note_w = ui.width(&note);
-        self.canvas.text(ui, &note, (r.x + r.w - l.pad - note_w) as f32, y, DIM, r);
+        self.canvas.text(ui, &note, (r.x + r.w - l.pad - note_w) as f32, y, c.dim, r);
         for (row, (at, item)) in shown.iter().enumerate() {
             let top = r.y + l.head + row as i32 * l.row_h;
             let picked = *at == selected;
             if picked {
                 self.canvas.round_fill(Rect { x: r.x + l.pad / 2, y: top + 1, w: r.w - l.pad, h: l.row_h - 2 }, l.pad * 3 / 4, self.accent, 255);
             }
-            let (main, dim) = if picked { (on(self.accent), mix(self.accent, on(self.accent), 200)) } else { (TEXT, DIM) };
+            let (main, dim) = if picked { (on(self.accent), mix(self.accent, on(self.accent), 200)) } else { (c.text, c.dim) };
             let ty = top + (l.row_h - ui.height) / 2;
             let row_clip = Rect { x: r.x, y: top, w: r.w, h: l.row_h };
             self.canvas.text(ui, &item.label, (r.x + l.pad * 3 / 2) as f32, ty, main, row_clip);
@@ -332,7 +326,9 @@ impl App {
             c("Split side by side", "Alt V", Action::Split(Dir::Across)),
             c("Split one above another", "Alt S", Action::Split(Dir::Down)),
             c(if self.ws().zoom.is_some() { "Show all panes" } else { "Pane alone" }, "Alt Shift M", Action::Zoom),
-            c("Close pane", "Alt X", Action::Close),
+            c("New pane", "Ctrl T", Action::NewPane),
+            c("Close pane", "Ctrl W", Action::Close),
+            c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
             None,
             c("Clear screen and scrollback", "", Action::Clear),
             c("Roaming terminal", "Alt `", Action::Roam),
@@ -390,15 +386,16 @@ impl App {
     }
 
     pub(super) fn draw_menu(&mut self) {
+        let c = self.theme.chrome();
         let Some((r, pad, row_h, sep_h)) = self.menu_layout() else { return };
         let Some(m) = self.menu.as_ref() else { return };
         let (items, hover) = (m.items.clone(), m.hover);
-        self.canvas.panel(r, pad, MENU_BG, MENU_EDGE);
+        self.canvas.panel(r, pad, c.panel, c.edge);
         let ui = &mut self.fonts.ui;
         let mut top = r.y + pad / 2;
         for (i, item) in items.iter().enumerate() {
             let Some(item) = item else {
-                self.canvas.fill(Rect { x: r.x + pad, y: top + sep_h / 2, w: r.w - 2 * pad, h: 1 }, MENU_EDGE);
+                self.canvas.fill(Rect { x: r.x + pad, y: top + sep_h / 2, w: r.w - 2 * pad, h: 1 }, c.edge);
                 top += sep_h;
                 continue;
             };
@@ -406,7 +403,7 @@ impl App {
             if picked {
                 self.canvas.round_fill(Rect { x: r.x + pad / 2, y: top, w: r.w - pad, h: row_h }, pad / 2, self.accent, 255);
             }
-            let (main, dim) = if picked { (on(self.accent), mix(self.accent, on(self.accent), 200)) } else { (TEXT, FAINT) };
+            let (main, dim) = if picked { (on(self.accent), mix(self.accent, on(self.accent), 200)) } else { (c.text, c.faint) };
             let ty = top + (row_h - ui.height) / 2;
             self.canvas.text(ui, &item.label, (r.x + pad * 3 / 2) as f32, ty, main, r);
             if !item.hint.is_empty() {

@@ -154,3 +154,46 @@ pub fn accent(name: &str) -> u32 {
         .or_else(|| (name.len() == 6).then(|| u32::from_str_radix(name, 16).ok()).flatten())
         .unwrap_or(ACCENTS[0].1)
 }
+
+/// The colours of jterm's own windows (settings, the palette, menus),
+/// made from a theme so they sit with it: light on a light theme.
+#[derive(Clone, Copy)]
+pub struct Chrome {
+    pub panel: u32,
+    pub side: u32,
+    pub edge: u32,
+    pub field: u32,
+    pub hover: u32,
+    pub text: u32,
+    pub dim: u32,
+    pub faint: u32,
+}
+
+impl Theme {
+    pub fn chrome(&self) -> Chrome {
+        let m = |share: u32| crate::canvas::mix(self.bg, self.fg, share);
+        if self.dark {
+            Chrome {
+                panel: crate::canvas::mix(self.bg, 0xFFFFFF, 8),
+                side: self.bg,
+                edge: m(48),
+                field: m(26),
+                hover: m(40),
+                text: crate::canvas::mix(self.fg, 0xFFFFFF, 90),
+                dim: m(165),
+                faint: m(105),
+            }
+        } else {
+            Chrome {
+                panel: crate::canvas::mix(self.bg, 0xFFFFFF, 200),
+                side: m(10),
+                edge: m(40),
+                field: m(14),
+                hover: m(28),
+                text: self.fg,
+                dim: m(165),
+                faint: m(110),
+            }
+        }
+    }
+}

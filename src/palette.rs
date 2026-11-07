@@ -11,6 +11,8 @@ use crate::layout::Dir;
 pub enum Action {
     Split(Dir),
     Close,
+    NewPane,
+    Reopen,
     Zoom,
     Equalize,
     Only,
@@ -159,10 +161,12 @@ pub fn commands() -> Vec<Item> {
     vec![
         c("Split side by side", "Alt V", Action::Split(Dir::Across)),
         c("Split one above another", "Alt S", Action::Split(Dir::Down)),
-        c("Close pane", "Alt X", Action::Close),
+        c("New pane", "Ctrl T", Action::NewPane),
+        c("Close pane", "Ctrl W", Action::Close),
+        c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
         c("Pane alone, and back", "Alt Shift M", Action::Zoom),
         c("Make panes equal", "Alt =", Action::Equalize),
-        c("Close every other pane", "Ctrl Q", Action::Only),
+        c("Close every other pane", "", Action::Only),
         c("New workspace here", "Alt Shift N", Action::NewWorkspace),
         c("Rename workspace", "", Action::Rename),
         c("Close workspace", "", Action::CloseWorkspace),

@@ -108,9 +108,15 @@ impl Node {
     /// Splits pane `at`, putting `new` after it in `dir`. Splitting the
     /// same way as the split it is in adds a sibling, halving its share.
     pub fn split(&mut self, at: PaneId, new: PaneId, dir: Dir) -> bool {
+        self.split_beside(at, new, dir, false)
+    }
+
+    /// Splits pane `at`, putting `new` after it in `dir`, or before it.
+    pub fn split_beside(&mut self, at: PaneId, new: PaneId, dir: Dir, before: bool) -> bool {
         match self {
             Node::Pane(id) if *id == at => {
-                *self = Node::Split { dir, children: vec![Node::Pane(at), Node::Pane(new)], sizes: vec![0.5, 0.5] };
+                let pair = if before { vec![Node::Pane(new), Node::Pane(at)] } else { vec![Node::Pane(at), Node::Pane(new)] };
+                *self = Node::Split { dir, children: pair, sizes: vec![0.5, 0.5] };
                 true
             }
             Node::Pane(_) => false,
@@ -119,14 +125,39 @@ impl Node {
                     if let Some(i) = children.iter().position(|c| matches!(c, Node::Pane(p) if *p == at)) {
                         let half = sizes[i] / 2.0;
                         sizes[i] = half;
-                        sizes.insert(i + 1, half);
-                        children.insert(i + 1, Node::Pane(new));
+                        let k = if before { i } else { i + 1 };
+                        sizes.insert(k, half);
+                        children.insert(k, Node::Pane(new));
                         return true;
                     }
                 }
-                children.iter_mut().any(|c| c.split(at, new, dir))
+                children.iter_mut().any(|c| c.split_beside(at, new, dir, before))
             }
         }
+    }
+
+    fn first_pane(&self) -> PaneId {
+        match self {
+            Node::Pane(id) => *id,
+            Node::Split { children, .. } => children[0].first_pane(),
+        }
+    }
+
+    fn last_pane(&self) -> PaneId {
+        match self {
+            Node::Pane(id) => *id,
+            Node::Split { children, .. } => children[children.len() - 1].last_pane(),
+        }
+    }
+
+    /// Where pane `id` sits, to put one back there: the pane beside it,
+    /// the way they are split, and whether it comes before that pane.
+    pub fn place_of(&self, id: PaneId) -> Option<(PaneId, Dir, bool)> {
+        let Node::Split { dir, children, .. } = self else { return None };
+        if let Some(i) = children.iter().position(|c| matches!(c, Node::Pane(p) if *p == id)) {
+            return Some(if i > 0 { (children[i - 1].last_pane(), *dir, false) } else { (children[1].first_pane(), *dir, true) });
+        }
+        children.iter().find_map(|c| c.place_of(id))
     }
 
     /// Takes pane `id` out, its share going to its neighbours; a split
@@ -262,6 +293,22 @@ mod tests {
         assert!((sizes.iter().sum::<f32>() - 1.0).abs() < 1e-4);
         assert!(n.remove(2) && n.remove(3));
         assert!(matches!(n, Node::Pane(1)));
+    }
+
+    #[test]
+    fn closed_pane_goes_back_where_it_was() {
+        let mut n = Node::Pane(1);
+        n.split(1, 2, Dir::Across);
+        n.split(2, 3, Dir::Down);
+        n.split(1, 4, Dir::Across);
+        let before = ids(&n);
+        for id in [1, 2, 3, 4] {
+            let mut m = n.clone();
+            let place = m.place_of(id).unwrap();
+            m.remove(id);
+            assert!(m.split_beside(place.0, id, place.1, place.2));
+            assert_eq!(ids(&m), before, "pane {id}");
+        }
     }
 
     #[test]
