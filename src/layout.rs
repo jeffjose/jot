@@ -143,7 +143,7 @@ impl Node {
         }
     }
 
-    fn last_pane(&self) -> PaneId {
+    pub fn last_pane(&self) -> PaneId {
         match self {
             Node::Pane(id) => *id,
             Node::Split { children, .. } => children[children.len() - 1].last_pane(),

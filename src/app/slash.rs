@@ -96,6 +96,7 @@ impl App {
             Command::new("files", "Files the running command has open", Does::Files),
             Command::new("split", "Split right", Does::Act(Action::Split(Dir::Across))),
             Command::new("split-down", "Split down", Does::Act(Action::Split(Dir::Down))),
+            Command::new("min", "Minimize this pane to a row", Does::Act(Action::Minimize)),
             if self.ws().zoom.is_some() {
                 Command::new("unfocus", "Unfocus pane: show all", Does::Act(Action::Zoom))
             } else {

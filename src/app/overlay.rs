@@ -311,6 +311,11 @@ impl App {
                 }
             }
             Action::CommandLine => self.toggle_bar(),
+            Action::Minimize => {
+                if let Some(id) = self.focused() {
+                    self.minimize(id);
+                }
+            }
             Action::MultiSkip(id) => self.toggle_multi_pane(id),
             Action::MultiAll => {
                 if let Some(ws) = self.workspaces.get_mut(self.current) {
@@ -437,6 +442,7 @@ impl App {
         let children = vec![
             vec![
                 c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom),
+                c("Minimize", "", Action::Minimize),
                 c("New pane", "Ctrl T", Action::NewPane),
                 c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
                 c("Move to new window", "Alt Shift O", Action::PopOut),
@@ -685,6 +691,7 @@ impl App {
             Tag::TeeStop => vec![c("Stop", "", Action::TeeStop(id))],
             Tag::Focus => vec![c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom)],
             Tag::Restart => vec![c("Restart", "Ctrl R", Action::Restart)],
+            Tag::Minimize => vec![c("Minimize", "", Action::Minimize)],
         };
         while matches!(items.last(), Some(None)) {
             items.pop();

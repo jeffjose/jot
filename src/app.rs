@@ -37,6 +37,7 @@ mod info;
 mod dnd;
 mod find;
 mod links;
+mod minimize;
 mod mouse;
 mod popout;
 mod restore;
@@ -91,6 +92,8 @@ pub struct Pane {
     /// filtered (/filter).
     tee: Option<watch::Tee>,
     filter: Option<watch::Filter>,
+    /// The last line it printed, for its row when minimized.
+    last_line: String,
 }
 
 /// A pane closed, to bring back.
@@ -115,6 +118,9 @@ pub struct Workspace {
     broadcast: bool,
     /// Panes clicked out of what is typed into, while broadcasting.
     left_out: Vec<PaneId>,
+    /// Panes shrunk to a row at the top, out of the layout but running;
+    /// each with where it was, to go back there.
+    minimized: Vec<minimize::Minimized>,
 }
 
 enum Drag {
@@ -182,6 +188,9 @@ pub struct App {
     /// The MULTI tags on captions, to click, and the one the pointer is on.
     multi_tags: Vec<(Rect, PaneId, watch::Tag)>,
     multi_lit: Option<(PaneId, watch::Tag)>,
+    /// Minimized panes' rows, to click, and the one the pointer is on.
+    mini_hits: Vec<(Rect, PaneId)>,
+    mini_lit: Option<PaneId>,
     /// Commands run now from a bar, as they end: pane, output, status.
     ran: Arc<std::sync::Mutex<Vec<(PaneId, String, i32)>>>,
     last_click: Option<(Instant, (u16, u16), u8)>,
@@ -319,6 +328,8 @@ impl App {
             bar_clicks: None,
             multi_tags: Vec::new(),
             multi_lit: None,
+            mini_hits: Vec::new(),
+            mini_lit: None,
             ran: Default::default(),
             last_click: None,
             clipboard: None,
@@ -406,7 +417,7 @@ impl App {
         let caption = folder_name(&start.cwd);
         self.panes.insert(
             id,
-            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None },
+            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new() },
         );
         id
     }
@@ -419,7 +430,7 @@ impl App {
             id
         });
         let name = if spec.name.is_empty() { folder_name(&spec.folder()) } else { spec.name.clone() };
-        self.workspaces.push(Workspace { name, root, focus: ids[0], zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new() });
+        self.workspaces.push(Workspace { name, root, focus: ids[0], zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new() });
         self.run_hook(self.workspaces.len() - 1, true);
     }
 
@@ -504,6 +515,9 @@ impl App {
         let mut shown = Vec::new();
         for (i, ws) in self.workspaces.iter().enumerate() {
             let (mut panes, mut dividers) = (Vec::new(), Vec::new());
+            // Its minimized panes' rows across the top; the rest below them.
+            let rows = ws.minimized.len() as i32 * (self.fonts.ui.height + self.px(10.0));
+            let area = Rect { y: area.y + rows, h: (area.h - rows).max(0), ..area };
             match ws.zoom {
                 Some(z) => panes.push((z, area)),
                 None => ws.root.layout(area, &mut panes, &mut dividers),
@@ -614,7 +628,7 @@ impl App {
             }
             // Its workspace was closed with it: it comes back as one.
             None => {
-                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new() });
+                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new(), minimized: Vec::new() });
                 self.go_to(self.workspaces.len() - 1);
             }
         }
@@ -625,6 +639,7 @@ impl App {
     /// Closes a pane, its workspace with it when it was the last; jterm
     /// with the last workspace.
     fn close(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        self.forget_minimized(id);
         // Commands waiting on it wait no more.
         self.release_after(id, false);
         // A pane in a window of its own takes the window with it.
@@ -661,6 +676,16 @@ impl App {
                 ws.focus = beside.filter(|b| ids.contains(b)).unwrap_or(ids[0]);
             }
         } else {
+            // Its last pane showing gone, a minimized one comes back in its
+            // place, rather than the workspace closing.
+            if !self.workspaces[wi].minimized.is_empty() {
+                let m = self.workspaces[wi].minimized.remove(0);
+                let ws = &mut self.workspaces[wi];
+                ws.root = Node::Pane(m.pane);
+                ws.focus = m.pane;
+                ws.zoom = None;
+                return self.changed();
+            }
             self.workspaces.remove(wi);
             if self.workspaces.is_empty() {
                 self.save_scrollback();
@@ -1163,7 +1188,7 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
-        if (button == MouseButton::Left && (self.offer_click(event_loop) || self.toast_click() || self.editor_run_click() || self.editor_press() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
+        if (button == MouseButton::Left && (self.offer_click(event_loop) || self.toast_click() || self.mini_click() || self.editor_run_click() || self.editor_press() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
             return;
         }
         let (x, y) = self.pointer;
@@ -1192,6 +1217,7 @@ impl App {
                     watch::Tag::Tee => self.open_tag_menu(id, kind),
                     watch::Tag::TeeStop => self.stop_tee(id),
                     watch::Tag::Restart => self.restart(id),
+                    watch::Tag::Minimize => self.minimize(id),
                     watch::Tag::Focus => {
                         self.set_focus(id);
                         let ws = self.ws_mut();
@@ -1319,7 +1345,7 @@ impl App {
                 }
             }
             None => {
-                if self.editor_drag(x, y) || self.editor_run_hover(x, y) || self.editor_hover(x, y) || self.bar_field_drag(x, y) || self.bar_field_hover(x, y) || self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
+                if self.mini_hover(x, y) || self.editor_drag(x, y) || self.editor_run_hover(x, y) || self.editor_hover(x, y) || self.bar_field_drag(x, y) || self.bar_field_hover(x, y) || self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
                     return;
                 }
                 self.update_link();
@@ -1432,6 +1458,9 @@ impl App {
                         any = true;
                     }
                     self.check_triggers(id, &bytes);
+                    if self.is_minimized(id) {
+                        self.note_last_line(id, &bytes);
+                    }
                     self.shell_events(id);
                     self.queue_tick(id);
                     if let Some(i) = self.popout_of(id) {
@@ -1560,6 +1589,9 @@ impl App {
                 }
                 self.draw_pane(r, 0, full, true);
             }
+        }
+        if full {
+            self.draw_minimized();
         }
         if full && self.config.status_line {
             self.draw_status();
@@ -1822,6 +1854,17 @@ impl App {
             self.multi_tags.push((r, id, watch::Tag::Focus));
             right = r.x - pad as i32 / 2;
         }
+        // Before it, minimize: the pane to a row at the top, still running.
+        if n > 0 && many && !zoomed && self.ws().root.contains(id) {
+            let r = Rect { x: right + pad as i32 / 2 - h, y: bar.y, w: h, h };
+            if self.multi_lit == Some((id, watch::Tag::Minimize)) {
+                self.canvas.fill(r, mix(bg, fg, 50));
+            }
+            let (lw, lh) = (h * 4 / 10, self.px(2.0).max(2));
+            self.canvas.fill(Rect { x: r.x + (h - lw) / 2, y: r.y + h * 6 / 10, w: lw, h: lh }, fg);
+            self.multi_tags.push((r, id, watch::Tag::Minimize));
+            right = r.x - pad as i32 / 2;
+        }
         let running = self.panes.get(&id).is_some_and(|p| p.shell.marked && !p.shell.at_prompt && p.shell.running.is_some());
         if n > 0 && running {
             let r = Rect { x: right + pad as i32 / 2 - h, y: bar.y, w: h, h };
@@ -1986,7 +2029,7 @@ impl App {
         let workspaces = self
             .workspaces
             .iter()
-            .map(|ws| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &describe)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), ..Default::default() })
+            .map(|ws| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&Self::full_root(ws), &describe)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), ..Default::default() })
             .collect();
         let roam = self.roam.and_then(|r| panes.get(&r)).and_then(|p| p.pty.cwd()).or(self.roam_cwd.clone()).map(|p| persist::shorten(&p));
         let popouts = self.popouts.iter().map(|po| persist::spec(&Node::Pane(po.pane), &describe)).collect();

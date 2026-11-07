@@ -41,6 +41,8 @@ pub enum Action {
     /// The pane's running command, stopped and run again.
     Restart,
     CommandLine,
+    /// The pane shrunk to a row at the top of its workspace.
+    Minimize,
     /// From a caption's tags, for the pane with this id: typing into
     /// several, a tee, a filter.
     MultiSkip(u64),
@@ -195,6 +197,7 @@ pub fn commands() -> Vec<Item> {
         c("Move pane to new window", "Alt Shift O", Action::PopOut),
         c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
         c("Focus pane / show all", "Alt Shift F", Action::Zoom),
+        c("Minimize pane", "", Action::Minimize),
         c("Equalize pane sizes", "Alt =", Action::Equalize),
         c("Close other panes", "", Action::Only),
         c("New workspace", "Ctrl N", Action::NewWorkspace),

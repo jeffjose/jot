@@ -256,6 +256,8 @@ pub enum Tag {
     Filter,
     /// To be told when the command ends: no longer.
     Notify,
+    /// The minimize button: the pane shrunk to a row.
+    Minimize,
     /// The restart button, on a pane running a command.
     Restart,
     /// The focus button: this pane alone, or all of them again.
