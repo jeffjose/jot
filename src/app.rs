@@ -150,7 +150,7 @@ pub struct App {
     mods: ModifiersState,
     pointer: (i32, i32),
     drag: Option<Drag>,
-    last_click: Option<(Instant, (u16, u16))>,
+    last_click: Option<(Instant, (u16, u16), u8)>,
     clipboard: Option<arboard::Clipboard>,
     /// Workspace tabs on the status line, for clicks.
     tabs: Vec<(Rect, usize)>,
@@ -1080,10 +1080,19 @@ impl App {
         match button {
             MouseButton::Left => {
                 let Some(p) = self.panes.get_mut(&id) else { return };
-                let double = self.last_click.is_some_and(|(t, c)| t.elapsed() < Duration::from_millis(400) && c == cell);
-                self.last_click = Some((Instant::now(), cell));
-                if double {
-                    p.term.select_word(cell);
+                // One click, two (a word), three (the line), then round again.
+                // The third may land anywhere on the row the second did.
+                let n = match self.last_click {
+                    Some((t, c, n)) if t.elapsed() < Duration::from_millis(400) && (c == cell || (n == 2 && c.1 == cell.1)) => n % 3 + 1,
+                    _ => 1,
+                };
+                self.last_click = Some((Instant::now(), cell, n));
+                if n > 1 {
+                    if n == 2 {
+                        p.term.select_word(cell);
+                    } else {
+                        p.term.select_line(cell);
+                    }
                     self.drag = None;
                     self.copy(true);
                     self.copy(false);

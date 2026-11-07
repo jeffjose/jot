@@ -395,6 +395,24 @@ impl Terminal {
         }
     }
 
+    /// Selects the line under a cell, wrapped rows and all, as a triple
+    /// click does; blanks at either end are left out.
+    pub fn select_line(&mut self, at: (u16, u16)) {
+        let Some(r) = self.grid_ref(at.0, at.1) else { return };
+        const BLANK: [u32; 2] = [' ' as u32, '\t' as u32];
+        unsafe {
+            let mut opts: GhosttyTerminalSelectLineOptions = std::mem::zeroed();
+            opts.size = std::mem::size_of::<GhosttyTerminalSelectLineOptions>();
+            opts.ref_ = r;
+            opts.whitespace = BLANK.as_ptr();
+            opts.whitespace_len = BLANK.len();
+            let mut sel: GhosttySelection = std::mem::zeroed();
+            if ghostty_terminal_select_line(self.raw, &opts, &mut sel) == GHOSTTY_SUCCESS {
+                ghostty_terminal_set(self.raw, GHOSTTY_TERMINAL_OPT_SELECTION, &sel as *const _ as *const c_void);
+            }
+        }
+    }
+
     pub fn clear_selection(&mut self) {
         unsafe { ghostty_terminal_set(self.raw, GHOSTTY_TERMINAL_OPT_SELECTION, null()) };
     }
