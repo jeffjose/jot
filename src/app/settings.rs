@@ -50,6 +50,8 @@ pub enum Hit {
     /// A workspace's accent: an index into the accents, or none for the settings'.
     WsAccent(usize, usize),
     WsTheme(usize),
+    /// A workspace's accent swatch, which opens its colours.
+    WsAccentOpen(usize),
     WsBroadcast(usize),
 }
 
@@ -84,6 +86,8 @@ pub struct Settings {
     /// The page shown: Appearance, Fonts, Keys or About.
     pub section: usize,
     pub dropdown: Option<Dropdown>,
+    /// A workspace's colours open, under its swatch.
+    pub accent_pop: Option<(usize, Rect)>,
     /// The scrollbar's thumb being dragged: where from, and the scroll then.
     pub drag: Option<(i32, i32)>,
     /// The installed fonts, read once: monospaced, and all.
@@ -142,7 +146,7 @@ impl App {
     pub(super) fn open_settings(&mut self) {
         self.palette = None;
         self.menu = None;
-        self.settings = Some(Settings { scroll: 0, hover: None, hits: Vec::new(), content_h: 0, view_h: 1, tops: Vec::new(), section: 0, dropdown: None, drag: None, mono: None, all: None });
+        self.settings = Some(Settings { scroll: 0, hover: None, hits: Vec::new(), content_h: 0, view_h: 1, tops: Vec::new(), section: 0, dropdown: None, accent_pop: None, drag: None, mono: None, all: None });
         self.full = true;
         self.redraw();
     }
@@ -342,7 +346,16 @@ impl App {
             }
             Hit::Reset(key) => self.reset(key),
             Hit::Close => return self.close_settings(),
+            Hit::WsAccentOpen(wi) => {
+                let anchor = self.settings.as_ref().and_then(|s| s.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r)).unwrap_or_default();
+                if let Some(s) = &mut self.settings {
+                    s.accent_pop = if s.accent_pop.is_some_and(|(w, _)| w == wi) { None } else { Some((wi, anchor)) };
+                }
+            }
             Hit::WsAccent(wi, i) => {
+                if let Some(s) = &mut self.settings {
+                    s.accent_pop = None;
+                }
                 if let Some(ws) = self.workspaces.get_mut(wi) {
                     ws.accent = ACCENTS.get(i).map(|(n, _)| n.to_string());
                 }
@@ -418,6 +431,13 @@ impl App {
             return self.redraw();
         }
         match code {
+            KeyCode::Escape if self.settings.as_ref().is_some_and(|s| s.accent_pop.is_some()) => {
+                if let Some(s) = &mut self.settings {
+                    s.accent_pop = None;
+                }
+                self.full = true;
+                self.redraw();
+            }
             KeyCode::Escape => self.close_settings(),
             KeyCode::ArrowUp => self.scroll_by(-step),
             KeyCode::ArrowDown => self.scroll_by(step),
@@ -456,6 +476,21 @@ impl App {
         let (x, y) = self.pointer;
         let hit = self.settings_hit(x, y);
         let list_open = self.settings.as_ref().is_some_and(|s| s.dropdown.is_some());
+        // With the colours open, a click picks one, or closes them.
+        if self.settings.as_ref().is_some_and(|s| s.accent_pop.is_some()) {
+            match hit {
+                Some(h @ Hit::WsAccent(..)) => self.settings_do(h),
+                Some(Hit::Track) => {}
+                _ => {
+                    if let Some(s) = &mut self.settings {
+                        s.accent_pop = None;
+                    }
+                    self.full = true;
+                    self.redraw();
+                }
+            }
+            return true;
+        }
         match hit {
             Some(Hit::Item(i)) => self.settings_do(Hit::Item(i)),
             Some(Hit::Track) if list_open => {}
@@ -727,7 +762,6 @@ impl App {
         for (name, what, key, value) in [
             ("Captions under panes", "Each pane's title along its bottom, as screen's regions have.", Key::Captions, captions),
             ("Status line", "Workspaces, host and clock along the bottom of the window.", Key::StatusLine, status_line),
-            ("Ligatures", "Characters joined as the font draws them: => and != in Fira Code.", Key::Ligatures, ligatures),
             ("Command bars", "A bar beside each command, green or red by how it ended, with its time when slow.", Key::CommandBars, command_bars),
         ] {
             let mid = title(canvas, fonts, &mut page, y, name, what, key);
@@ -763,28 +797,17 @@ impl App {
             let shown = theme_name.clone().unwrap_or_else(|| "Settings' theme".into());
             canvas.text_fit(&mut fonts.ui, &shown, field.x + px(12.0), field.y + (field_h - uh) / 2, field_w - px(44.0), if theme_name.is_some() { c.text } else { c.dim }, field);
             page.push((field, Hit::WsTheme(wi)));
+            // Its accent, beside: a swatch of it, which opens the colours.
+            let its_name = accent_name.clone().unwrap_or_else(|| "Settings'".into());
+            let sw = fonts.ui.width(&its_name) + px(52.0);
+            let swatch = Rect { x: field.x - px(10.0) - sw, y, w: sw, h: field_h };
+            canvas.round_fill(swatch, px(7.0), if hover == Some(Hit::WsAccentOpen(wi)) { c.hover } else { c.field }, 255);
+            canvas.ring(swatch, px(7.0), 1, c.edge);
+            let d = px(14.0);
+            canvas.round_fill(Rect { x: swatch.x + px(10.0), y: swatch.y + (field_h - d) / 2, w: d, h: d }, d / 2, its, 255);
+            canvas.text(&mut fonts.ui, &its_name, (swatch.x + px(32.0)) as f32, swatch.y + (field_h - uh) / 2, if accent_name.is_some() { c.text } else { c.dim }, swatch);
+            page.push((swatch, Hit::WsAccentOpen(wi)));
             y += field_h + px(10.0);
-            // Its accent: the settings', or a colour of its own.
-            let d = px(20.0);
-            let gap = px(8.0);
-            let per_row = ((body.w - px(90.0) + gap) / (d + gap)).max(1);
-            let chip = Rect { x: body.x, y, w: px(78.0), h: d };
-            canvas.round_fill(chip, d / 2, if accent_name.is_none() { c.hover } else { c.field }, 255);
-            if accent_name.is_none() {
-                canvas.ring(chip, d / 2, 1, c.text);
-            }
-            canvas.text(&mut fonts.small, "Settings'", (chip.x + px(10.0)) as f32, chip.y + (d - sh_) / 2, c.text, view);
-            page.push((chip, Hit::WsAccent(wi, usize::MAX)));
-            for (i, (an, color)) in ACCENTS.iter().enumerate() {
-                let (col, rowi) = (i as i32 % per_row, i as i32 / per_row);
-                let dot = Rect { x: body.x + px(90.0) + col * (d + gap), y: y + rowi * (d + gap), w: d, h: d };
-                canvas.round_fill(dot, d / 2, *color, 255);
-                if accent_name.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(an)) {
-                    canvas.ring(Rect { x: dot.x - px(3.0), y: dot.y - px(3.0), w: d + px(6.0), h: d + px(6.0) }, d, px(2.0), c.text);
-                }
-                page.push((dot, Hit::WsAccent(wi, i)));
-            }
-            y += ((ACCENTS.len() as i32 + per_row - 1) / per_row) * (d + gap) + px(6.0);
             // Typing into all its panes.
             let mid = y + row_h / 2 - row_pad;
             canvas.text(&mut fonts.ui, "Type into every pane", body.x as f32, mid - uh / 2, c.text, view);
@@ -805,10 +828,11 @@ impl App {
         // ---- Fonts ----
         heading(canvas, fonts, &mut y, &mut tops, "Fonts");
         let field_w = px(260.0).min(body.w / 2);
-        let rows: [(&str, &str, Key); 5] = [
+        let rows: [(&str, &str, Key); 6] = [
             ("Terminal font", "For the panes. Only fonts whose letters are all one width.", Key::Family),
             ("Terminal font size", "In points. Ctrl = and Ctrl - change it too.", Key::Size),
             ("Line height", "Room between lines, as a share of the font's own. VS Code's is 1.10.", Key::LineHeight),
+            ("Ligatures", "Characters joined as the font draws them: => and != in Fira Code.", Key::Ligatures),
             ("Interface font", "For jterm's own words: captions, menus, these settings.", Key::UiFamily),
             ("Interface font size", "In points.", Key::UiSize),
         ];
@@ -831,6 +855,15 @@ impl App {
                 }
                 Key::Size => stepper(canvas, fonts, &mut page, mid, key, &format!("{size}")),
                 Key::LineHeight => stepper(canvas, fonts, &mut page, mid, key, &format!("{line_height:.2}")),
+                Key::Ligatures => {
+                    let (sw, sh) = (px(40.0), px(22.0));
+                    let pill = Rect { x: right - sw, y: mid - sh / 2, w: sw, h: sh };
+                    canvas.round_fill(pill, sh / 2, if ligatures { accent } else { c.hover }, 255);
+                    let k = sh - px(6.0);
+                    let kx = if ligatures { pill.x + sw - k - px(3.0) } else { pill.x + px(3.0) };
+                    canvas.round_fill(Rect { x: kx, y: pill.y + px(3.0), w: k, h: k }, k / 2, 0xFFFFFF, 255);
+                    page.push((Rect { x: pill.x - px(4.0), y: pill.y - px(4.0), w: sw + px(8.0), h: sh + px(8.0) }, Hit::Toggle(key)));
+                }
                 _ => stepper(canvas, fonts, &mut page, mid, key, &format!("{ui_size}")),
             }
             y += row_h;
@@ -899,6 +932,39 @@ impl App {
             canvas.round_fill(thumb, px(3.0), if busy { c.dim } else { c.faint }, 255);
             hits.push((track, Hit::Track));
             hits.push((Rect { x: track.x - px(4.0), y: thumb.y, w: track.w + px(8.0), h: thumb.h }, Hit::Thumb));
+        }
+
+        // A workspace's colours, over everything, under its swatch.
+        if let Some((wi, anchor)) = st.accent_pop {
+            let current = ws_rows.get(wi).and_then(|w| w.1.clone());
+            let (d, gap, cols) = (px(22.0), px(10.0), 5);
+            let rows = (ACCENTS.len() as i32 + cols - 1) / cols;
+            let chip_h = uh + px(12.0);
+            let w = cols * (d + gap) - gap + 2 * px(14.0);
+            let h = px(12.0) + chip_h + px(10.0) + rows * (d + gap) - gap + px(14.0);
+            let below = anchor.y + anchor.h + px(6.0);
+            let top = if below + h <= canvas_h { below } else { (anchor.y - h - px(6.0)).max(0) };
+            let pop = Rect { x: (anchor.x + anchor.w - w).max(0), y: top, w, h };
+            canvas.panel(pop, px(10.0), c.panel, c.edge);
+            hits.push((pop, Hit::Track));
+            // The settings' own accent first, then the colours.
+            let chip = Rect { x: pop.x + px(10.0), y: pop.y + px(10.0), w: pop.w - px(20.0), h: chip_h };
+            let on_settings = current.is_none();
+            canvas.round_fill(chip, px(6.0), if on_settings { c.hover } else if hover == Some(Hit::WsAccent(wi, usize::MAX)) { c.field } else { c.panel }, 255);
+            canvas.round_fill(Rect { x: chip.x + px(8.0), y: chip.y + (chip_h - px(12.0)) / 2, w: px(12.0), h: px(12.0) }, px(6.0), self.accent, 255);
+            canvas.text(&mut fonts.ui, "Settings' accent", (chip.x + px(28.0)) as f32, chip.y + (chip_h - uh) / 2, c.text, chip);
+            hits.push((chip, Hit::WsAccent(wi, usize::MAX)));
+            for (i, (an, color)) in ACCENTS.iter().enumerate() {
+                let (col, row) = (i as i32 % cols, i as i32 / cols);
+                let dot = Rect { x: pop.x + px(14.0) + col * (d + gap), y: chip.y + chip_h + px(10.0) + row * (d + gap), w: d, h: d };
+                canvas.round_fill(dot, d / 2, *color, 255);
+                if current.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(an)) {
+                    canvas.ring(Rect { x: dot.x - px(3.0), y: dot.y - px(3.0), w: d + px(6.0), h: d + px(6.0) }, d, px(2.0), c.text);
+                } else if hover == Some(Hit::WsAccent(wi, i)) {
+                    canvas.ring(Rect { x: dot.x - px(2.0), y: dot.y - px(2.0), w: d + px(4.0), h: d + px(4.0) }, d, 1, c.dim);
+                }
+                hits.push((dot, Hit::WsAccent(wi, i)));
+            }
         }
 
         // A font list, over everything, under its field.
