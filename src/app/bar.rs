@@ -155,6 +155,18 @@ impl App {
                     b.field = TextField::new(back.and_then(|i| history.get(i)).map_or("", String::as_str));
                 }
             }
+            // Ctrl C, as at a prompt: the line cleared; an empty one, the
+            // bar shut. With text selected it copies, as it does elsewhere.
+            KeyCode::KeyC if self.mods.control_key() && !self.mods.shift_key() && b.field.selection().is_none() => {
+                if text.is_empty() {
+                    return self.close_bar();
+                }
+                if let Some(b) = &mut self.bar {
+                    b.field = TextField::default();
+                    b.back = None;
+                    b.selected = 0;
+                }
+            }
             // A space after !!, !str, !?str or !$: the word made what it
             // stands for, from what the pane ran, as tcsh's magic space.
             KeyCode::Space if !self.mods.control_key() && !self.mods.alt_key() && self.bar_expand() => {}

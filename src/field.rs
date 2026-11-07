@@ -107,6 +107,9 @@ impl TextField {
     /// writes it.
     pub fn key(&mut self, code: KeyCode, mods: ModifiersState, text: Option<&str>, get: &mut dyn FnMut() -> Option<String>, set: &mut dyn FnMut(String)) -> Outcome {
         let (ctrl, shift) = (mods.control_key(), mods.shift_key());
+        // Alt works a word at a time as Ctrl does, as in a shell.
+        let word = ctrl || mods.alt_key();
+        let alt = mods.alt_key() && !ctrl;
         let before = self.text.clone();
         match code {
             KeyCode::KeyA if ctrl => {
@@ -145,19 +148,19 @@ impl TextField {
             }
             KeyCode::Backspace => {
                 if !self.delete_selection() && self.cursor > 0 {
-                    let from = if ctrl { self.word_before(self.cursor) } else { self.cursor - 1 };
+                    let from = if word { self.word_before(self.cursor) } else { self.cursor - 1 };
                     self.text.drain(from..self.cursor);
                     self.cursor = from;
                 }
             }
             KeyCode::Delete => {
                 if !self.delete_selection() && self.cursor < self.text.len() {
-                    let to = if ctrl { self.word_after(self.cursor) } else { self.cursor + 1 };
+                    let to = if word { self.word_after(self.cursor) } else { self.cursor + 1 };
                     self.text.drain(self.cursor..to);
                 }
             }
             KeyCode::ArrowLeft => {
-                let to = match (ctrl, self.selection()) {
+                let to = match (word, self.selection()) {
                     (false, Some((a, _))) if !shift => a,
                     (true, _) => self.word_before(self.cursor),
                     _ => self.cursor.saturating_sub(1),
@@ -166,13 +169,28 @@ impl TextField {
                 return Outcome::Moved;
             }
             KeyCode::ArrowRight => {
-                let to = match (ctrl, self.selection()) {
+                let to = match (word, self.selection()) {
                     (false, Some((_, b))) if !shift => b,
                     (true, _) => self.word_after(self.cursor),
                     _ => self.cursor + 1,
                 };
                 self.go(to, shift);
                 return Outcome::Moved;
+            }
+            // Alt B, F and D: a word back, forward, and the next word gone,
+            // as tcsh and emacs have them.
+            KeyCode::KeyB if alt => {
+                self.go(self.word_before(self.cursor), shift);
+                return Outcome::Moved;
+            }
+            KeyCode::KeyF if alt => {
+                self.go(self.word_after(self.cursor), shift);
+                return Outcome::Moved;
+            }
+            KeyCode::KeyD if alt => {
+                let to = self.word_after(self.cursor);
+                self.text.drain(self.cursor..to);
+                self.anchor = None;
             }
             KeyCode::Home => {
                 self.go(0, shift);

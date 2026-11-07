@@ -353,3 +353,56 @@ fn text_lift() -> &'static [u8; 256] {
 }
 
 const TEXT_LIFT: f64 = 1.3;
+
+/// Icons jterm carries: 64-pixel masks, white on clear.
+pub mod icons {
+    pub static KEYBOARD: &[u8] = include_bytes!("../assets/icons/keyboard.png");
+}
+
+/// An icon's mask at `size` pixels square: its coverage, scaled down from
+/// the 64 it is carried at by the mean of each block, kept once made.
+fn icon_mask(png: &'static [u8], size: usize) -> std::rc::Rc<Vec<u8>> {
+    thread_local! {
+        static MADE: std::cell::RefCell<std::collections::HashMap<(usize, usize), std::rc::Rc<Vec<u8>>>> = Default::default();
+    }
+    let key = (png.as_ptr() as usize, size);
+    if let Some(m) = MADE.with(|m| m.borrow().get(&key).cloned()) {
+        return m;
+    }
+    let mut out = vec![0u8; size * size];
+    let decoded = (|| {
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().ok()?;
+        let mut buf = vec![0; reader.output_buffer_size()?];
+        let info = reader.next_frame(&mut buf).ok()?;
+        (info.color_type == png::ColorType::Rgba).then_some((buf, info.width as usize, info.height as usize))
+    })();
+    if let Some((buf, w, h)) = decoded {
+        for y in 0..size {
+            for x in 0..size {
+                let (x0, x1) = (x * w / size, ((x + 1) * w / size).max(x * w / size + 1));
+                let (y0, y1) = (y * h / size, ((y + 1) * h / size).max(y * h / size + 1));
+                let mut sum = 0u32;
+                for sy in y0..y1 {
+                    for sx in x0..x1 {
+                        sum += buf[(sy * w + sx) * 4 + 3] as u32;
+                    }
+                }
+                out[y * size + x] = (sum / ((x1 - x0) * (y1 - y0)) as u32) as u8;
+            }
+        }
+    }
+    let m = std::rc::Rc::new(out);
+    MADE.with(|made| made.borrow_mut().insert(key, m.clone()));
+    m
+}
+
+impl Canvas {
+    /// One of jterm's icons, `size` pixels square, its top left at x, y,
+    /// in `color`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn icon(&mut self, png: &'static [u8], size: i32, x: i32, y: i32, color: u32, clip: crate::layout::Rect) {
+        let size = size.max(1) as usize;
+        let mask = icon_mask(png, size);
+        self.coverage(&mask, size, size, x, y, color, clip, false);
+    }
+}

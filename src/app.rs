@@ -1016,7 +1016,8 @@ impl App {
                 self.toggle_bar();
                 return;
             }
-            if !(self.mods.alt_key() || self.mods.super_key()) {
+            let word_key = matches!(code, KeyCode::Backspace | KeyCode::Delete | KeyCode::ArrowLeft | KeyCode::ArrowRight | KeyCode::KeyB | KeyCode::KeyF | KeyCode::KeyD);
+            if !(self.mods.alt_key() || self.mods.super_key()) || (self.mods.alt_key() && word_key && !self.mods.shift_key()) {
                 self.bar_key(&event, event_loop);
                 return;
             }
@@ -1739,23 +1740,14 @@ impl App {
             let base = if included { 0xE5484D } else { 0x6F6F6F };
             let color = if lit { mix(base, 0xFFFFFF, 40) } else { base };
             let label = if included { "MULTI" } else { "SKIPPED" };
-            let (gap, icon_w) = (self.px(6.0), self.px(11.0));
+            let (gap, icon_w) = (self.px(6.0), self.px(15.0).min(h - self.px(4.0)));
             let w = gap + icon_w + gap + self.fonts.ui.width(label) + gap;
             let r = Rect { x: right - w, y: bar.y, w, h };
             self.canvas.fill(r, color);
-            // Two cursors, one a little behind the other: typing in more
-            // than one place.
+            // A keyboard: typing, into more than one pane, as the label says.
             let fg = crate::canvas::on(color);
-            // Each a text cursor, an I beam: a stem with a cap at each end.
-            let (bh, bw, cap) = (h * 11 / 20, self.px(1.5).max(1), self.px(5.0));
-            let beam = |canvas: &mut Canvas, cx: i32, top: i32, c: u32| {
-                canvas.fill(Rect { x: cx - bw / 2, y: top, w: bw.max(1), h: bh }, c);
-                canvas.fill(Rect { x: cx - cap / 2, y: top, w: cap, h: bw.max(1) }, c);
-                canvas.fill(Rect { x: cx - cap / 2, y: top + bh - bw.max(1), w: cap, h: bw.max(1) }, c);
-            };
-            let (ix, iy, off) = (r.x + gap, bar.y + (h - bh) / 2, self.px(2.0));
-            beam(&mut self.canvas, ix + cap / 2, iy - off, mix(color, fg, 140));
-            beam(&mut self.canvas, ix + icon_w - cap / 2, iy + off, fg);
+            let size = self.px(15.0).min(h - self.px(4.0));
+            self.canvas.icon(crate::canvas::icons::KEYBOARD, size, r.x + gap, bar.y + (h - size) / 2, fg, r);
             self.canvas.text(&mut self.fonts.ui, label, (r.x + gap + icon_w + gap) as f32, ty, fg, r);
             self.multi_tags.push((r, id));
             right = r.x - pad as i32 / 2;
