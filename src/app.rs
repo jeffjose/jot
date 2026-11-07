@@ -622,8 +622,17 @@ impl App {
             winit::keyboard::Key::Character(s) => s.chars().next().map_or(0, |c| c as u32),
             _ => 0,
         };
-        let text = event.text.as_deref().unwrap_or("");
+        // An input method can drop the text of a key held with Alt; the
+        // key's own character stands in for it, so Alt b is still Esc b.
+        let logical = match &event.logical_key {
+            winit::keyboard::Key::Character(s) => s.as_str(),
+            _ => "",
+        };
+        let text = event.text.as_deref().filter(|t| !t.is_empty()).unwrap_or(if m.alt_key() { logical } else { "" });
         let bytes = p.term.encode_key(crate::keys::ghostty(code), mods, action, text, unshifted);
+        if crate::debug() && event.state == ElementState::Pressed {
+            eprintln!("key {code:?} mods {m:?} text {:?} logical {logical:?} unshifted {unshifted:#x} -> {bytes:?}", event.text.as_deref());
+        }
         if !bytes.is_empty() {
             p.pty.write(&bytes);
             if !p.term.at_bottom() {

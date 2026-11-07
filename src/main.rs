@@ -14,11 +14,19 @@ mod vt;
 
 use winit::event_loop::EventLoop;
 
+static DEBUG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether --debug was given: each key is printed as it is sent.
+pub fn debug() -> bool {
+    DEBUG.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 const HELP: &str = "\
 jterm: a terminal with splits and workspaces
 
   jterm            bring back the workspaces as you left them
   jterm --fresh    start from the workspaces in the config instead
+  jterm --debug    print each key as it is sent to the program
   jterm --version
 
 Keys (screen's, on Alt):
@@ -52,6 +60,7 @@ fn main() {
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--fresh" => fresh = true,
+            "--debug" => DEBUG.store(true, std::sync::atomic::Ordering::Relaxed),
             "-V" | "--version" => return println!("{}", version()),
             "-h" | "--help" => return println!("{HELP}"),
             other => {
