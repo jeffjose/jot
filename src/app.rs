@@ -63,6 +63,8 @@ pub struct Pane {
     caption: String,
     /// Wrote something while its workspace was not shown.
     activity: bool,
+    /// When it started: what it prints at first, its prompt, is not news.
+    started: Instant,
 }
 
 pub struct Workspace {
@@ -221,7 +223,7 @@ impl App {
         let caption = folder_name(&start.cwd);
         self.panes.insert(
             id,
-            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, caption, activity: false },
+            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, caption, activity: false, started: Instant::now() },
         );
         id
     }
@@ -757,7 +759,7 @@ impl App {
                 Output::Bytes(id, bytes) => {
                     if let Some(p) = self.panes.get_mut(&id) {
                         p.term.write(&bytes);
-                        if !shown.contains(&id) && !p.activity {
+                        if !shown.contains(&id) && !p.activity && p.started.elapsed() > Duration::from_secs(3) {
                             p.activity = true;
                             self.full = true;
                         }
