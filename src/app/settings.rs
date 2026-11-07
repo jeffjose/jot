@@ -5,6 +5,7 @@
 //! when it is not as it started. What is changed is seen at once and
 //! written to the config.
 
+use crate::canvas::icons;
 use super::*;
 use crate::canvas::{mix, on};
 use crate::font;
@@ -781,20 +782,14 @@ impl App {
             ny += nav_h + px(2.0);
         }
 
-        // At the top right: close, an × drawn from two strokes.
+        // At the top right: close.
         let cs = px(30.0);
         let close = Rect { x: r.x + r.w - cs - px(12.0), y: r.y + px(12.0), w: cs, h: cs };
         if hover == Some(Hit::Close) {
             canvas.round_fill(close, cs / 2, c.hover, 255);
         }
-        let arm = px(5.0);
-        let (cx, cy) = (close.x + cs / 2, close.y + cs / 2);
         let stroke = if hover == Some(Hit::Close) { c.text } else { c.dim };
-        let dot = px(2.0).max(2);
-        for t in -arm..=arm {
-            canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy + t - dot / 2, w: dot, h: dot }, dot / 2, stroke, 255);
-            canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy - t - dot / 2, w: dot, h: dot }, dot / 2, stroke, 255);
-        }
+        solar(canvas, icons::CLOSE, close.x + cs / 2, close.y + cs / 2, px(18.0), stroke);
 
         // On the right, the page, scrolled, kept inside its area.
         let view = Rect { x: side.x + side.w + 1, y: r.y + px(8.0), w: r.x + r.w - (side.x + side.w + 1) - px(18.0), h: r.h - px(16.0) };
@@ -1039,7 +1034,7 @@ impl App {
             canvas.round_fill(Rect { x: ab.x + px(10.0), y: cy - sd / 2, w: sd, h: sd }, sd / 2, its, 255);
             let its_name = accent_name.clone().map(|n| if n.starts_with('#') { n } else { capitalize(&n) }).unwrap_or_else(|| if auto { "Auto" } else { "Default" }.into());
             canvas.text_fit(&mut fonts.ui, &its_name, ab.x + px(32.0), ty, aw - px(56.0), if accent_name.is_some() { c.text } else { c.dim }, ab);
-            chevron(canvas, ab.x + ab.w - px(16.0), cy, px(4.0), c.dim);
+            solar(canvas, icons::CHEVRON_DOWN, ab.x + ab.w - px(16.0), cy, px(14.0), c.dim);
             page.push((ab, Hit::WsAccentOpen(wi)));
             // Its theme.
             let tb = ctl(x_theme, tw);
@@ -1047,7 +1042,7 @@ impl App {
             canvas.ring(tb, px(7.0), 1, c.edge);
             let shown = theme_name.clone().unwrap_or_else(|| "Default theme".into());
             canvas.text_fit(&mut fonts.ui, &shown, tb.x + px(12.0), ty, tw - px(40.0), if theme_name.is_some() { c.text } else { c.dim }, tb);
-            chevron(canvas, tb.x + tb.w - px(16.0), cy, px(4.0), c.dim);
+            solar(canvas, icons::CHEVRON_DOWN, tb.x + tb.w - px(16.0), cy, px(14.0), c.dim);
             page.push((tb, Hit::WsTheme(wi)));
             // Go there, and close it: icons.
             if !*here {
@@ -1056,7 +1051,7 @@ impl App {
                 if lit {
                     canvas.round_fill(b, px(7.0), c.hover, 255);
                 }
-                arrow(canvas, b.x + ib / 2, cy, px(5.0), dot, if lit { c.text } else { c.dim });
+                solar(canvas, icons::ARROW_RIGHT, b.x + ib / 2, cy, px(16.0), if lit { c.text } else { c.dim });
                 page.push((b, Hit::WsGo(wi)));
             }
             if many {
@@ -1065,7 +1060,7 @@ impl App {
                 if lit {
                     canvas.round_fill(b, px(7.0), c.hover, 255);
                 }
-                cross(canvas, b.x + ib / 2, cy, px(4.0), dot, if lit { DANGER } else { c.dim });
+                solar(canvas, icons::CLOSE, b.x + ib / 2, cy, px(14.0), if lit { DANGER } else { c.dim });
                 page.push((b, Hit::WsClose(wi)));
             }
         }
@@ -1108,11 +1103,7 @@ impl App {
                     canvas.ring(field, px(7.0), 1, c.edge);
                     canvas.text_fit(&mut fonts.ui, value, field.x + px(12.0), field.y + (field_h - uh) / 2, field_w - px(44.0), c.text, field);
                     // A chevron at its right.
-                    let (vx, vy) = (field.x + field.w - px(18.0), mid + px(2.0));
-                    for t in 0..px(5.0) {
-                        canvas.fill(Rect { x: vx - t - 1, y: vy - t, w: 2, h: 2 }, c.dim);
-                        canvas.fill(Rect { x: vx + t - 1, y: vy - t, w: 2, h: 2 }, c.dim);
-                    }
+                    solar(canvas, icons::CHEVRON_DOWN, field.x + field.w - px(18.0), mid, px(14.0), c.dim);
                     page.push((field, Hit::Open(key)));
                 }
                 Key::Size => stepper(canvas, fonts, &mut page, mid, key, &format!("{size}")),
@@ -1307,30 +1298,10 @@ impl App {
     }
 }
 
-/// A chevron pointing down, as on a list that opens.
-fn chevron(canvas: &mut Canvas, cx: i32, cy: i32, size: i32, color: u32) {
-    let y = cy + size / 2;
-    for t in 0..size {
-        canvas.fill(Rect { x: cx - t - 1, y: y - t, w: 2, h: 2 }, color);
-        canvas.fill(Rect { x: cx + t - 1, y: y - t, w: 2, h: 2 }, color);
-    }
-}
-
-/// An arrow pointing right, for going somewhere.
-fn arrow(canvas: &mut Canvas, cx: i32, cy: i32, arm: i32, dot: i32, color: u32) {
-    canvas.fill(Rect { x: cx - arm, y: cy - dot / 2, w: 2 * arm, h: dot }, color);
-    for t in 0..=arm * 3 / 5 {
-        canvas.round_fill(Rect { x: cx + arm - t - dot / 2, y: cy - t - dot / 2, w: dot, h: dot }, dot / 2, color, 255);
-        canvas.round_fill(Rect { x: cx + arm - t - dot / 2, y: cy + t - dot / 2, w: dot, h: dot }, dot / 2, color, 255);
-    }
-}
-
-/// An ×, for closing.
-fn cross(canvas: &mut Canvas, cx: i32, cy: i32, arm: i32, dot: i32, color: u32) {
-    for t in -arm..=arm {
-        canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy + t - dot / 2, w: dot, h: dot }, dot / 2, color, 255);
-        canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy - t - dot / 2, w: dot, h: dot }, dot / 2, color, 255);
-    }
+/// One of the icons, `size` square, centred on cx, cy.
+fn solar(canvas: &mut Canvas, icon: char, cx: i32, cy: i32, size: i32, color: u32) {
+    let clip = Rect { x: cx - size / 2, y: cy - size / 2, w: size, h: size };
+    canvas.icon(icon, size, clip.x, clip.y, color, clip);
 }
 
 fn capitalize(s: &str) -> String {

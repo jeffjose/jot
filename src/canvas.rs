@@ -354,51 +354,51 @@ fn text_lift() -> &'static [u8; 256] {
 
 const TEXT_LIFT: f64 = 1.3;
 
-/// Icons jot carries: 64-pixel masks, white on clear.
+/// Icons jot carries: Solar's, in its line style at a heavier line, as jog
+/// draws them, made into a font by `tools/solar_font.py`. Each is the
+/// letter that font has it at.
 pub mod icons {
-    pub static KEYBOARD: &[u8] = include_bytes!("../assets/icons/keyboard.png");
-    pub static TEE: &[u8] = include_bytes!("../assets/icons/tee.png");
-    pub static FILTER: &[u8] = include_bytes!("../assets/icons/filter.png");
-    pub static BELL: &[u8] = include_bytes!("../assets/icons/bell.png");
-    pub static FOCUS: &[u8] = include_bytes!("../assets/icons/focus.png");
-    pub static UNFOCUS: &[u8] = include_bytes!("../assets/icons/unfocus.png");
-    pub static RESTART: &[u8] = include_bytes!("../assets/icons/restart.png");
+    pub const FOCUS: char = '\u{e219}';
+    pub const UNFOCUS: char = '\u{e21f}';
+    pub const RESTART: char = '\u{e14a}';
+    pub const KEYBOARD: char = '\u{e2a0}';
+    pub const TEE: char = '\u{e2a1}';
+    pub const FILTER: char = '\u{e2a2}';
+    pub const BELL: char = '\u{e2a3}';
+    pub const PLAY: char = '\u{e13f}';
+    pub const CLOSE: char = '\u{e1b1}';
+    pub const MINUS: char = '\u{e2a4}';
+    pub const CHEVRON_DOWN: char = '\u{e2a5}';
+    pub const ARROW_RIGHT: char = '\u{e04d}';
 }
 
-/// An icon's mask at `size` pixels square: its coverage, scaled down from
-/// the 64 it is carried at by the mean of each block, kept once made.
-fn icon_mask(png: &'static [u8], size: usize) -> std::rc::Rc<Vec<u8>> {
+/// An icon's mask at `size` pixels square: its letter drawn to fill the
+/// square, as Solar's 24 fill theirs, kept once made.
+fn icon_mask(icon: char, size: usize) -> std::rc::Rc<Vec<u8>> {
     thread_local! {
-        static MADE: std::cell::RefCell<std::collections::HashMap<(usize, usize), std::rc::Rc<Vec<u8>>>> = Default::default();
+        static FONT: Option<fontdue::Font> = fontdue::Font::from_bytes(&include_bytes!("../assets/solar.ttf")[..], fontdue::FontSettings::default()).ok();
+        static MADE: std::cell::RefCell<std::collections::HashMap<(char, usize), std::rc::Rc<Vec<u8>>>> = Default::default();
     }
-    let key = (png.as_ptr() as usize, size);
-    if let Some(m) = MADE.with(|m| m.borrow().get(&key).cloned()) {
+    if let Some(m) = MADE.with(|m| m.borrow().get(&(icon, size)).cloned()) {
         return m;
     }
     let mut out = vec![0u8; size * size];
-    let decoded = (|| {
-        let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().ok()?;
-        let mut buf = vec![0; reader.output_buffer_size()?];
-        let info = reader.next_frame(&mut buf).ok()?;
-        (info.color_type == png::ColorType::Rgba).then_some((buf, info.width as usize, info.height as usize))
-    })();
-    if let Some((buf, w, h)) = decoded {
-        for y in 0..size {
-            for x in 0..size {
-                let (x0, x1) = (x * w / size, ((x + 1) * w / size).max(x * w / size + 1));
-                let (y0, y1) = (y * h / size, ((y + 1) * h / size).max(y * h / size + 1));
-                let mut sum = 0u32;
-                for sy in y0..y1 {
-                    for sx in x0..x1 {
-                        sum += buf[(sy * w + sx) * 4 + 3] as u32;
-                    }
+    FONT.with(|font| {
+        let Some(font) = font else { return };
+        // The em is the square, its baseline at the bottom.
+        let (m, bits) = font.rasterize(icon, size as f32);
+        let top = size as i32 - m.height as i32 - m.ymin;
+        for gy in 0..m.height {
+            for gx in 0..m.width {
+                let (x, y) = (m.xmin + gx as i32, top + gy as i32);
+                if x >= 0 && y >= 0 && (x as usize) < size && (y as usize) < size {
+                    out[y as usize * size + x as usize] = bits[gy * m.width + gx];
                 }
-                out[y * size + x] = (sum / ((x1 - x0) * (y1 - y0)) as u32) as u8;
             }
         }
-    }
+    });
     let m = std::rc::Rc::new(out);
-    MADE.with(|made| made.borrow_mut().insert(key, m.clone()));
+    MADE.with(|made| made.borrow_mut().insert((icon, size), m.clone()));
     m
 }
 
@@ -406,9 +406,14 @@ impl Canvas {
     /// One of jot's icons, `size` pixels square, its top left at x, y,
     /// in `color`.
     #[allow(clippy::too_many_arguments)]
-    pub fn icon(&mut self, png: &'static [u8], size: i32, x: i32, y: i32, color: u32, clip: crate::layout::Rect) {
+    pub fn icon(&mut self, icon: char, size: i32, x: i32, y: i32, color: u32, clip: crate::layout::Rect) {
         let size = size.max(1) as usize;
-        let mask = icon_mask(png, size);
+        let mask = icon_mask(icon, size);
         self.coverage(&mask, size, size, x, y, color, clip, false);
+    }
+
+    /// An icon `size` pixels square in the middle of a button.
+    pub fn icon_in(&mut self, icon: char, button: crate::layout::Rect, size: i32, color: u32) {
+        self.icon(icon, size, button.x + (button.w - size) / 2, button.y + (button.h - size) / 2, color, button);
     }
 }

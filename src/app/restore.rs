@@ -126,11 +126,7 @@ impl App {
         if hover == Some(false) {
             self.canvas.round_fill(close, cs / 2, c.hover, 255);
         }
-        let (cx, cy, arm, dot) = (close.x + cs / 2, close.y + cs / 2, px(4.0), px(2.0).max(2));
-        for t in -arm..=arm {
-            self.canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy + t - dot / 2, w: dot, h: dot }, dot / 2, c.dim, 255);
-            self.canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy - t - dot / 2, w: dot, h: dot }, dot / 2, c.dim, 255);
-        }
+        self.canvas.icon_in(crate::canvas::icons::CLOSE, close, px(14.0), c.dim);
         if let Some(o) = &mut self.offered {
             o.restore = restore;
             o.close = close;

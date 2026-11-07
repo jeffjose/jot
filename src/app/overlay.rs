@@ -771,6 +771,8 @@ impl App {
 impl App {
     /// A menu of these items at the pointer: no line at its ends.
     pub(super) fn open_items_menu(&mut self, mut items: Vec<Option<Item>>) {
+        // Items left out leave their separators; one between groups is enough.
+        items.dedup_by(|a, b| a.is_none() && b.is_none());
         while matches!(items.last(), Some(None)) {
             items.pop();
         }
