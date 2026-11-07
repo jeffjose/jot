@@ -1011,7 +1011,7 @@ impl App {
         }
         // A pane's command line open: the keys are its, all but its own key
         // and the other bindings, which shut it or act over it.
-        if self.bar.is_some() && event.state == ElementState::Pressed {
+        if self.bar.is_some() && self.editor.is_none() && event.state == ElementState::Pressed {
             if self.mods.alt_key() && code == KeyCode::Semicolon {
                 self.toggle_bar();
                 return;

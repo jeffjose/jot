@@ -60,7 +60,7 @@ impl App {
             rows.push(("pid".into(), format!("{pgrp} (its process group)")));
             let took = p.shell.running.as_ref().map(|(at, _, _)| at.elapsed()).or_else(|| age(pgrp));
             if let Some(t) = took {
-                rows.push(("for".into(), commands::human(t)));
+                rows.push(("elapsed".into(), commands::human(t)));
             }
             if let Some(state) = status(pgrp, "State") {
                 rows.push(("state".into(), state));

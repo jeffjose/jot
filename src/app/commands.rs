@@ -58,6 +58,8 @@ pub struct Editor {
     pub lines: Vec<Vec<char>>,
     pub row: usize,
     pub col: usize,
+    /// What is made goes to the pane's command line, not its prompt.
+    pub into_bar: bool,
 }
 
 impl App {
@@ -261,12 +263,14 @@ impl App {
         }
     }
 
-    /// Ctrl Shift E: the command line being typed, in an editor of its own,
-    /// broken where its options and pipes start.
-    pub(super) fn open_editor(&mut self) {
-        let Some(id) = self.focused() else { return };
-        let Some(p) = self.panes.get_mut(&id) else { return };
-        let text = match p.shell.input_at {
+    /// The command line at a pane's prompt: as followed key by key, else
+    /// as it reads on the screen.
+    pub(super) fn prompt_line(&mut self, id: PaneId) -> String {
+        let Some(p) = self.panes.get_mut(&id) else { return String::new() };
+        if let Some(line) = p.shell.line.clone() {
+            return line;
+        }
+        match p.shell.input_at {
             Some((x, row)) => {
                 let (_, cur) = Self::cursor_row(p);
                 p.term.select_rows((x, row), (p.cols.saturating_sub(1), cur));
@@ -275,9 +279,22 @@ impl App {
                 t.replace('\n', "")
             }
             None => String::new(),
-        };
+        }
+    }
+
+    /// Ctrl Shift E: the command line being typed, in an editor of its own.
+    pub(super) fn open_editor(&mut self) {
+        let Some(id) = self.focused() else { return };
+        let text = self.prompt_line(id);
+        self.open_editor_with(id, &text, false);
+    }
+
+    /// A command in the editor, broken where its options and pipes start;
+    /// what is made of it goes back to the prompt, or with `into_bar` to
+    /// the pane's command line.
+    pub(super) fn open_editor_with(&mut self, id: PaneId, text: &str, into_bar: bool) {
         let mut lines: Vec<Vec<char>> = vec![Vec::new()];
-        let words: Vec<&str> = text.split(' ').collect();
+        let words: Vec<&str> = text.trim().split(' ').collect();
         for (i, w) in words.iter().enumerate() {
             let breaks = i > 0 && (w.starts_with('-') || ["|", "&&", "||", ";"].contains(w)) && lines.last().is_some_and(|l| l.len() > 12);
             if breaks {
@@ -289,25 +306,43 @@ impl App {
         }
         let row = lines.len() - 1;
         let col = lines[row].len();
-        self.editor = Some(Editor { pane: id, lines, row, col });
+        self.editor = Some(Editor { pane: id, lines, row, col, into_bar });
         self.full = true;
         self.redraw();
     }
 
-    /// The edited line back at the prompt, in place of what was there;
-    /// run, with `run`.
+    /// The edited line back where it came from: at the prompt, in place of
+    /// what was there, or in the pane's command line. Run, with `run`.
     fn submit_editor(&mut self, run: bool) {
         let Some(e) = self.editor.take() else { return };
         let line = e.lines.iter().map(|l| l.iter().collect::<String>().trim().to_string()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
-        if let Some(p) = self.panes.get(&e.pane) {
+        if e.into_bar {
+            if self.bar.as_ref().is_none_or(|b| b.pane != e.pane) {
+                self.bar = None;
+                self.set_focus(e.pane);
+                self.toggle_bar();
+            }
+            if let Some(b) = &mut self.bar {
+                b.field = crate::field::TextField::new(&line);
+                b.selected = 0;
+            }
+            if run {
+                self.bar_submit();
+            }
+            self.full = true;
+            return self.relayout();
+        }
+        if let Some(p) = self.panes.get_mut(&e.pane) {
             // To the end of the line, and all of it taken away (Ctrl E,
             // Ctrl U), then the new line typed.
             let mut bytes = vec![0x05, 0x15];
             bytes.extend_from_slice(line.as_bytes());
             if run {
                 bytes.push(b'\r');
+                p.shell.entered = Some(line.clone());
             }
             p.pty.write(&bytes);
+            p.shell.line = if run { None } else { Some(line) };
         }
         self.full = true;
         self.redraw();

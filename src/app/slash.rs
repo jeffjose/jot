@@ -33,6 +33,8 @@ pub enum Does {
     Stop,
     /// What is running in the pane, and the pane itself.
     Info,
+    /// The command line in the long-command editor.
+    Edit,
     Kill,
 }
 
@@ -103,6 +105,7 @@ impl App {
             Command::new("bold", "Turn bold text on or off", Does::Toggle(Key::Bold)),
             Command::new("captions", "Turn pane captions on or off", Does::Toggle(Key::Captions)),
             Command::new("cd", "Go to a project folder", Does::Cd),
+            Command::new("edit", "Edit this command in a larger editor", Does::Edit),
             Command::new("date", "Insert today's date", Does::Date),
             Command::new("cwd", "Insert this folder's path", Does::Cwd),
         ];
@@ -178,7 +181,7 @@ impl App {
             .into_iter()
             .filter_map(|c| {
                 let label = if c.takes_arg() { format!("{} …", c.name) } else { c.name.clone() };
-                if mid && !(matches!(c.does, Does::Insert(_) | Does::Date | Does::Cwd) && c.name.starts_with(typed)) {
+                if mid && !(matches!(c.does, Does::Insert(_) | Does::Date | Does::Cwd | Does::Edit) && c.name.starts_with(typed)) {
                     return None;
                 }
                 rank(&c.name, typed).map(|r| (r, Row { label, what: c.what.clone(), kind: kind_of(&c.does) }))
@@ -428,6 +431,10 @@ impl App {
             Does::Run(cmd) => write(self, format!("{cmd}\r").as_bytes()),
             Does::Stop => self.stop_job(id),
             Does::Info => self.print_info(id),
+            Does::Edit => {
+                let text = self.prompt_line(id);
+                self.open_editor_with(id, &text, false);
+            }
             Does::Kill => self.kill_job(id),
             Does::Date => self.slash_insert(id, &date_today()),
             Does::Cwd => {
@@ -520,6 +527,7 @@ fn kind_of(d: &Does) -> &'static str {
         Does::Toggle(_) | Does::Theme | Does::Accent => "setting",
         Does::Cd => "go",
         Does::Insert(_) | Does::Date | Does::Cwd => "insert",
+        Does::Edit => "edit",
         Does::Run(_) => "run",
         Does::Stop | Does::Kill | Does::Info => "job",
     }

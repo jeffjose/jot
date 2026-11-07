@@ -122,7 +122,7 @@ impl App {
                 if let Some(row) = rows.get(b.selected).cloned() {
                     return self.bar_slash(&row, event_loop);
                 }
-                return self.bar_submit(event_loop);
+                return self.bar_submit();
             }
             KeyCode::Tab => {
                 // The pick's name filled in, and a space after one that
@@ -207,9 +207,17 @@ impl App {
 
     /// Enter: the command run at the prompt, or put in the queue behind
     /// what is running.
-    fn bar_submit(&mut self, _event_loop: &ActiveEventLoop) {
+    pub(super) fn bar_submit(&mut self) {
         let Some(b) = &self.bar else { return };
         let (id, cmd) = (b.pane, b.field.string().trim().to_string());
+        // A command ending in /edit: it, in the long-command editor, and
+        // back here after.
+        if let Some(before) = cmd.strip_suffix("/edit").filter(|b| b.is_empty() || b.ends_with(char::is_whitespace)) {
+            let before = before.trim().to_string();
+            if !before.is_empty() {
+                return self.open_editor_with(id, &before, true);
+            }
+        }
         if cmd.is_empty() {
             return;
         }
@@ -264,18 +272,23 @@ impl App {
             }
             Does::Run(cmd) => {
                 put(self, &cmd);
-                self.bar_submit(event_loop);
+                self.bar_submit();
             }
             Does::Cd => {
                 let roots: Vec<PathBuf> = self.config.projects.iter().map(|p| persist::expand(p)).collect();
                 if let Some(dir) = palette::projects(&roots).into_iter().find(|d| folder_name(d) == arg) {
                     put(self, &format!("cd '{}'", dir.display().to_string().replace('\'', "'\\''")));
-                    self.bar_submit(event_loop);
+                    self.bar_submit();
                 }
             }
             Does::Stop => {
                 self.stop_job(id);
                 self.close_bar();
+            }
+            Does::Edit => {
+                self.close_bar();
+                let text = self.prompt_line(id);
+                self.open_editor_with(id, &text, false);
             }
             Does::Info => {
                 self.bar_info(id);
