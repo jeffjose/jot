@@ -132,8 +132,6 @@ pub struct Workspace {
     minimized: Vec<PaneId>,
     /// Panes made into empty space: room only, no shell, no focus.
     spaces: Vec<PaneId>,
-    /// The machine its panes are on: its place in the window's machines.
-    machine: usize,
 }
 
 enum Drag {
@@ -289,6 +287,8 @@ pub struct App {
     unreached: Vec<WorkspaceSpec>,
     /// Where machines' sessions send what they say.
     tx: std::sync::mpsc::Sender<Output>,
+    /// Panes to become shells on a machine once it is reached (/connect).
+    connecting: Vec<(usize, PaneId)>,
     /// Panes the session had when this window took it up, until the
     /// layout takes them up.
     held: HashMap<u64, crate::mux::Held>,
@@ -461,6 +461,7 @@ impl App {
             target: 0,
             unreached: Vec::new(),
             tx: tx.clone(),
+            connecting: Vec::new(),
             mux: attached.client,
             held,
             replays: Vec::new(),
@@ -497,7 +498,13 @@ impl App {
     fn spawn(&mut self, start: Start) -> PaneId {
         let (cols, rows) = (80, 24);
         // On the machine asked for: its session's client, its names.
-        let m = self.target.min(self.machines.len() - 1);
+        let mut m = self.target.min(self.machines.len() - 1);
+        // A new shell for a machine not reached: here instead.
+        if m > 0 && start.pane.is_none() && !self.machines[m].client.connected() {
+            let host = self.machines[m].host.clone().unwrap_or_default();
+            self.toast(&format!("{host} is not reached yet"), "The new shell is on this machine", None, None);
+            m = 0;
+        }
         let client = self.machines[m].client.clone();
         let held = start.pane.and_then(|p| self.held.remove(&crate::mux::app_id(m, p)));
         let mut kept = None;
@@ -507,9 +514,23 @@ impl App {
                 kept = Some((h.tee, h.queue));
                 (h.pane, h.pid, h.cmd)
             }
+            // One of its panes, on a machine being reached: here now, filled in
+            // when it is.
+            None if m > 0 && !client.connected() && start.pane.is_some() => {
+                let pane = start.pane.unwrap_or(0);
+                client.want(pane);
+                (pane, 0, start.cmd)
+            }
             None => {
                 match client.spawn(&start.cmd, &start.cwd, cols, rows, (0, 0)) {
                     Ok((pane, pid)) => (pane, pid, start.cmd),
+                    // Another machine failing: the shell here instead.
+                    Err(e) if m > 0 => {
+                        let host = self.machines[m].host.clone().unwrap_or_default();
+                        self.toast(&format!("Could not start a shell on {host}"), &e.to_string(), Some(0xE5484D), None);
+                        self.target = 0;
+                        return self.spawn(Start { pane: None, host: None, ..start });
+                    }
                     Err(e) => {
                         eprintln!("jot: could not start a shell: {e}");
                         std::process::exit(1);
@@ -583,20 +604,13 @@ impl App {
     }
 
     fn add_workspace(&mut self, spec: &WorkspaceSpec) {
-        // On the machine it was on: reached, if it is not already.
-        self.target = match &spec.host {
-            None => 0,
-            Some(h) => match self.machine(h) {
-                Ok(m) => m,
-                Err(e) => {
-                    self.toast(&format!("Could not reach {h}"), &e.to_string(), Some(0xE5484D), None);
-                    self.unreached.push(spec.clone());
-                    return;
-                }
-            },
-        };
+        // Each pane on the machine it was on (the workspace's, for one
+        // written with a machine for all), reached in the background if it
+        // is not already.
+        let base = spec.host.clone().map_or(0, |h| self.machine(&h));
         let mut ids = Vec::new();
         let root = spec.build(&mut |start| {
+            self.target = start.host.clone().map_or(base, |h| self.machine(&h));
             let id = self.spawn(start);
             ids.push(id);
             id
@@ -628,7 +642,7 @@ impl App {
             (true, Some(h)) => h.clone(),
             (true, None) => folder_name(&spec.folder()),
         };
-        self.workspaces.push(Workspace { name, root, focus, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces, machine: self.target });
+        self.workspaces.push(Workspace { name, root, focus, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces });
         self.run_hook(self.workspaces.len() - 1, true);
     }
 
@@ -813,7 +827,7 @@ impl App {
     fn split_side(&mut self, dir: Dir, before: bool) {
         let at = self.focused().unwrap_or(0);
         let cwd = self.panes.get(&at).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
-        self.split_at(dir, before, Start { cmd: String::new(), cwd, pane: None });
+        self.split_at(dir, before, Start { cmd: String::new(), cwd, pane: None, host: None });
     }
 
     /// Splits the pane you are in, the new one running `start`.
@@ -861,8 +875,8 @@ impl App {
     /// afresh in its folder, as Ctrl Shift T brings back a tab.
     fn reopen(&mut self) {
         let Some(c) = self.closed.pop() else { return };
-        self.target = self.workspaces.iter().find(|w| w.name == c.workspace).map_or(0, |w| w.machine);
-        let id = self.spawn(Start { cmd: c.cmd, cwd: c.cwd, pane: None });
+        self.target = self.focused().map_or(0, |f| self.machine_of(f));
+        let id = self.spawn(Start { cmd: c.cmd, cwd: c.cwd, pane: None, host: None });
         let wi = self.workspaces.iter().position(|w| w.name == c.workspace);
         match wi {
             Some(wi) => {
@@ -878,7 +892,7 @@ impl App {
             }
             // Its workspace was closed with it: it comes back as one.
             None => {
-                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new(), machine: crate::mux::split_id(id).0 });
+                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new() });
                 self.go_to(self.workspaces.len() - 1);
             }
         }
@@ -985,10 +999,10 @@ impl App {
         }
     }
 
-    /// A new workspace, on the machine of the one you are in.
+    /// A new workspace, on the machine of the pane you are in.
     fn new_workspace(&mut self) {
         let cwd = self.focused().and_then(|f| self.panes.get(&f)).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
-        let m = self.workspaces.get(self.current).map_or(0, |w| w.machine);
+        let m = self.focused().map_or(0, |f| self.machine_of(f));
         let host = (m > 0).then(|| self.machines[m].host.clone()).flatten();
         self.add_workspace(&WorkspaceSpec { name: String::new(), host, cwd: Some(cwd.display().to_string()), panes: vec![], split: None, layout: None, ..Default::default() });
         self.go_to(self.workspaces.len() - 1);
@@ -998,7 +1012,7 @@ impl App {
         if self.roam.is_none() {
             let cwd = self.roam_cwd.clone().unwrap_or_else(pty::home);
             self.target = 0;
-            self.roam = Some(self.spawn(Start { cmd: String::new(), cwd, pane: None }));
+            self.roam = Some(self.spawn(Start { cmd: String::new(), cwd, pane: None, host: None }));
         }
         self.roam_shown = !self.roam_shown;
         self.unsaved = true;
@@ -1761,6 +1775,7 @@ impl App {
                     return;
                 }
                 Output::Back(k, held) => back = Some((k, held)),
+                Output::Failed(k, why) => self.not_reached(k, &why),
             }
         }
         if let (true, Some(id)) = (search_again, searched) {
@@ -1768,6 +1783,7 @@ impl App {
         }
         if let Some((k, held)) = back {
             exited.extend(self.taken_back(k, held));
+            self.connected(k);
         }
         for id in exited {
             // Empty space's shell was ended on purpose: the space stays.
@@ -2237,6 +2253,20 @@ impl App {
         if n > 0 {
             x = self.canvas.text(&mut self.fonts.ui, &format!("{n}"), x as f32, ty, num, bar) + self.px(8.0);
         }
+        // On another machine: its name, in amber, on a faint pill; while
+        // it is being reached again, said.
+        let m = crate::mux::split_id(id).0;
+        if let Some(mach) = self.machines.get(m).filter(|_| m > 0) {
+            let host = mach.host.clone().unwrap_or_default();
+            let label = if mach.client.connected() { host } else { format!("{host} · reconnecting") };
+            let amber = 0xF0B43C;
+            let w = self.fonts.small.width(&label) + self.px(12.0);
+            let pill = Rect { x, y: bar.y + (h - b) / 2, w: w.min((right - x) / 2).max(0), h: b };
+            let (p6, p12) = (self.px(6.0), self.px(12.0));
+            self.canvas.round_fill(pill, self.px(4.0), amber, 30);
+            self.canvas.text_fit(&mut self.fonts.small, &label, pill.x + p6, bar.y + (h - small) / 2, pill.w - p12, amber, pill);
+            x = pill.x + pill.w + self.px(8.0);
+        }
         let room = right - self.px(8.0) - x;
         self.canvas.text_fit(&mut self.fonts.ui, caption, x, ty, room.max(0), fg, bar);
         self.damage.push(bar);
@@ -2338,15 +2368,23 @@ impl App {
         }
         let panes = &self.panes;
         let spaces: Vec<PaneId> = self.workspaces.iter().flat_map(|w| w.spaces.iter().copied()).collect();
-        let describe = |id: PaneId| match panes.get(&id) {
-            Some(p) => (p.cmd.clone(), p.pty.cwd(), p.pins.iter().map(|pin| pin.cmd.clone()).collect(), spaces.contains(&id)),
-            None => (String::new(), None, Vec::new(), spaces.contains(&id)),
-        };
+        let spaces = &spaces;
         let machines = &self.machines;
-        // Each workspace, with the machine it is on (none: the session's
-        // own).
-        let spec_of = |ws: &Workspace, host: Option<String>| WorkspaceSpec { name: ws.name.clone(), host, layout: Some(persist::spec(&ws.root, &describe)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), ..Default::default() };
-        let mut workspaces: Vec<WorkspaceSpec> = self.workspaces.iter().map(|ws| spec_of(ws, (ws.machine > 0).then(|| machines[ws.machine].host.clone()).flatten())).collect();
+        // Each pane with the machine it is on, as seen from machine `k`'s
+        // session (none: that one).
+        let describe_for = |k: usize| {
+            move |id: PaneId| {
+                let m = crate::mux::split_id(id).0;
+                let host = (m != k).then(|| machines.get(m).and_then(|x| x.host.clone())).flatten();
+                match panes.get(&id) {
+                    Some(p) => (p.cmd.clone(), p.pty.cwd(), p.pins.iter().map(|pin| pin.cmd.clone()).collect(), spaces.contains(&id), host),
+                    None => (String::new(), None, Vec::new(), spaces.contains(&id), host),
+                }
+            }
+        };
+        let describe = describe_for(0);
+        let spec_of = |ws: &Workspace, d: &dyn Fn(PaneId) -> (String, Option<PathBuf>, Vec<String>, bool, Option<String>)| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &d)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), ..Default::default() };
+        let mut workspaces: Vec<WorkspaceSpec> = self.workspaces.iter().map(|ws| spec_of(ws, &describe)).collect();
         workspaces.extend(self.unreached.iter().cloned());
         let roam = self.roam.and_then(|r| panes.get(&r)).and_then(|p| p.pty.cwd()).or(self.roam_cwd.clone()).map(|p| persist::shorten(&p));
         let popouts = self.popouts.iter().filter(|po| crate::mux::split_id(po.pane).0 == 0).map(|po| persist::spec(&Node::Pane(po.pane), &describe)).collect();
@@ -2359,7 +2397,18 @@ impl App {
             self.mux.layout(text);
         }
         for (k, m) in machines.iter().enumerate().skip(1) {
-            let own: Vec<WorkspaceSpec> = self.workspaces.iter().filter(|ws| ws.machine == k).map(|ws| spec_of(ws, None)).collect();
+            // Its workspaces: those all of whose panes are on it.
+            let d = describe_for(k);
+            let own: Vec<WorkspaceSpec> = self
+                .workspaces
+                .iter()
+                .filter(|ws| {
+                    let mut ids = Vec::new();
+                    ws.root.panes(&mut ids);
+                    ids.iter().all(|id| crate::mux::split_id(*id).0 == k)
+                })
+                .map(|ws| spec_of(ws, &d))
+                .collect();
             if let Ok(text) = toml::to_string(&Session { current: 0, roam: None, workspaces: own, popouts: Vec::new() }) {
                 m.client.layout(text);
             }
@@ -2596,7 +2645,7 @@ impl App {
             };
             let held = pane.is_some_and(|p| self.held.contains_key(&p));
             self.target = 0;
-            let id = self.spawn(Start { cmd, cwd, pane });
+            let id = self.spawn(Start { cmd, cwd, pane, host: None });
             if !held {
                 restore_scrollback(self.panes.get_mut(&id), &format!("p{}", i + 1));
             }
@@ -2706,7 +2755,7 @@ impl App {
             self.replays.push((id, h.log));
         }
         if !new.is_empty() {
-            let panes: Vec<persist::Spec> = new.iter().map(|id| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*id) }).collect();
+            let panes: Vec<persist::Spec> = new.iter().map(|id| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*id), host: None }).collect();
             let layout = if panes.len() == 1 { panes.into_iter().next() } else { Some(persist::Spec::Across { v: panes, sizes: Vec::new() }) };
             let host = self.machines.get(k).and_then(|m| m.host.clone()).filter(|_| k > 0);
             self.add_workspace(&WorkspaceSpec { name: "Kept".into(), layout, host, ..Default::default() });
@@ -2737,6 +2786,7 @@ fn hearer(k: usize, tx: std::sync::mpsc::Sender<Output>, proxy: EventLoopProxy<(
             Heard::TeeEnd(p, n, e) => Output::TeeEnd(id(p), n, e),
             Heard::Proc(p, pr) => Output::Proc(id(p), pr),
             Heard::Back(held) => Output::Back(k, held),
+            Heard::Failed(why) => Output::Failed(k, why),
             Heard::Gone => Output::Gone(k),
         };
         if let Ok(tx) = tx.lock() {
@@ -2756,28 +2806,17 @@ pub struct Machine {
 }
 
 impl App {
-    /// The place among the window's machines of `host`, reached by ssh if
-    /// it is not one yet.
-    fn machine(&mut self, host: &str) -> std::io::Result<usize> {
-        self.connect(host).map(|(m, _)| m)
-    }
-
-    /// `host` reached, if it is not one of the window's machines yet: its
-    /// place, and (when newly reached) the workspaces its session kept
-    /// for the next window, with its panes no window has held to be
-    /// taken up.
-    fn connect(&mut self, host: &str) -> std::io::Result<(usize, String)> {
+    /// The place among the window's machines of `host`: one of them, or
+    /// a new one, reached in the background (its panes wait for it).
+    fn machine(&mut self, host: &str) -> usize {
         if let Some(m) = self.machines.iter().position(|m| m.host.as_deref() == Some(host)) {
-            return Ok((m, String::new()));
+            self.machines[m].client.try_again();
+            return m;
         }
         let k = self.machines.len();
         let hear = hearer(k, self.tx.clone(), self.proxy.clone(), self.woken.clone());
-        let attached = crate::mux::Client::open_remote(host, hear)?;
-        for h in attached.panes {
-            self.held.insert(crate::mux::app_id(k, h.pane), h);
-        }
-        self.machines.push(Machine { host: Some(host.to_string()), client: attached.client });
-        Ok((k, attached.layout))
+        self.machines.push(Machine { host: Some(host.to_string()), client: crate::mux::Client::lazy(host, hear) });
+        k
     }
 
     /// The machine a pane is on.
@@ -2811,7 +2850,7 @@ impl App {
         }
         for (m, mut left) in by_machine {
             left.sort();
-            let panes: Vec<persist::Spec> = left.iter().map(|p| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*p) }).collect();
+            let panes: Vec<persist::Spec> = left.iter().map(|p| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*p), host: None }).collect();
             let layout = if panes.len() == 1 { panes.into_iter().next() } else { Some(persist::Spec::Across { v: panes, sizes: Vec::new() }) };
             let host = (m > 0).then(|| self.machines.get(m).and_then(|x| x.host.clone())).flatten();
             self.add_workspace(&WorkspaceSpec { name: "Kept".into(), layout, host, ..Default::default() });
@@ -2820,34 +2859,72 @@ impl App {
 }
 
 impl App {
-    /// Connect to machine…: `host` reached, and a workspace on it. Those
-    /// its session kept from windows gone, and panes no window has, come
-    /// with it; else one with a shell in its home.
-    pub(super) fn connect_workspace(&mut self, host: &str) {
-        let first = !self.machines.iter().any(|m| m.host.as_deref() == Some(host));
-        let before = self.workspaces.len();
-        match self.connect(host) {
-            Err(e) => self.toast(&format!("Could not reach {host}"), &e.to_string(), Some(0xE5484D), None),
-            Ok((_, layout)) => {
-                if first {
-                    for mut spec in toml::from_str::<Session>(&layout).map(|s| s.workspaces).unwrap_or_default() {
-                        spec.host = Some(host.to_string());
-                        self.add_workspace(&spec);
-                    }
-                    self.keep_left(&[]);
-                }
-                if self.workspaces.len() == before {
-                    self.add_workspace(&WorkspaceSpec { host: Some(host.to_string()), cwd: Some("~".into()), ..Default::default() });
-                }
-                if self.workspaces.len() > before {
-                    self.go_to(before);
-                }
-                self.replay_held();
-                self.unsaved = true;
-                self.set_title();
-            }
+    /// /connect HOST in a pane: the pane you are in becomes a shell on
+    /// HOST, in its place, once HOST is reached (now, if it is already).
+    /// Until then the pane says so.
+    pub(super) fn connect_pane(&mut self, host: &str) {
+        if let Some(at) = self.focused() {
+            self.connect_pane_at(at, host);
         }
-        self.full = true;
-        self.redraw();
+    }
+
+    pub(super) fn connect_pane_at(&mut self, at: PaneId, host: &str) {
+        let k = self.machine(host);
+        self.connecting.retain(|(_, p)| *p != at);
+        self.connecting.push((k, at));
+        if self.machines[k].client.connected() {
+            self.connected(k);
+        } else {
+            self.print_note(at, &format!("connecting to {host}…"));
+        }
+    }
+
+    /// Machine `k` reached: the panes waiting on it become shells there.
+    fn connected(&mut self, k: usize) {
+        let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.connecting).into_iter().partition(|(m, _)| *m == k);
+        self.connecting = later;
+        for (_, at) in now {
+            let Some(wi) = self.workspaces.iter().position(|w| w.root.contains(at)) else { continue };
+            self.target = k;
+            let new = self.spawn(Start { cmd: String::new(), cwd: PathBuf::from("~"), pane: None, host: None });
+            let ws = &mut self.workspaces[wi];
+            ws.root.replace(at, new);
+            if ws.focus == at {
+                ws.focus = new;
+            }
+            // Its own shell, here, ended.
+            self.panes.remove(&at);
+        }
+        self.changed();
+        self.set_title();
+    }
+
+    /// Machine `k` could not be reached: the panes waiting on it say why
+    /// and stay as they were; with nothing of it shown, it is not tried
+    /// again.
+    fn not_reached(&mut self, k: usize, why: &str) {
+        let host = self.machines.get(k).and_then(|m| m.host.clone()).unwrap_or_default();
+        let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.connecting).into_iter().partition(|(m, _)| *m == k);
+        self.connecting = later;
+        for (_, at) in &now {
+            self.print_note(*at, &format!("could not reach {host}: {why}"));
+        }
+        if !self.panes.keys().any(|id| crate::mux::split_id(*id).0 == k) {
+            self.machines[k].client.give_up();
+        } else if now.is_empty() {
+            self.toast(&format!("Cannot reach {host}"), &format!("{why} · trying again"), Some(0xE5484D), None);
+        }
+    }
+}
+
+impl App {
+    /// A word about the pane under its command line, where what a slash
+    /// command did is shown: connecting, or why not.
+    fn print_note(&mut self, id: PaneId, text: &str) {
+        if let Some(p) = self.panes.get_mut(&id) {
+            p.shell.ran = Some(("/connect".into(), text.to_string(), None));
+            p.full = true;
+        }
+        self.relayout();
     }
 }

@@ -31,6 +31,8 @@ pub enum Output {
     /// A machine's session reached again, with what it holds (by its
     /// own names).
     Back(usize, Vec<crate::mux::Held>),
+    /// A machine could not be reached, and why.
+    Failed(usize, String),
     /// The connection to a machine's session ended.
     Gone(usize),
 }

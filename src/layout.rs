@@ -59,6 +59,18 @@ impl Node {
         }
     }
 
+    /// Pane `at` replaced by `new`, in its place and size. True when found.
+    pub fn replace(&mut self, at: PaneId, new: PaneId) -> bool {
+        match self {
+            Node::Pane(id) if *id == at => {
+                *id = new;
+                true
+            }
+            Node::Pane(_) => false,
+            Node::Split { children, .. } => children.iter_mut().any(|c| c.replace(at, new)),
+        }
+    }
+
     pub fn contains(&self, id: PaneId) -> bool {
         match self {
             Node::Pane(p) => *p == id,

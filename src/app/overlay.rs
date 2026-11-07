@@ -300,7 +300,7 @@ impl App {
                 self.palette = Some(Palette { mode: Mode::Machine, field: TextField::default(), matches: Vec::new(), selected: 0, first: 0 });
                 self.palette_changed();
             }
-            Action::Connect(host) => self.connect_workspace(&host),
+            Action::Connect(host) => self.connect_pane(&host),
             Action::Rename => {
                 let name = self.ws().name.clone();
                 // The name is all selected, to type over or to change.
@@ -732,7 +732,7 @@ impl App {
 
     pub(super) fn set_title(&self) {
         if let (Some(w), Some(ws)) = (&self.window, self.workspaces.get(self.current)) {
-            let m = &self.machines[ws.machine.min(self.machines.len() - 1)];
+            let m = &self.machines[self.focused().map_or(0, |f| crate::mux::split_id(f).0).min(self.machines.len() - 1)];
             match &m.host {
                 Some(host) if !m.client.connected() => w.set_title(&format!("{} · {host}, reconnecting… · jot", ws.name)),
                 Some(host) => w.set_title(&format!("{} · {host} · jot", ws.name)),

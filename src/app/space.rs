@@ -43,7 +43,7 @@ impl App {
         let Some(wi) = self.workspaces.iter().position(|w| w.spaces.contains(&id)) else { return };
         let cwd = self.focused().and_then(|f| self.panes.get(&f)).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
         self.target = crate::mux::split_id(id).0;
-        let new = self.spawn(Start { cmd: String::new(), cwd, pane: None });
+        let new = self.spawn(Start { cmd: String::new(), cwd, pane: None, host: None });
         let ws = &mut self.workspaces[wi];
         if ws.root.split_beside(id, new, Dir::Across, false) {
             ws.root.remove(id);

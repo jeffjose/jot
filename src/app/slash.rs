@@ -34,6 +34,8 @@ pub enum Does {
     Grep,
     /// The workspace given the name that follows.
     Rename,
+    /// The pane made a shell on the machine that follows.
+    Connect,
     /// A command pinned to the top of the pane.
     Pin,
     /// Told when the command ends; its processes; its ports; its files.
@@ -60,7 +62,7 @@ impl Command {
 
     /// Whether it takes a word after it, picked from a list.
     fn takes_arg(&self) -> bool {
-        matches!(self.does, Does::Theme | Does::Tee | Does::Filter | Does::Grep | Does::Rename | Does::Pin)
+        matches!(self.does, Does::Theme | Does::Tee | Does::Filter | Does::Grep | Does::Rename | Does::Pin | Does::Connect)
     }
 }
 
@@ -111,6 +113,7 @@ impl App {
             },
             Command::new("new-workspace", "New workspace in this folder", Does::Act(Action::NewWorkspace)),
             Command::new("rename", "Rename this workspace", Does::Rename),
+            Command::new("connect", "Make this pane a shell on another machine", Does::Connect),
             Command::new("clear", "Clear terminal", Does::Act(Action::Clear)),
             Command::new("theme", "Set the color theme", Does::Theme),
             Command::new("edit", "Edit this command in a larger editor", Does::Edit),
@@ -172,7 +175,7 @@ impl App {
         }
         if let Some((c, arg)) = self.slash_arg_command(typed).filter(|_| !mid) {
             // Free text after it: one row, saying what it will do.
-            if matches!(c.does, Does::Tee | Does::Filter | Does::Grep | Does::Rename | Does::Pin) {
+            if matches!(c.does, Does::Tee | Does::Filter | Does::Grep | Does::Rename | Does::Pin | Does::Connect) {
                 let arg = arg.trim();
                 let what = match (&c.does, arg.is_empty()) {
                     (Does::Tee, true) if self.focused().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.tee.is_some()) => "Stop".to_string(),
@@ -182,6 +185,8 @@ impl App {
                     (Does::Filter, false) => "Show only lines with this".to_string(),
                     (Does::Pin, true) => "Pin the last command".to_string(),
                     (Does::Pin, false) => "Pin this command".to_string(),
+                    (Does::Connect, true) => "Type a machine: a name from ~/.ssh/config, or user@host".to_string(),
+                    (Does::Connect, false) => "Make this pane a shell there".to_string(),
                     (Does::Rename, true) => "Type the new name, or Enter for the rename box".to_string(),
                     (Does::Rename, false) => "The new name for this workspace".to_string(),
                     (_, true) => "Type what to find".to_string(),
@@ -490,6 +495,12 @@ impl App {
                     self.pin_add(id, &cmd);
                 }
             }
+            Does::Connect => {
+                let host = arg.trim();
+                if !host.is_empty() {
+                    self.connect_pane_at(id, host);
+                }
+            }
             Does::Rename => match arg.trim() {
                 "" => self.run(Action::Rename, event_loop),
                 name => {
@@ -602,7 +613,7 @@ fn kind_of(d: &Does) -> &'static str {
         Does::Edit => "edit",
         Does::Tee | Does::Filter => "watch",
         Does::Grep => "find",
-        Does::Rename | Does::Pin => "jot",
+        Does::Rename | Does::Pin | Does::Connect => "jot",
         Does::Run(_) => "run",
         Does::Stop | Does::Kill | Does::Restart | Does::Info | Does::Notify | Does::Tree | Does::Ports | Does::Files => "job",
     }

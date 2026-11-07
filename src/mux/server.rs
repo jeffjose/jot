@@ -369,7 +369,7 @@ impl Server {
     /// A window come back after its connection dropped: the panes it had,
     /// taken from the connection it had if the session has not seen that
     /// drop yet. Its workspaces it has still; none are given.
-    fn welcome_back(&mut self, c: u64, window: u64) {
+    fn welcome_back(&mut self, c: u64, window: u64, want: &[u64]) {
         let stale: Vec<u64> = self.names.iter().filter(|(conn, w)| **w == window && **conn != c).map(|(conn, _)| *conn).collect();
         for old in stale {
             self.names.remove(&old);
@@ -386,7 +386,10 @@ impl Server {
             self.layouts.insert(c, l);
         }
         let mut held = Vec::new();
-        for (id, p) in self.panes.iter_mut().filter(|(_, p)| p.window == window) {
+        // Its own, and those it names that no other window has.
+        let live: Vec<u64> = self.names.iter().filter(|(_, w)| **w != window).map(|(conn, _)| *conn).collect();
+        for (id, p) in self.panes.iter_mut().filter(|(id, p)| p.window == window || (want.contains(id) && !p.owner.is_some_and(|o| live.contains(&o)))) {
+            p.window = window;
             p.owner = Some(c);
             p.raw = None;
             p.proc = None;
@@ -524,7 +527,7 @@ pub fn run(path: &Path) {
                     let _ = st.shutdown(std::net::Shutdown::Both);
                 }
             }
-            Ev::Said(c, ToServer::Hello { proto, window, again }) => {
+            Ev::Said(c, ToServer::Hello { proto, window, again, want }) => {
                 if proto != PROTO {
                     s.send(c, ToClient::Refused { why: format!("protocol {PROTO} here, {proto} in the window") });
                     if let Some(st) = s.conns.remove(&c) {
@@ -537,7 +540,7 @@ pub fn run(path: &Path) {
                 }
                 s.names.insert(c, window);
                 if again {
-                    s.welcome_back(c, window);
+                    s.welcome_back(c, window, &want);
                 } else {
                     s.welcome(c);
                 }
