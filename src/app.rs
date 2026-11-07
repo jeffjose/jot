@@ -31,6 +31,7 @@ mod overlay;
 mod dnd;
 mod find;
 mod links;
+mod mouse;
 mod settings;
 
 // Colours from Radix, as the screen setup has them.
@@ -144,6 +145,8 @@ pub struct App {
     link: Option<links::Link>,
     /// A picture of the pane being dragged, carried under the pointer.
     ghost: Option<(Vec<u32>, i32, i32)>,
+    /// A button held down in a pane whose program has the mouse.
+    mouse_held: Option<(PaneId, sys::GhosttyMouseButton)>,
     /// What was run from the palette lately, the latest first.
     recent: Vec<String>,
     /// Panes closed, the last last, for Ctrl Shift T.
@@ -226,6 +229,7 @@ impl App {
             find: None,
             link: None,
             ghost: None,
+            mouse_held: None,
             recent: Vec::new(),
             closed: Vec::new(),
             copied: (None, None),
@@ -880,6 +884,16 @@ impl App {
         if button == MouseButton::Left && self.mods.control_key() && self.open_link() {
             return;
         }
+        if let (Some((id, _)), Some(b)) = (self.pane_at(x, y), App::button_of(button)) {
+            if self.mouse_to_program(id) && !self.mods.control_key() && self.caption_at(x, y).is_none() {
+                if !self.roam_shown {
+                    self.set_focus(id);
+                }
+                self.mouse_held = Some((id, b));
+                self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_PRESS, Some(b));
+                return;
+            }
+        }
         if button == MouseButton::Right {
             if let Some((id, _)) = self.pane_at(x, y) {
                 if !self.roam_shown {
@@ -950,6 +964,10 @@ impl App {
                 self.changed();
             }
             Some(Drag::Pane(_)) => self.carry_move(x, y),
+            None if self.mouse_held.is_some() => {
+                let (id, b) = self.mouse_held.unwrap();
+                self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_MOTION, Some(b));
+            }
             Some(Drag::Select { pane, from }) => {
                 let (pane, from) = (*pane, *from);
                 if let Some(p) = self.panes.get_mut(&pane) {
@@ -965,6 +983,10 @@ impl App {
                 self.update_link();
                 if self.link.is_some() {
                     return;
+                }
+                // A program that follows every move of the mouse is told of it.
+                if let Some((id, _)) = self.pane_at(x, y).filter(|(id, _)| self.mouse_to_program(*id)) {
+                    self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_MOTION, None);
                 }
                 let g = self.px(3.0);
                 let on_divider = if self.roam_shown {
@@ -984,6 +1006,10 @@ impl App {
     }
 
     fn mouse_release(&mut self) {
+        if let Some((id, b)) = self.mouse_held.take() {
+            self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_RELEASE, Some(b));
+            return;
+        }
         if let Some(Drag::Pane(c)) = self.drag {
             self.ghost = None;
             self.drag = None;
@@ -1003,6 +1029,14 @@ impl App {
     fn scroll(&mut self, lines: isize) {
         let (x, y) = self.pointer;
         let Some((id, _)) = self.pane_at(x, y) else { return };
+        if self.mouse_to_program(id) {
+            let wheel = if lines < 0 { sys::GHOSTTY_MOUSE_BUTTON_FOUR } else { sys::GHOSTTY_MOUSE_BUTTON_FIVE };
+            // One wheel event a notch, a notch being three lines.
+            for _ in 0..lines.unsigned_abs().div_ceil(3).min(10) {
+                self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_PRESS, Some(wheel));
+            }
+            return;
+        }
         let Some(p) = self.panes.get_mut(&id) else { return };
         // On the alternate screen (a pager, an editor) there is nothing
         // to scroll back to: the wheel moves the cursor, as arrows do.

@@ -383,6 +383,63 @@ impl Terminal {
     }
 }
 
+/// The mouse as a program that asked for it reads it. `button` is
+/// libghostty's number (1 left, 2 right, 3 middle, 4 and 5 the wheel),
+/// none for a move with nothing held; `x` and `y` are pixels from the
+/// top left of the text.
+pub struct MouseIn {
+    pub action: GhosttyMouseAction,
+    pub button: Option<GhosttyMouseButton>,
+    pub x: f32,
+    pub y: f32,
+    pub mods: u16,
+    pub width: u32,
+    pub height: u32,
+    pub cell: (u32, u32),
+    pub held: bool,
+}
+
+impl Terminal {
+    pub fn encode_mouse(&mut self, m: &MouseIn) -> Vec<u8> {
+        unsafe {
+            let mut enc = null_mut();
+            ghostty_mouse_encoder_new(null(), &mut enc);
+            ghostty_mouse_encoder_set_from_terminal(enc, self.raw);
+            let mut size: GhosttyMouseEncoderSize = std::mem::zeroed();
+            size.size = std::mem::size_of::<GhosttyMouseEncoderSize>();
+            (size.screen_width, size.screen_height, size.cell_width, size.cell_height) = (m.width, m.height, m.cell.0, m.cell.1);
+            ghostty_mouse_encoder_set(enc, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size as *const _ as *const c_void);
+            ghostty_mouse_encoder_set(enc, GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, &m.held as *const bool as *const c_void);
+            let mut ev = null_mut();
+            ghostty_mouse_event_new(null(), &mut ev);
+            ghostty_mouse_event_set_action(ev, m.action);
+            match m.button {
+                Some(b) => ghostty_mouse_event_set_button(ev, b),
+                None => ghostty_mouse_event_clear_button(ev),
+            };
+            ghostty_mouse_event_set_mods(ev, m.mods);
+            ghostty_mouse_event_set_position(ev, GhosttyMousePosition { x: m.x, y: m.y });
+            let mut buf = [0u8; 64];
+            let mut n = 0usize;
+            let ok = ghostty_mouse_encoder_encode(enc, ev, buf.as_mut_ptr(), buf.len(), &mut n) == GHOSTTY_SUCCESS;
+            ghostty_mouse_event_free(ev);
+            ghostty_mouse_encoder_free(enc);
+            if ok {
+                buf[..n].to_vec()
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    /// Whether the program has asked for the mouse.
+    pub fn wants_mouse(&self) -> bool {
+        let mut on = false;
+        unsafe { ghostty_terminal_get(self.raw, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &mut on as *mut bool as *mut c_void) };
+        on
+    }
+}
+
 /// A search through a terminal's screen and scrollback, as Ctrl F does
 /// it. It borrows the terminal: drop it before the terminal goes.
 pub struct Search {
