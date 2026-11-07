@@ -530,15 +530,15 @@ impl App {
             // click on one opens the bar.
             let mut rows: Vec<(String, String, BarHit, bool)> = Vec::new();
             for (i, (n, cmd)) in after.iter().enumerate() {
-                rows.push((format!("after {n}"), cmd.clone(), BarHit::RemoveAfter(i), false));
+                rows.push((format!("@{n}"), cmd.clone(), BarHit::RemoveAfter(i), false));
             }
             for (i, cmd) in queue.iter().enumerate() {
-                let label = if i == 0 { if paused { "held" } else { "next" } } else { "then" };
+                let label = format!("{}", i + 1);
                 rows.push((label.into(), cmd.clone(), BarHit::Remove(i), i == 0 && paused));
             }
             for (label, cmd, remove, red) in rows.into_iter().take(QUEUE_SHOWN * 2) {
-                let ty = y + (row_h - sh) / 2;
-                let end = self.canvas.text(&mut self.fonts.small, &label, (area.x + pad) as f32, ty, if red { 0xE5484D } else { accent }, area);
+                let (bg, fg) = if label.starts_with('@') { (c.hover, accent) } else { self.badge_colors(label == "1", red) };
+                let end = self.queue_badge(area.x + pad, y + row_h / 2, &label, bg, fg);
                 let room = area.x + area.w - pad - ib - px(8.0) - (end + px(10.0));
                 self.canvas.text_fit(&mut self.fonts.ui, &cmd, end + px(10.0), y + (row_h - uh) / 2, room, c.text, area);
                 self.bar_hits.push((Rect { x: area.x, y, w: area.w - pad - ib - px(4.0), h: row_h }, id, BarHit::Open));
@@ -570,8 +570,8 @@ impl App {
         }
         // What waits on another pane, each with remove.
         for (i, (n, cmd)) in after.iter().enumerate().take(QUEUE_SHOWN) {
-            let label = format!("after {n}");
-            let end = self.canvas.text(&mut self.fonts.small, &label, (area.x + pad) as f32, y + (row_h - sh) / 2, accent, area);
+            let (bg, fg) = (c.hover, accent);
+            let end = self.queue_badge(area.x + pad, y + row_h / 2, &format!("@{n}"), bg, fg);
             let room = area.x + area.w - pad - ib - px(8.0) - (end + px(10.0));
             self.canvas.text_fit(&mut self.fonts.ui, cmd, end + px(10.0), y + (row_h - uh) / 2, room, c.text, area);
             button(self, area.x + area.w - pad - ib, y, BarHit::RemoveAfter(i), false);
@@ -579,9 +579,8 @@ impl App {
         }
         // The queue, each with run now and remove.
         for (i, cmd) in queue.iter().enumerate().take(QUEUE_SHOWN) {
-            let label = if i == 0 { if paused { "held" } else { "next" } } else { "then" };
-            let ty = y + (row_h - sh) / 2;
-            let end = self.canvas.text(&mut self.fonts.small, label, (area.x + pad) as f32, ty, if i == 0 && paused { 0xE5484D } else { c.faint }, area);
+            let (bg, fg) = self.badge_colors(i == 0, i == 0 && paused);
+            let end = self.queue_badge(area.x + pad, y + row_h / 2, &format!("{}", i + 1), bg, fg);
             let room = area.x + area.w - pad - 2 * ib - px(8.0) - (end + px(10.0));
             self.canvas.text_fit(&mut self.fonts.ui, cmd, end + px(10.0), y + (row_h - uh) / 2, room, c.text, area);
             button(self, area.x + area.w - pad - 2 * ib - px(4.0), y, BarHit::RunNow(i), true);
@@ -937,5 +936,31 @@ impl App {
             self.relayout();
         }
         self.redraw();
+    }
+}
+
+impl App {
+    /// A queued command's place, as a small round badge: its number in the
+    /// queue, or @N for one waiting on pane N. Returns where it ends.
+    fn queue_badge(&mut self, x: i32, mid: i32, text: &str, bg: u32, fg: u32) -> i32 {
+        let h = self.fonts.small.height + self.px(4.0);
+        let w = (self.fonts.small.width(text) + self.px(10.0)).max(h);
+        let r = Rect { x, y: mid - h / 2, w, h };
+        self.canvas.round_fill(r, h / 2, bg, 255);
+        let tw = self.fonts.small.width(text);
+        let sh = self.fonts.small.height;
+        self.canvas.text(&mut self.fonts.small, text, (r.x + (w - tw) / 2) as f32, r.y + (h - sh) / 2, fg, r);
+        r.x + r.w
+    }
+
+    /// The colors of a queue badge: the next to run in the accent, a held
+    /// one red, the rest quiet.
+    fn badge_colors(&self, first: bool, held: bool) -> (u32, u32) {
+        let c = self.cur_theme.chrome();
+        match (first, held) {
+            (true, true) => (0xE5484D, 0xFFFFFF),
+            (true, false) => (self.cur_accent, crate::canvas::on(self.cur_accent)),
+            _ => (c.hover, c.dim),
+        }
     }
 }
