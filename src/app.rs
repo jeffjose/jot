@@ -1771,8 +1771,8 @@ impl App {
         let pad = self.px(6.0) as f32;
         let label = if n == 0 { format!("~  {caption}") } else { format!("{n}  {caption}") };
         self.canvas.text(&mut self.fonts.ui, &label, bar.x as f32 + pad, ty, fg, bar);
-        // Tags at the right: copy mode, scrolled back, and typing into
-        // several panes, the last a button that takes this pane in or out.
+        // Tags at the right: copy mode, and the pane's watchers and typing
+        // into several, the last buttons that toggle or stop.
         let mut right = bar.x + bar.w - pad as i32;
         let copying = self.copy_mode.as_ref().is_some_and(|c| self.panes.get(&c.pane).is_some_and(|p| p.rect == rect));
         self.multi_tags.retain(|(_, p, _)| *p != id);
