@@ -291,10 +291,6 @@ impl App {
         match c.does {
             Does::Insert(text) => put(self, &text),
             Does::Date => put(self, &super::slash::date_today()),
-            Does::Cwd => {
-                let cwd = self.panes.get(&id).and_then(|p| p.pty.cwd()).map(|d| d.display().to_string()).unwrap_or_default();
-                put(self, &cwd);
-            }
             Does::Run(cmd) => {
                 put(self, &cmd);
                 self.bar_submit();

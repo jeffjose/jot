@@ -4,31 +4,27 @@
 //! rubbing out the `/…` typed and doing the command. A second `/`, or
 //! nothing left that matches, and the list goes, the line being a path.
 
-use super::settings::{Hit, Key};
+use super::settings::Hit;
 use super::*;
 use crate::canvas::on;
 use crate::palette::{self, Action};
-use crate::theme::{ACCENTS, THEMES};
+use crate::theme::THEMES;
 
 /// What a slash command does.
 #[derive(Clone, Debug)]
 pub enum Does {
     /// One of jterm's own, as the palette and the menu run them.
     Act(Action),
-    /// A setting switched on or off.
-    Toggle(Key),
-    /// A theme, an accent, a project folder: chosen from a list after a
+    /// A theme or a project folder: chosen from a list after a
     /// space.
     Theme,
-    Accent,
     Cd,
     /// Text put on the command line, not run.
     Insert(String),
     /// A command line typed and run.
     Run(String),
-    /// The date, or the folder the shell is in, put on the line.
+    /// The date put on the line.
     Date,
-    Cwd,
     /// The pane's running job: Ctrl C to it, or killed.
     Stop,
     /// What is running in the pane, and the pane itself.
@@ -64,7 +60,7 @@ impl Command {
 
     /// Whether it takes a word after it, picked from a list.
     fn takes_arg(&self) -> bool {
-        matches!(self.does, Does::Theme | Does::Accent | Does::Cd | Does::Tee | Does::Filter | Does::Grep | Does::Rename)
+        matches!(self.does, Does::Theme | Does::Cd | Does::Tee | Does::Filter | Does::Grep | Does::Rename)
     }
 }
 
@@ -116,17 +112,12 @@ impl App {
             Command::new("rename", "Rename this workspace", Does::Rename),
             Command::new("clear", "Clear terminal", Does::Act(Action::Clear)),
             Command::new("theme", "Set the color theme", Does::Theme),
-            Command::new("accent", "Set the accent color", Does::Accent),
-            Command::new("ligatures", "Turn ligatures on or off", Does::Toggle(Key::Ligatures)),
-            Command::new("bold", "Turn bold text on or off", Does::Toggle(Key::Bold)),
-            Command::new("captions", "Turn pane captions on or off", Does::Toggle(Key::Captions)),
             Command::new("cd", "Go to a project folder", Does::Cd),
             Command::new("edit", "Edit this command in a larger editor", Does::Edit),
             Command::new("tee", "Write this pane's output to a file as well", Does::Tee),
             Command::new("filter", "Show only the running command's lines with some text", Does::Filter),
             Command::new("grep", "Find and light matches, as Ctrl F", Does::Grep),
             Command::new("date", "Insert today's date", Does::Date),
-            Command::new("cwd", "Insert this folder's path", Does::Cwd),
         ];
         // For a pane's own command line: its running job stopped or killed.
         if self.bar.is_some() {
@@ -157,7 +148,6 @@ impl App {
     fn slash_values(&self, does: &Does) -> Vec<(String, String)> {
         match does {
             Does::Theme => THEMES.iter().map(|t| (t.name.to_lowercase().replace(' ', "-"), String::new())).collect(),
-            Does::Accent => ACCENTS.iter().map(|(n, _)| (n.to_string(), String::new())).collect(),
             Does::Cd => {
                 let roots: Vec<PathBuf> = self.config.projects.iter().map(|p| persist::expand(p)).collect();
                 palette::projects(&roots).into_iter().map(|d| (folder_name(&d), persist::shorten(&d))).collect()
@@ -216,7 +206,7 @@ impl App {
             .into_iter()
             .filter_map(|c| {
                 let label = if c.takes_arg() { format!("{} …", c.name) } else { c.name.clone() };
-                if mid && !(matches!(c.does, Does::Insert(_) | Does::Date | Does::Cwd | Does::Edit) && c.name.starts_with(typed)) {
+                if mid && !(matches!(c.does, Does::Insert(_) | Does::Date | Does::Edit) && c.name.starts_with(typed)) {
                     return None;
                 }
                 rank(&c.name, typed).map(|r| (r, Row { label, what: c.what.clone(), kind: kind_of(&c.does) }))
@@ -446,15 +436,9 @@ impl App {
         };
         match does {
             Does::Act(a) => self.run(a, event_loop),
-            Does::Toggle(key) => self.settings_do(Hit::Toggle(key)),
             Does::Theme => {
                 if let Some(i) = THEMES.iter().position(|t| t.name.to_lowercase().replace(' ', "-") == *arg) {
                     self.settings_do(Hit::Theme(i));
-                }
-            }
-            Does::Accent => {
-                if let Some(i) = ACCENTS.iter().position(|(n, _)| *n == arg) {
-                    self.settings_do(Hit::Accent(i));
                 }
             }
             Does::Cd => {
@@ -500,10 +484,6 @@ impl App {
             }
             Does::Kill => self.kill_job(id),
             Does::Date => self.slash_insert(id, &date_today()),
-            Does::Cwd => {
-                let cwd = self.panes.get(&id).and_then(|p| p.pty.cwd()).map(|d| d.display().to_string()).unwrap_or_default();
-                self.slash_insert(id, &cwd);
-            }
         }
         self.redraw();
     }
@@ -587,9 +567,9 @@ impl App {
 fn kind_of(d: &Does) -> &'static str {
     match d {
         Does::Act(_) => "jterm",
-        Does::Toggle(_) | Does::Theme | Does::Accent => "setting",
+        Does::Theme => "setting",
         Does::Cd => "go",
-        Does::Insert(_) | Does::Date | Does::Cwd => "insert",
+        Does::Insert(_) | Does::Date => "insert",
         Does::Edit => "edit",
         Does::Tee | Does::Filter => "watch",
         Does::Grep => "find",
