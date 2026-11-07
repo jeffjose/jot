@@ -152,6 +152,8 @@ pub struct App {
     mods: ModifiersState,
     pointer: (i32, i32),
     drag: Option<Drag>,
+    /// The pane whose corner handle the pointer is over.
+    handle_hover: Option<PaneId>,
     last_click: Option<(Instant, (u16, u16), u8)>,
     clipboard: Option<arboard::Clipboard>,
     /// Workspace tabs on the status line, for clicks.
@@ -276,6 +278,7 @@ impl App {
             mods: ModifiersState::empty(),
             pointer: (0, 0),
             drag: None,
+            handle_hover: None,
             last_click: None,
             clipboard: None,
             tabs: Vec::new(),
@@ -1052,6 +1055,16 @@ impl App {
         if button == MouseButton::Left && self.mods.control_key() && self.open_link() {
             return;
         }
+        // A pane's corner handle takes it, to drop somewhere else.
+        if button == MouseButton::Left {
+            if let Some(pane) = self.handle_at(x, y) {
+                self.drag = Some(Drag::Pane(dnd::Carry { pane, from: (x, y), moving: false, over: None }));
+                if let Some(w) = &self.window {
+                    w.set_cursor(CursorIcon::Grabbing);
+                }
+                return;
+            }
+        }
         // Typing into several: a click on a pane leaves it out, or takes
         // it back; it does not go to the pane.
         if button == MouseButton::Left && !self.roam_shown && self.caption_at(x, y).is_none() {
@@ -1172,6 +1185,9 @@ impl App {
                 }
             }
             None => {
+                if self.handle_hover(x, y) {
+                    return;
+                }
                 self.update_link();
                 if self.link.is_some() {
                     return;
@@ -1618,6 +1634,9 @@ impl App {
                 let into = self.typed_into(id);
                 self.draw_caption(rect, n, &caption, focused, scrolled, activity, into);
             }
+        }
+        if full {
+            self.draw_handle(id);
         }
         self.draw_blocks(id);
     }
