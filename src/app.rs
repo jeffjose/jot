@@ -495,6 +495,10 @@ impl App {
     /// Lays out every workspace, so panes not shown are the right size
     /// too, and resizes the terminals whose size changed.
     fn relayout(&mut self) {
+        // Panes drawn again whole after this, their tags with them; none
+        // left behind for a pane no longer on screen.
+        self.multi_tags.clear();
+        self.bar_hits.clear();
         self.lay_out_popouts();
         let area = self.area();
         let mut shown = Vec::new();
@@ -1180,6 +1184,12 @@ impl App {
                     watch::Tag::Multi => self.toggle_multi_pane(id),
                     watch::Tag::Tee => self.open_tag_menu(id, kind),
                     watch::Tag::TeeStop => self.stop_tee(id),
+                    watch::Tag::Focus => {
+                        self.set_focus(id);
+                        let ws = self.ws_mut();
+                        ws.zoom = if ws.zoom.is_some() { None } else { Some(id) };
+                        self.changed();
+                    }
                     watch::Tag::Filter => self.stop_filter(id),
                     watch::Tag::Notify => self.set_notify(id, false),
                 }
@@ -1784,6 +1794,25 @@ impl App {
         let mut right = bar.x + bar.w - pad as i32;
         let copying = self.copy_mode.as_ref().is_some_and(|c| self.panes.get(&c.pane).is_some_and(|p| p.rect == rect));
         self.multi_tags.retain(|(_, p, _)| *p != id);
+        // At the far right, the focus button: this pane alone, and back.
+        // Only where there are panes to hide, or one is alone already.
+        let zoomed = self.ws().zoom.is_some();
+        let many = {
+            let mut ids = Vec::new();
+            self.ws().root.panes(&mut ids);
+            ids.len() > 1
+        };
+        if n > 0 && (many || zoomed) && self.ws().root.contains(id) {
+            let r = Rect { x: right - h + pad as i32, y: bar.y, w: h, h };
+            if self.multi_lit == Some((id, watch::Tag::Focus)) {
+                self.canvas.fill(r, mix(bg, fg, 50));
+            }
+            let size = h * 6 / 10;
+            let icon = if zoomed { crate::canvas::icons::UNFOCUS } else { crate::canvas::icons::FOCUS };
+            self.canvas.icon(icon, size, r.x + (h - size) / 2, r.y + (h - size) / 2, fg, r);
+            self.multi_tags.push((r, id, watch::Tag::Focus));
+            right = r.x - pad as i32 / 2;
+        }
         // The pane's watchers and its typing into several, each a pill
         // with its icon, that a click stops or toggles.
         let (tee, filter) = self.panes.get(&id).map_or((None, None), |p| (p.tee.as_ref().map(|t| format!("{} ({})", t.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), t.lines)), p.filter.as_ref().map(|f| (f.text.clone(), f.armed))));

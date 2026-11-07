@@ -675,6 +675,7 @@ impl App {
             Tag::Filter => vec![c("Stop", "click", Action::FilterStop(id))],
             Tag::Notify => vec![c("Cancel", "click", Action::NotifyOff(id))],
             Tag::TeeStop => vec![c("Stop", "", Action::TeeStop(id))],
+            Tag::Focus => vec![c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom)],
         };
         while matches!(items.last(), Some(None)) {
             items.pop();

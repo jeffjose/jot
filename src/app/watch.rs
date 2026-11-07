@@ -256,6 +256,8 @@ pub enum Tag {
     Filter,
     /// To be told when the command ends: no longer.
     Notify,
+    /// The focus button: this pane alone, or all of them again.
+    Focus,
 }
 
 impl App {

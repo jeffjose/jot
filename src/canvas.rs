@@ -360,6 +360,8 @@ pub mod icons {
     pub static TEE: &[u8] = include_bytes!("../assets/icons/tee.png");
     pub static FILTER: &[u8] = include_bytes!("../assets/icons/filter.png");
     pub static BELL: &[u8] = include_bytes!("../assets/icons/bell.png");
+    pub static FOCUS: &[u8] = include_bytes!("../assets/icons/focus.png");
+    pub static UNFOCUS: &[u8] = include_bytes!("../assets/icons/unfocus.png");
 }
 
 /// An icon's mask at `size` pixels square: its coverage, scaled down from
