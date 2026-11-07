@@ -294,6 +294,10 @@ pub struct App {
     connecting: Vec<(usize, PaneId)>,
     /// The sidebar: shown or tucked away, its width when shown (points),
     /// what can be clicked in it, and what the pointer is on.
+    /// Workspaces asked for (Take), to be opened when their panes come.
+    taking: Vec<(usize, WorkspaceSpec)>,
+    /// When the machines were last asked what they hold.
+    listed_at: Instant,
     sidebar_open: bool,
     sidebar_width: f32,
     side_hits: Vec<(Rect, sidebar::SideHit)>,
@@ -466,11 +470,13 @@ impl App {
             captions_at: Instant::now() - Duration::from_secs(10),
             clock: clock(),
             session,
-            machines: vec![Machine { host: host.clone(), client: attached.client.clone() }],
+            machines: vec![Machine { host: host.clone(), client: attached.client.clone(), listing: Vec::new(), added: true }],
             target: 0,
             unreached: Vec::new(),
             tx: tx.clone(),
             connecting: Vec::new(),
+            taking: Vec::new(),
+            listed_at: Instant::now() - Duration::from_secs(60),
             sidebar_open: persist::load_sidebar().0,
             sidebar_width: persist::load_sidebar().1,
             side_hits: Vec::new(),
@@ -674,6 +680,11 @@ impl App {
                     }
                 }
             }
+        }
+        // The machines added in the sidebar, reached in the background.
+        for host in persist::load_machines() {
+            let k = self.machine(&host);
+            self.machines[k].added = true;
         }
         let session = self.session.take();
         let taking_up = !self.held.is_empty();
@@ -1812,6 +1823,14 @@ impl App {
                 }
                 Output::Back(k, held) => back = Some((k, held)),
                 Output::Failed(k, why) => self.not_reached(k, &why),
+                Output::Listing(k, l) => {
+                    if let Some(m) = self.machines.get_mut(k) {
+                        m.listing = l;
+                    }
+                    self.full = true;
+                    any = true;
+                }
+                Output::Taken(k, held) => self.taken(k, held),
             }
         }
         if let (true, Some(id)) = (search_again, searched) {
@@ -2567,6 +2586,16 @@ impl ApplicationHandler<()> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Queues changed by what was done: told to the session.
         self.sync_queues();
+        // What the machines hold that this window does not show, for the
+        // sidebar, every few seconds.
+        if self.sidebar_open && self.listed_at.elapsed() > Duration::from_secs(3) {
+            self.listed_at = Instant::now();
+            for m in &self.machines {
+                if m.client.connected() {
+                    m.client.list();
+                }
+            }
+        }
         if self.unsaved && self.saved_at.elapsed() > Duration::from_secs(2) {
             self.save();
         }
@@ -2826,6 +2855,8 @@ fn hearer(k: usize, tx: std::sync::mpsc::Sender<Output>, proxy: EventLoopProxy<(
             Heard::Proc(p, pr) => Output::Proc(id(p), pr),
             Heard::Back(held) => Output::Back(k, held),
             Heard::Failed(why) => Output::Failed(k, why),
+            Heard::Listing(l) => Output::Listing(k, l),
+            Heard::Taken(h) => Output::Taken(k, h),
             Heard::Gone => Output::Gone(k),
         };
         if let Ok(tx) = tx.lock() {
@@ -2842,6 +2873,11 @@ fn hearer(k: usize, tx: std::sync::mpsc::Sender<Output>, proxy: EventLoopProxy<(
 pub struct Machine {
     pub host: Option<String>,
     pub client: Arc<crate::mux::Client>,
+    /// Its workspaces this window does not show, as its session last said.
+    pub listing: Vec<crate::mux::Listed>,
+    /// Added in the sidebar: listed there whether or not a pane of it is
+    /// shown.
+    pub added: bool,
 }
 
 impl App {
@@ -2854,7 +2890,7 @@ impl App {
         }
         let k = self.machines.len();
         let hear = hearer(k, self.tx.clone(), self.proxy.clone(), self.woken.clone());
-        self.machines.push(Machine { host: Some(host.to_string()), client: crate::mux::Client::lazy(host, hear) });
+        self.machines.push(Machine { host: Some(host.to_string()), client: crate::mux::Client::lazy(host, hear), listing: Vec::new(), added: false });
         k
     }
 
@@ -2965,5 +3001,50 @@ impl App {
             p.full = true;
         }
         self.relayout();
+    }
+}
+
+impl App {
+    /// A machine added in the sidebar: reached in the background, kept in
+    /// the sidebar with what it holds, and remembered.
+    pub(super) fn add_machine(&mut self, host: &str) {
+        let k = self.machine(host);
+        self.machines[k].added = true;
+        self.listed_at = Instant::now() - Duration::from_secs(60);
+        persist::save_machines(&self.machines.iter().skip(1).filter(|m| m.added).filter_map(|m| m.host.clone()).collect::<Vec<_>>());
+        self.full = true;
+        self.redraw();
+    }
+
+    /// One of a machine's workspaces opened here: its panes asked for, and
+    /// the workspace made when they come, as it was there.
+    pub(super) fn open_listed(&mut self, k: usize, i: usize) {
+        let Some(l) = self.machines.get(k).and_then(|m| m.listing.get(i)).cloned() else { return };
+        if l.elsewhere {
+            return self.toast("Open in another window", "Close it there to open it here", None, None);
+        }
+        let Ok(mut spec) = toml::from_str::<WorkspaceSpec>(&l.spec) else { return };
+        spec.host = (k > 0).then(|| self.machines[k].host.clone()).flatten();
+        self.taking.push((k, spec));
+        self.machines[k].client.take(l.panes);
+    }
+
+    /// Panes taken: the workspace waiting on them made, with them in it.
+    fn taken(&mut self, k: usize, held: Vec<crate::mux::Held>) {
+        let first = held.first().map(|h| h.pane);
+        for h in held {
+            self.held.insert(crate::mux::app_id(k, h.pane), h);
+        }
+        let Some(i) = self.taking.iter().position(|(m, s)| *m == k && s.layout.as_ref().is_some_and(|l| first.is_some_and(|f| persist::ids_in_order(l).contains(&f)))) else { return };
+        let (_, spec) = self.taking.remove(i);
+        let before = self.workspaces.len();
+        self.add_workspace(&spec);
+        if self.workspaces.len() > before {
+            self.go_to(before);
+        }
+        self.replay_held();
+        self.listed_at = Instant::now() - Duration::from_secs(60);
+        self.unsaved = true;
+        self.changed();
     }
 }

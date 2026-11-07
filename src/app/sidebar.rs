@@ -13,6 +13,9 @@ pub enum SideHit {
     Toggle,
     Workspace(usize),
     Pane(PaneId),
+    /// A machine's workspace this window does not show.
+    Listed(usize, usize),
+    AddMachine,
 }
 
 /// Its width when opened, in points, unless dragged otherwise.
@@ -70,6 +73,19 @@ impl App {
         self.relayout();
     }
 
+    /// The machine a workspace is on, for the sidebar: the one all its
+    /// panes are on, else this one.
+    fn ws_machine(&self, wi: usize) -> usize {
+        let mut ids = Vec::new();
+        self.workspaces[wi].root.panes(&mut ids);
+        let first = ids.first().map_or(0, |id| crate::mux::split_id(*id).0);
+        if ids.iter().all(|id| crate::mux::split_id(*id).0 == first) {
+            first
+        } else {
+            0
+        }
+    }
+
     pub(super) fn draw_sidebar(&mut self) {
         self.side_hits.clear();
         let c = self.cur_theme.chrome();
@@ -80,7 +96,7 @@ impl App {
         self.canvas.fill(Rect { x: w - 1, y: 0, w: 1, h }, c.edge);
         let scale = self.scale;
         let px = |v: f32| (v * scale).round() as i32;
-        let (uh, sh, mh) = (self.fonts.ui.height, self.fonts.small.height, self.fonts.mono.height);
+        let (uh, sh) = (self.fonts.ui.height, self.fonts.small.height);
         let row_h = uh + px(10.0);
         let lit = self.side_lit;
         let lift = if self.cur_theme.dark { 0xFFFFFF } else { 0x000000 };
@@ -96,79 +112,120 @@ impl App {
             self.damage.push(area);
             return;
         }
-        let mut y = toggle.y + toggle.h + px(8.0);
         let left = px(10.0);
         let clip = Rect { x: 0, y: 0, w: w - 1, h };
-        // A machine's heading: its icon, its name, and what it is.
-        let heading = |app: &mut App, y: i32, icon: char, name: &str, note: &str, dot: Option<u32>| {
-            let ih = px(12.0);
-            app.canvas.icon_in(icon, Rect { x: left, y: y + (row_h - ih) / 2, w: ih, h: ih }, ih, c.faint);
-            let x = app.canvas.text(&mut app.fonts.small, name, (left + ih + px(8.0)) as f32, y + (row_h - sh) / 2, c.dim, clip);
-            let nw = app.fonts.small.width(note);
+        // Add machine, at the foot.
+        let foot = Rect { x: px(6.0), y: h - row_h - px(8.0), w: w - px(12.0), h: row_h };
+        self.canvas.fill(Rect { x: 0, y: foot.y - px(6.0), w: w - 1, h: 1 }, c.edge);
+        if lit == Some(SideHit::AddMachine) {
+            self.canvas.round_fill(foot, px(6.0), lift, 10);
+        }
+        let ih = px(12.0);
+        let add_color = if lit == Some(SideHit::AddMachine) { c.text } else { c.dim };
+        self.canvas.icon_in(icons::PLUS, Rect { x: foot.x + px(6.0), y: foot.y + (row_h - ih) / 2, w: ih, h: ih }, ih, add_color);
+        self.canvas.text(&mut self.fonts.ui, "Add machine", (foot.x + px(6.0) + ih + px(8.0)) as f32, foot.y + (row_h - uh) / 2, add_color, clip);
+        self.side_hits.push((foot, SideHit::AddMachine));
+        let bottom = foot.y - px(10.0);
+        let mut y = toggle.y + toggle.h + px(8.0);
+        let accents = self.ws_accents();
+        for k in 0..self.machines.len() {
+            let shown = self.panes.keys().filter(|id| crate::mux::split_id(**id).0 == k).count();
+            if k > 0 && !self.machines[k].added && shown == 0 {
+                continue;
+            }
+            if y > bottom - row_h {
+                break;
+            }
+            if k > 0 {
+                y += px(10.0);
+            }
+            // Its heading: its icon, its name, and how it is.
+            let (icon, name, note, dot) = if k == 0 && self.machines[0].host.is_none() {
+                (icons::MONITOR, hostname(), "this machine".to_string(), None)
+            } else {
+                let up = self.machines[k].client.connected();
+                let host = self.machines[k].host.clone().unwrap_or_default();
+                (icons::SERVER, host, if up { String::new() } else { "connecting".into() }, Some(if up { 0x3DBB7E } else { 0xF0B43C }))
+            };
+            self.canvas.icon_in(icon, Rect { x: left, y: y + (row_h - ih) / 2, w: ih, h: ih }, ih, c.faint);
+            let x = self.canvas.text(&mut self.fonts.small, &name, (left + ih + px(8.0)) as f32, y + (row_h - sh) / 2, c.dim, clip);
             let mut right = w - px(12.0);
             if let Some(d) = dot {
                 let s = px(6.0);
-                app.canvas.round_fill(Rect { x: right - s, y: y + (row_h - s) / 2, w: s, h: s }, s / 2, d, 255);
+                self.canvas.round_fill(Rect { x: right - s, y: y + (row_h - s) / 2, w: s, h: s }, s / 2, d, 255);
                 right -= s + px(6.0);
             }
-            if right - nw > x + px(8.0) {
-                app.canvas.text(&mut app.fonts.small, note, (right - nw) as f32, y + (row_h - sh) / 2, c.faint, clip);
+            let nw = self.fonts.small.width(&note);
+            if !note.is_empty() && right - nw > x + px(8.0) {
+                self.canvas.text(&mut self.fonts.small, &note, (right - nw) as f32, y + (row_h - sh) / 2, c.faint, clip);
             }
-        };
-        heading(self, y, icons::MONITOR, &hostname(), "this machine", None);
-        y += row_h;
-        let accents = self.ws_accents();
-        let names: Vec<(String, usize)> = self
-            .workspaces
-            .iter()
-            .map(|ws| {
+            y += row_h;
+            // Its workspaces in this window.
+            for wi in 0..self.workspaces.len() {
+                if self.ws_machine(wi) != k || y > bottom - row_h {
+                    continue;
+                }
                 let mut ids = Vec::new();
-                ws.root.panes(&mut ids);
-                (ws.name.clone(), ids.len())
-            })
-            .collect();
-        for (wi, (name, count)) in names.into_iter().enumerate() {
-            let current = wi == self.current;
-            let row = Rect { x: px(6.0), y, w: w - px(12.0), h: row_h };
-            if current {
-                self.canvas.round_fill(row, px(6.0), lift, if self.cur_theme.dark { 14 } else { 10 });
-            } else if lit == Some(SideHit::Workspace(wi)) {
-                self.canvas.round_fill(row, px(6.0), lift, 8);
+                self.workspaces[wi].root.panes(&mut ids);
+                let (name, count) = (self.workspaces[wi].name.clone(), ids.len());
+                let current = wi == self.current;
+                let row = Rect { x: px(6.0), y, w: w - px(12.0), h: row_h };
+                if current {
+                    self.canvas.round_fill(row, px(6.0), lift, if self.cur_theme.dark { 14 } else { 10 });
+                } else if lit == Some(SideHit::Workspace(wi)) {
+                    self.canvas.round_fill(row, px(6.0), lift, 8);
+                }
+                let sq = px(8.0);
+                let color = accents.get(wi).map_or(self.accent, |a| a.0);
+                self.canvas.round_fill(Rect { x: row.x + px(8.0), y: y + (row_h - sq) / 2, w: sq, h: sq }, px(2.5), color, 255);
+                let tx = row.x + px(8.0) + sq + px(8.0);
+                let n = format!("{count}");
+                let cw = self.fonts.small.width(&n);
+                self.canvas.text_fit(&mut self.fonts.ui, &name, tx, y + (row_h - uh) / 2, row.x + row.w - px(18.0) - cw - tx, if current { c.text } else { c.dim }, clip);
+                self.canvas.text(&mut self.fonts.small, &n, (row.x + row.w - px(10.0) - cw) as f32, y + (row_h - sh) / 2, c.faint, clip);
+                self.side_hits.push((row, SideHit::Workspace(wi)));
+                y += row_h;
+                if current {
+                    y = self.draw_sidebar_panes(y, row_h, clip);
+                }
             }
-            let sq = px(8.0);
-            let color = accents.get(wi).map_or(self.accent, |a| a.0);
-            self.canvas.round_fill(Rect { x: row.x + px(8.0), y: y + (row_h - sq) / 2, w: sq, h: sq }, px(2.5), color, 255);
-            let tx = row.x + px(8.0) + sq + px(8.0);
-            let n = format!("{count}");
-            let nw = self.fonts.small.width(&n);
-            self.canvas.text_fit(&mut self.fonts.ui, &name, tx, y + (row_h - uh) / 2, row.x + row.w - px(10.0) - nw - tx - px(8.0), if current { c.text } else { c.dim }, clip);
-            self.canvas.text(&mut self.fonts.small, &n, (row.x + row.w - px(10.0) - nw) as f32, y + (row_h - sh) / 2, c.faint, clip);
-            self.side_hits.push((row, SideHit::Workspace(wi)));
-            y += row_h;
-            if current {
-                y = self.draw_sidebar_panes(y, row_h, clip);
-            }
-            if y > h - row_h {
-                break;
+            // Its workspaces this window does not show: a click opens one
+            // here, as it is there.
+            let listing: Vec<(String, usize, bool)> = self.machines[k]
+                .listing
+                .iter()
+                .map(|l| {
+                    let name = toml::from_str::<WorkspaceSpec>(&l.spec).map(|s| s.name).unwrap_or_default();
+                    (if name.is_empty() { "workspace".into() } else { name }, l.panes.len(), l.elsewhere)
+                })
+                .collect();
+            for (i, (name, count, elsewhere)) in listing.into_iter().enumerate() {
+                if y > bottom - row_h {
+                    break;
+                }
+                let row = Rect { x: px(6.0), y, w: w - px(12.0), h: row_h };
+                if lit == Some(SideHit::Listed(k, i)) {
+                    self.canvas.round_fill(row, px(6.0), lift, 8);
+                }
+                let sq = px(8.0);
+                let sq_r = Rect { x: row.x + px(8.0), y: y + (row_h - sq) / 2, w: sq, h: sq };
+                self.canvas.round_fill(sq_r, px(2.5), c.faint, 255);
+                self.canvas.round_fill(Rect { x: sq_r.x + 1, y: sq_r.y + 1, w: sq - 2, h: sq - 2 }, px(2.0), c.side, 255);
+                let tx = sq_r.x + sq + px(8.0);
+                let hovered = lit == Some(SideHit::Listed(k, i));
+                let note = match (elsewhere, hovered) {
+                    (true, _) => "in another window".to_string(),
+                    (false, true) => "Open".to_string(),
+                    (false, false) if count == 1 => "1 pane".to_string(),
+                    (false, false) => format!("{count} panes"),
+                };
+                let nw = self.fonts.small.width(&note);
+                self.canvas.text_fit(&mut self.fonts.ui, &name, tx, y + (row_h - uh) / 2, row.x + row.w - px(18.0) - nw - tx, c.dim, clip);
+                self.canvas.text(&mut self.fonts.small, &note, (row.x + row.w - px(10.0) - nw) as f32, y + (row_h - sh) / 2, if lit == Some(SideHit::Listed(k, i)) && !elsewhere { c.text } else { c.faint }, clip);
+                self.side_hits.push((row, SideHit::Listed(k, i)));
+                y += row_h;
             }
         }
-        // The other machines this window has panes on.
-        for k in 1..self.machines.len() {
-            if y > h - 2 * row_h {
-                break;
-            }
-            let shown = self.panes.keys().filter(|id| crate::mux::split_id(**id).0 == k).count();
-            if shown == 0 {
-                continue;
-            }
-            y += px(10.0);
-            let host = self.machines[k].host.clone().unwrap_or_default();
-            let up = self.machines[k].client.connected();
-            let note = if !up { "reconnecting".to_string() } else if shown == 1 { "1 pane here".into() } else { format!("{shown} panes here") };
-            heading(self, y, icons::SERVER, &host, &note, Some(if up { 0x3DBB7E } else { 0xF0B43C }));
-            y += row_h;
-        }
-        let _ = mh;
         self.damage.push(area);
     }
 
@@ -182,6 +239,7 @@ impl App {
         let lift = if self.cur_theme.dark { 0xFFFFFF } else { 0x000000 };
         let mut ids = Vec::new();
         self.ws().root.panes(&mut ids);
+        let under = self.ws_machine(self.current);
         let focus = self.focused();
         let w = clip.w + 1;
         for (i, id) in ids.iter().enumerate() {
@@ -191,7 +249,8 @@ impl App {
             let dot = if running.is_some() { 0x3DBB7E } else if failed { 0xE5484D } else { c.faint };
             let caption = p.caption.clone();
             let m = crate::mux::split_id(*id).0;
-            let host = (m > 0).then(|| self.machines.get(m).and_then(|x| x.host.clone())).flatten();
+            // Its machine, when not the one the workspace is under.
+            let host = (m > 0 && m != under).then(|| self.machines.get(m).and_then(|x| x.host.clone())).flatten();
             let row = Rect { x: px(6.0), y, w: w - px(12.0), h: row_h };
             let focused = focus == Some(*id);
             if focused {
@@ -237,6 +296,8 @@ impl App {
         match self.side_hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h) {
             Some(SideHit::Toggle) => self.toggle_sidebar(),
             Some(SideHit::Workspace(wi)) => self.go_to(wi),
+            Some(SideHit::Listed(k, i)) => self.open_listed(k, i),
+            Some(SideHit::AddMachine) => self.add_machine_prompt(),
             Some(SideHit::Pane(id)) => {
                 self.set_focus(id);
                 self.full = true;

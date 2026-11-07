@@ -140,9 +140,9 @@ impl App {
 
     fn palette_changed(&mut self) {
         let Some(mode) = self.palette.as_ref().map(|p| p.mode) else { return };
-        if mode == Mode::Machine {
+        if mode == Mode::Machine || mode == Mode::AddMachine {
             let typed = self.palette.as_ref().map(|p| p.typed()).unwrap_or_default();
-            let matches = machine_items(&typed);
+            let matches = machine_items(&typed, mode == Mode::AddMachine);
             if let Some(p) = &mut self.palette {
                 p.matches = matches;
                 p.selected = 0;
@@ -239,10 +239,10 @@ impl App {
             return self.redraw();
         }
         // A machine as typed, when none listed is picked.
-        if p.mode == Mode::Machine && p.matches.is_empty() {
+        if (p.mode == Mode::Machine || p.mode == Mode::AddMachine) && p.matches.is_empty() {
             let host = p.typed().trim().to_string();
             if !host.is_empty() {
-                self.run(Action::Connect(host), event_loop);
+                self.run(if p.mode == Mode::AddMachine { Action::AddMachine(host) } else { Action::Connect(host) }, event_loop);
             }
             return self.redraw();
         }
@@ -302,6 +302,7 @@ impl App {
                 self.palette_changed();
             }
             Action::Connect(host) => self.connect_pane(&host),
+            Action::AddMachine(host) => self.add_machine(&host),
             Action::Rename => {
                 let name = self.ws().name.clone();
                 // The name is all selected, to type over or to change.
@@ -437,7 +438,7 @@ impl App {
         let (label, field, mode) = (p.label(), p.field.clone(), p.mode);
         let note = match (mode, p.matches.len()) {
             (Mode::Rename, _) => "Enter to rename".to_string(),
-            (Mode::Machine, 0) => "Enter to connect".to_string(),
+            (Mode::Machine | Mode::AddMachine, 0) => "Enter to connect".to_string(),
             (_, 0) => "No matches".to_string(),
             (_, n) => format!("{} of {n}", p.selected + 1),
         };
@@ -819,7 +820,8 @@ impl App {
 
 /// The machines to offer: the hosts named in ~/.ssh/config (no wildcards),
 /// those with `typed` in them; and what is typed, as ssh would take it.
-fn machine_items(typed: &str) -> Vec<Item> {
+fn machine_items(typed: &str, add: bool) -> Vec<Item> {
+    let act = |h: String| if add { Action::AddMachine(h) } else { Action::Connect(h) };
     let config = std::fs::read_to_string(crate::pty::home().join(".ssh/config")).unwrap_or_default();
     let mut hosts: Vec<String> = Vec::new();
     for line in config.lines() {
@@ -832,9 +834,17 @@ fn machine_items(typed: &str) -> Vec<Item> {
         }
     }
     let t = typed.trim();
-    let mut items: Vec<Item> = hosts.into_iter().filter(|h| h.to_lowercase().contains(&t.to_lowercase())).map(|h| Item { label: h.clone(), hint: "ssh config".into(), action: Action::Connect(h) }).collect();
+    let mut items: Vec<Item> = hosts.into_iter().filter(|h| h.to_lowercase().contains(&t.to_lowercase())).map(|h| Item { label: h.clone(), hint: "ssh config".into(), action: act(h) }).collect();
     if !t.is_empty() && !items.iter().any(|i| i.label == t) {
-        items.push(Item { label: t.to_string(), hint: "connect".into(), action: Action::Connect(t.to_string()) });
+        items.push(Item { label: t.to_string(), hint: "connect".into(), action: act(t.to_string()) });
     }
     items
+}
+
+impl App {
+    /// The box for a machine to add to the sidebar.
+    pub(super) fn add_machine_prompt(&mut self) {
+        self.palette = Some(Palette { mode: Mode::AddMachine, field: TextField::default(), matches: Vec::new(), selected: 0, first: 0 });
+        self.palette_changed();
+    }
 }

@@ -568,3 +568,23 @@ pub fn save_sidebar(open: bool, width: f32) {
     let _ = std::fs::create_dir_all(state_dir());
     let _ = std::fs::write(state_dir().join("sidebar"), format!("{} {width:.0}\n", if open { "shown" } else { "hidden" }));
 }
+
+/// The session's names of a layout's panes on its own machine (those it
+/// names, and on no other machine), in order.
+pub fn ids_in_order(spec: &Spec) -> Vec<u64> {
+    match spec {
+        Spec::Command(_) => Vec::new(),
+        Spec::Pane { id, host, .. } => id.filter(|_| host.is_none()).into_iter().collect(),
+        Spec::Across { v: kids, .. } | Spec::Down { h: kids, .. } => kids.iter().flat_map(ids_in_order).collect(),
+    }
+}
+
+/// The machines added in the sidebar, by how they are reached.
+pub fn load_machines() -> Vec<String> {
+    std::fs::read_to_string(state_dir().join("machines")).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+}
+
+pub fn save_machines(hosts: &[String]) {
+    let _ = std::fs::create_dir_all(state_dir());
+    let _ = std::fs::write(state_dir().join("machines"), hosts.iter().map(|h| format!("{h}\n")).collect::<String>());
+}

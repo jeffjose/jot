@@ -402,6 +402,69 @@ impl Server {
         self.send(c, ToClient::Welcome { layout: String::new(), panes: held });
     }
 
+    /// Its workspaces window `c` does not show: those of the other
+    /// windows (said to be shown elsewhere), those of windows gone, and
+    /// its panes in no workspace, as one.
+    fn listing(&self, c: u64) -> ToClient {
+        use crate::persist::{ids_in_order, Session, Spec, WorkspaceSpec};
+        let mut workspaces = Vec::new();
+        let mut named: Vec<u64> = Vec::new();
+        let from_windows = self.layouts.iter().filter(|(w, _)| **w != c).map(|(_, l)| (l, true));
+        let from_left = self.left.iter().map(|(_, l)| (l, false));
+        for (text, elsewhere) in from_windows.chain(from_left) {
+            let Ok(session) = toml::from_str::<Session>(text) else { continue };
+            for ws in session.workspaces {
+                let Some(layout) = &ws.layout else { continue };
+                let ids: Vec<u64> = ids_in_order(layout).into_iter().filter(|id| self.panes.contains_key(id)).collect();
+                // Gone, or this window's already.
+                if ids.is_empty() || ids.iter().all(|id| self.panes.get(id).is_some_and(|p| p.owner == Some(c))) {
+                    named.extend(&ids);
+                    continue;
+                }
+                named.extend(&ids);
+                // Shown elsewhere only if its panes are a live window's.
+                let shown = elsewhere && ids.iter().any(|id| self.panes.get(id).is_some_and(|p| p.owner.is_some_and(|o| o != c)));
+                workspaces.push(Listed { spec: toml::to_string(&ws).unwrap_or_default(), panes: ids, elsewhere: shown });
+            }
+        }
+        let mut loose: Vec<u64> = self.panes.iter().filter(|(id, p)| p.owner.is_none() && !named.contains(id)).map(|(id, _)| *id).collect();
+        loose.sort();
+        if !loose.is_empty() {
+            let panes: Vec<Spec> = loose.iter().map(|id| Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*id), host: None }).collect();
+            let layout = if panes.len() == 1 { panes.into_iter().next() } else { Some(Spec::Across { v: panes, sizes: Vec::new() }) };
+            let ws = WorkspaceSpec { name: "Kept".into(), layout, ..Default::default() };
+            workspaces.push(Listed { spec: toml::to_string(&ws).unwrap_or_default(), panes: loose, elsewhere: false });
+        }
+        ToClient::Listing { workspaces }
+    }
+
+    /// Panes window `c` takes to show: those no other window has. Their
+    /// workspace, if a window gone left it, is the taker's now.
+    fn take(&mut self, c: u64, panes: &[u64]) -> ToClient {
+        let window = self.names.get(&c).copied().unwrap_or(0);
+        let live: Vec<u64> = self.windows.iter().copied().filter(|w| *w != c).collect();
+        let mut held = Vec::new();
+        for id in panes {
+            let Some(p) = self.panes.get_mut(id) else { continue };
+            if p.owner.is_some_and(|o| live.contains(&o)) {
+                continue;
+            }
+            p.owner = Some(c);
+            p.window = window;
+            p.raw = None;
+            p.proc = None;
+            if let Some(t) = &mut p.tee {
+                t.told = t.state.lines;
+            }
+            held.push(Held { pane: *id, pid: p.pty.pid, cmd: p.cmd.clone(), log: p.log.encode(), tee: p.tee.as_ref().map(|t| t.state.clone()), queue: p.queue.clone() });
+        }
+        let taken: Vec<u64> = held.iter().map(|h| h.pane).collect();
+        self.left.retain(|(_, l)| {
+            toml::from_str::<crate::persist::Session>(l).map_or(true, |s| !s.workspaces.iter().any(|w| w.layout.as_ref().is_some_and(|l| crate::persist::ids_in_order(l).iter().any(|id| taken.contains(id)))))
+        });
+        ToClient::Taken { panes: held }
+    }
+
     /// Every window's workspaces, and those left, as one session: saved,
     /// to be offered back after the machine restarts.
     fn save(&self) {
@@ -589,6 +652,14 @@ pub fn run(path: &Path) {
                             unsafe { libc::kill(-who, sig) };
                         }
                     }
+                }
+                ToServer::List => {
+                    let listing = s.listing(c);
+                    s.send(c, listing);
+                }
+                ToServer::Take { panes } => {
+                    let taken = s.take(c, &panes);
+                    s.send(c, taken);
                 }
                 ToServer::Hello { .. } | ToServer::Peek => {}
             },

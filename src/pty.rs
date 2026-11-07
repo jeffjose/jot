@@ -33,6 +33,10 @@ pub enum Output {
     Back(usize, Vec<crate::mux::Held>),
     /// A machine could not be reached, and why.
     Failed(usize, String),
+    /// A machine's workspaces this window does not show.
+    Listing(usize, Vec<crate::mux::Listed>),
+    /// Panes of a machine taken into this window.
+    Taken(usize, Vec<crate::mux::Held>),
     /// The connection to a machine's session ended.
     Gone(usize),
 }

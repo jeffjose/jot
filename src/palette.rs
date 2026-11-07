@@ -17,6 +17,8 @@ pub enum Action {
     Sidebar,
     /// A workspace on another machine: its session reached by ssh.
     Connect(String),
+    /// A machine added to the sidebar.
+    AddMachine(String),
     /// The box for a machine to connect to.
     ConnectPrompt,
     /// The window closed and every pane ended, the session with them.
@@ -105,9 +107,11 @@ pub struct Item {
 pub enum Mode {
     Find,
     Rename,
-    /// A machine to open a workspace on: one of ~/.ssh/config's, or any
-    /// typed as ssh takes it.
+    /// A machine to make the pane a shell on: one of ~/.ssh/config's, or
+    /// any typed.
     Machine,
+    /// A machine to add to the sidebar.
+    AddMachine,
 }
 
 pub struct Palette {
@@ -132,6 +136,7 @@ impl Palette {
         match (self.mode, self.field.text.first().copied()) {
             (Mode::Rename, _) => "Name:",
             (Mode::Machine, _) => "Machine:",
+            (Mode::AddMachine, _) => "Add machine:",
             (_, None) if !self.matches.is_empty() => "Find:",
             (_, Some('>')) => "Run:",
             (_, Some('@')) => "Workspace:",

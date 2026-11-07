@@ -24,7 +24,7 @@ use std::time::Duration;
 /// Bumped when the messages change: a window and a session that differ
 /// do not talk. (Hello and Refused keep their shape across versions, so
 /// that the difference can be told.)
-pub const PROTO: u32 = 4;
+pub const PROTO: u32 = 5;
 
 /// A pane's queue as both ends keep it: commands waiting for the prompt,
 /// whether a failure has held them, and those waiting on another pane's
@@ -71,6 +71,10 @@ pub enum ToServer {
     /// A signal to a pane's job (its foreground process group), or to its
     /// shell and all it started.
     Signal { pane: u64, sig: i32, job: bool },
+    /// What it holds that this window does not show: its workspaces.
+    List,
+    /// Those panes, to be shown in this window (no other window has them).
+    Take { panes: Vec<u64> },
 }
 
 /// A pane the session has, as it says on attaching.
@@ -105,6 +109,10 @@ pub enum ToClient {
     Info { attached: bool, panes: u32, names: String },
     /// What a pane's program is doing, when it changes.
     Proc { pane: u64, proc: crate::pty::Proc },
+    /// For List: its workspaces this window does not show.
+    Listing { workspaces: Vec<Listed> },
+    /// For Take: the panes, now this window's, with what they printed.
+    Taken { panes: Vec<Held> },
 }
 
 // The wire: a frame is its length (u32), then a tag, then the fields.
@@ -236,6 +244,14 @@ impl ToServer {
             ToServer::Queue { pane, queue } => o.u8(8).u64(*pane).queue(queue),
             ToServer::Peek => o.u8(9),
             ToServer::Signal { pane, sig, job } => o.u8(10).u64(*pane).u32(*sig as u32).u8(*job as u8),
+            ToServer::List => o.u8(11),
+            ToServer::Take { panes } => {
+                o.u8(12).u32(panes.len() as u32);
+                for p in panes {
+                    o.u64(*p);
+                }
+                &mut o
+            }
         };
         frame(o)
     }
@@ -259,6 +275,11 @@ impl ToServer {
             8 => ToServer::Queue { pane: i.u64()?, queue: i.queue()? },
             9 => ToServer::Peek,
             10 => ToServer::Signal { pane: i.u64()?, sig: i.u32()? as i32, job: i.u8()? != 0 },
+            11 => ToServer::List,
+            12 => {
+                let n = i.u32()?;
+                ToServer::Take { panes: (0..n).map(|_| i.u64()).collect::<io::Result<Vec<_>>>()? }
+            }
             t => return Err(bad(t)),
         })
     }
@@ -309,6 +330,27 @@ impl ToClient {
             ToClient::Proc { pane, proc } => {
                 o.u8(10).u64(*pane).str(&proc.cwd).str(&proc.fg).u32(proc.pgrp as u32).u8(proc.busy as u8);
             }
+            ToClient::Listing { workspaces } => {
+                o.u8(11).u32(workspaces.len() as u32);
+                for w in workspaces {
+                    o.str(&w.spec).u32(w.panes.len() as u32);
+                    for p in &w.panes {
+                        o.u64(*p);
+                    }
+                    o.u8(w.elsewhere as u8);
+                }
+            }
+            ToClient::Taken { panes } => {
+                o.u8(12).u32(panes.len() as u32);
+                for p in panes {
+                    o.u64(p.pane).u32(p.pid as u32).str(&p.cmd).bytes(&p.log);
+                    match &p.tee {
+                        Some(t) => o.u8(1).tee(t),
+                        None => o.u8(0),
+                    };
+                    o.queue(&p.queue);
+                }
+            }
         }
         frame(o)
     }
@@ -337,6 +379,27 @@ impl ToClient {
             8 => ToClient::TeeEnd { pane: i.u64()?, lines: i.u64()?, error: i.str()? },
             9 => ToClient::Info { attached: i.u8()? != 0, panes: i.u32()?, names: i.str()? },
             10 => ToClient::Proc { pane: i.u64()?, proc: crate::pty::Proc { cwd: i.str()?, fg: i.str()?, pgrp: i.u32()? as i32, busy: i.u8()? != 0 } },
+            11 => {
+                let n = i.u32()?;
+                let mut workspaces = Vec::new();
+                for _ in 0..n {
+                    let spec = i.str()?;
+                    let k = i.u32()?;
+                    let panes = (0..k).map(|_| i.u64()).collect::<io::Result<Vec<_>>>()?;
+                    workspaces.push(Listed { spec, panes, elsewhere: i.u8()? != 0 });
+                }
+                ToClient::Listing { workspaces }
+            }
+            12 => {
+                let n = i.u32()?;
+                let mut panes = Vec::new();
+                for _ in 0..n {
+                    let (pane, pid, cmd, log) = (i.u64()?, i.u32()? as i32, i.str()?, i.bytes()?);
+                    let tee = if i.u8()? != 0 { Some(i.tee()?) } else { None };
+                    panes.push(Held { pane, pid, cmd, log, tee, queue: i.queue()? });
+                }
+                ToClient::Taken { panes }
+            }
             t => return Err(bad(t)),
         })
     }
@@ -425,6 +488,10 @@ pub enum Heard {
     /// Another machine could not be reached, and why (said once; it is
     /// tried again, unless it runs another jot).
     Failed(String),
+    /// Its workspaces this window does not show.
+    Listing(Vec<Listed>),
+    /// Panes taken into this window.
+    Taken(Vec<Held>),
     /// The connection to the session ended: on another machine, it is
     /// reached again ([`Client::reconnect`]).
     /// The session ended under the window.
@@ -590,6 +657,14 @@ impl Client {
         self.send(ToServer::Signal { pane, sig, job });
     }
 
+    pub fn list(&self) {
+        self.send(ToServer::List);
+    }
+
+    pub fn take(&self, panes: Vec<u64>) {
+        self.send(ToServer::Take { panes });
+    }
+
     /// The window going, its session left running.
     pub fn detach(&self) {
         self.detached.store(true, Ordering::Release);
@@ -607,6 +682,8 @@ fn listen(mut r: Box<dyn Read + Send>, spawned: Sender<(u64, i32)>, hear: Arc<dy
             Ok(ToClient::TeeLines { pane, lines }) => hear(Heard::TeeLines(pane, lines)),
             Ok(ToClient::TeeEnd { pane, lines, error }) => hear(Heard::TeeEnd(pane, lines, error)),
             Ok(ToClient::Proc { pane, proc }) => hear(Heard::Proc(pane, proc)),
+            Ok(ToClient::Listing { workspaces }) => hear(Heard::Listing(workspaces)),
+            Ok(ToClient::Taken { panes }) => hear(Heard::Taken(panes)),
             Ok(ToClient::Spawned { pane, pid }) => {
                 let _ = spawned.send((pane, pid));
             }
@@ -936,4 +1013,14 @@ pub fn app_id(machine: usize, pane: u64) -> u64 {
 /// A window's pane name as its machine and its session's name for it.
 pub fn split_id(id: u64) -> (usize, u64) {
     ((id >> 40) as usize, id & ((1 << 40) - 1))
+}
+
+/// One of a session's workspaces, as a window that does not show it
+/// lists it: its layout (a workspace's text in a session file), and
+/// whether another window shows it.
+#[derive(Clone, Debug)]
+pub struct Listed {
+    pub spec: String,
+    pub panes: Vec<u64>,
+    pub elsewhere: bool,
 }
