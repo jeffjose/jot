@@ -4,6 +4,7 @@
 mod app;
 mod canvas;
 mod field;
+mod emoji;
 mod font;
 mod keys;
 mod layout;

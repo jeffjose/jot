@@ -166,6 +166,22 @@ impl Canvas {
     /// A glyph's coverage laid over the canvas in `color`, its cell's top
     /// left at `(x, y)`, kept inside `clip`.
     pub fn glyph(&mut self, g: &Glyph, x: i32, y: i32, color: u32, clip: Rect) {
+        if let Some(px) = &g.color {
+            // An emoji: its own colours, laid over by their alpha.
+            let (x0, y0, x1, y1) = self.bounds(clip);
+            let (gx, gy) = (x + g.left, y + g.top);
+            for py in gy.max(y0)..(gy + g.height as i32).min(y1) {
+                for qx in gx.max(x0)..(gx + g.width as i32).min(x1) {
+                    let s = px[((py - gy) * g.width as i32 + (qx - gx)) as usize];
+                    let a = s >> 24;
+                    if a > 0 {
+                        let p = &mut self.pixels[(py * self.width + qx) as usize];
+                        *p = blend(*p, s & 0xFFFFFF, a);
+                    }
+                }
+            }
+            return;
+        }
         self.coverage(&g.coverage, g.width, g.height, x + g.left, y + g.top, color, clip);
     }
 

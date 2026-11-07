@@ -38,6 +38,9 @@ pub struct Glyph {
     pub width: usize,
     pub height: usize,
     pub coverage: Vec<u8>,
+    /// For an emoji, its own colours, alpha in the top byte; then the
+    /// coverage is not used.
+    pub color: Option<Vec<u32>>,
 }
 
 pub struct Fonts {
@@ -193,10 +196,25 @@ impl Fonts {
         (self.fallback[i].lookup_glyph_index(c) != 0).then_some(i)
     }
 
-    /// A character's glyph in a style: 1 bold, 2 italic.
+    /// A character's glyph in a style: 1 bold, 2 italic, 4 an emoji in one
+    /// cell rather than two.
+    /// An emoji in colour from Twemoji, two cells wide and as tall as a
+    /// cell, in their middle; None for a character Twemoji has no
+    /// colours for.
+    fn emoji(&self, c: char, narrow: bool) -> Option<Glyph> {
+        let u = c as u32;
+        if !(u >= 0x1F000 || (0x2600..0x27C0).contains(&u) || (0x2B00..0x2C00).contains(&u) || (0x2300..0x2400).contains(&u)) {
+            return None;
+        }
+        let cells = if narrow { 1 } else { 2 };
+        let side = self.cell_h.min(cells * self.cell_w) as u32;
+        let (w, h, pixels) = crate::emoji::twemoji(&c.to_string(), side)?;
+        Some(Glyph { left: (cells * self.cell_w - w) / 2, top: (self.cell_h - h) / 2, width: w as usize, height: h as usize, coverage: Vec::new(), color: Some(pixels) })
+    }
+
     pub fn glyph(&mut self, c: char, style: u8) -> &Glyph {
         if !self.cache.contains_key(&(c, style)) {
-            let g = match shapes::draw(c, self.cell_w, self.cell_h) {
+            let g = match shapes::draw(c, self.cell_w, self.cell_h).or_else(|| self.emoji(c, style & 4 != 0)) {
                 Some(g) => g,
                 None => {
                     let which = self.font_for(c);
@@ -230,7 +248,7 @@ impl Fonts {
     fn place(&self, m: fontdue::Metrics, coverage: Vec<u8>, style: u8) -> Glyph {
         let top = self.baseline - (m.height as i32 + m.ymin);
         if style & 2 == 0 || m.width == 0 {
-            return Glyph { left: m.xmin, top, width: m.width, height: m.height, coverage };
+            return Glyph { left: m.xmin, top, width: m.width, height: m.height, coverage, color: None };
         }
         let slant = 0.2;
         let extra = (m.height as f32 * slant).ceil() as usize;
@@ -253,7 +271,7 @@ impl Fonts {
                 }
             }
         }
-        Glyph { left: m.xmin, top, width: w, height: m.height, coverage: out }
+        Glyph { left: m.xmin, top, width: w, height: m.height, coverage: out, color: None }
     }
 
     /// The glyph numbers for a run of text as the font's ligatures draw
@@ -431,7 +449,7 @@ mod shapes {
                     }
                 }
             }
-            return Some(Glyph { left: 0, top: 0, width: wu, height: hu, coverage: b.cov });
+            return Some(Glyph { left: 0, top: 0, width: wu, height: hu, coverage: b.cov, color: None });
         }
         // Rounded corners: a quarter of a circle from the middle of one
         // edge to the middle of the other, smoothed.
@@ -474,7 +492,7 @@ mod shapes {
             } else {
                 b.fill(0, ly, ox.ceil() as i32, ly + light, 255);
             }
-            return Some(Glyph { left: 0, top: 0, width: wu, height: hu, coverage: b.cov });
+            return Some(Glyph { left: 0, top: 0, width: wu, height: hu, coverage: b.cov, color: None });
         }
         let eighth_h = |n: i32| (h * n + 4) / 8;
         let eighth_w = |n: i32| (w * n + 4) / 8;
@@ -521,7 +539,7 @@ mod shapes {
             '▟' => quad(&mut b, [false, true, true, true]),
             _ => return None,
         }
-        Some(Glyph { left: 0, top: 0, width: wu, height: hu, coverage: b.cov })
+        Some(Glyph { left: 0, top: 0, width: wu, height: hu, coverage: b.cov, color: None })
     }
 }
 

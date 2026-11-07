@@ -15,6 +15,8 @@ toml = { version = "1", default-features = false, features = ["parse", "display"
 # The clipboard, on X11 and on Wayland.
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 rustybuzz = "0.20"
+ttf-parser = "0.25"
+ab_glyph_rasterizer = "0.1"
 
 [build-dependencies]
 vergen-gitcl = "10.0.3"
