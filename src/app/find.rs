@@ -165,7 +165,7 @@ impl App {
     pub(super) fn draw_find(&mut self) {
         let Some(mut f) = self.find.take() else { return };
         let Some(rect) = self.panes.get(&f.pane).map(|p| p.rect) else { return };
-        let c = self.theme.chrome();
+        let c = self.cur_theme.chrome();
         let scale = self.scale;
         let px = |v: f32| (v * scale).round() as i32;
         let ui = &mut self.fonts.ui;
@@ -198,7 +198,7 @@ impl App {
             self.canvas.text(ui, "Find", (field.x + px(8.0)) as f32, ty, c.faint, field);
             self.canvas.fill(Rect { x: field.x + px(8.0), y: ty, w: px(2.0).max(2), h: ui.height }, c.text);
         } else {
-            f.field.draw(&mut self.canvas, ui, field.x + px(8.0), ty, c.text, mix(self.accent, c.panel, 140), true, field);
+            f.field.draw(&mut self.canvas, ui, field.x + px(8.0), ty, c.text, mix(self.cur_accent, c.panel, 140), true, field);
         }
         let color = if total == 0 && !f.field.text.is_empty() { 0xE5484D } else { c.dim };
         self.canvas.text(ui, &count, count_x as f32, ty, color, r);

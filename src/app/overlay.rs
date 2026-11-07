@@ -224,7 +224,7 @@ impl App {
             }
             Action::NewWorkspace => self.new_workspace(),
             Action::Open(dir) => {
-                self.add_workspace(&WorkspaceSpec { name: String::new(), cwd: Some(dir.display().to_string()), panes: vec![], split: None, layout: None });
+                self.add_workspace(&WorkspaceSpec { name: String::new(), cwd: Some(dir.display().to_string()), panes: vec![], split: None, layout: None, ..Default::default() });
                 self.go_to(self.workspaces.len() - 1);
             }
             Action::Rename => {
@@ -256,6 +256,7 @@ impl App {
             Action::FontSmaller => self.set_font_size(self.font_size - 1.0),
             Action::FontReset => self.set_font_size(self.config.font_size),
             Action::Settings => self.open_settings(),
+            Action::Broadcast => self.toggle_broadcast(),
             Action::Palette => self.open_palette(),
             Action::Commands => self.open_palette_with(">"),
             Action::StatusLine => {
@@ -282,7 +283,7 @@ impl App {
     }
 
     pub(super) fn draw_palette(&mut self) {
-        let c = self.theme.chrome();
+        let c = self.cur_theme.chrome();
         let Some(l) = self.palette_layout() else { return };
         let Some(p) = self.palette.as_ref() else { return };
         let (label, field, mode) = (p.label(), p.field.clone(), p.mode);
@@ -299,7 +300,7 @@ impl App {
         let (x, y) = (r.x + l.pad, r.y + l.pad);
         let after_label = self.canvas.text(ui, label, x as f32, y, c.dim, r);
         let typed_x = after_label + l.pad;
-        let selection = mix(self.accent, c.panel, 140);
+        let selection = mix(self.cur_accent, c.panel, 140);
         field.draw(&mut self.canvas, ui, typed_x, y, c.text, selection, true, r);
         let note_w = ui.width(&note);
         self.canvas.text(ui, &note, (r.x + r.w - l.pad - note_w) as f32, y, c.dim, r);
@@ -307,9 +308,9 @@ impl App {
             let top = r.y + l.head + row as i32 * l.row_h;
             let picked = *at == selected;
             if picked {
-                self.canvas.round_fill(Rect { x: r.x + l.pad / 2, y: top + 1, w: r.w - l.pad, h: l.row_h - 2 }, l.pad * 3 / 4, self.accent, 255);
+                self.canvas.round_fill(Rect { x: r.x + l.pad / 2, y: top + 1, w: r.w - l.pad, h: l.row_h - 2 }, l.pad * 3 / 4, self.cur_accent, 255);
             }
-            let (main, dim) = if picked { (on(self.accent), mix(self.accent, on(self.accent), 200)) } else { (c.text, c.dim) };
+            let (main, dim) = if picked { (on(self.cur_accent), mix(self.cur_accent, on(self.cur_accent), 200)) } else { (c.text, c.dim) };
             let ty = top + (l.row_h - ui.height) / 2;
             let row_clip = Rect { x: r.x, y: top, w: r.w, h: l.row_h };
             self.canvas.text(ui, &item.label, (r.x + l.pad * 3 / 2) as f32, ty, main, row_clip);
@@ -400,7 +401,7 @@ impl App {
     }
 
     pub(super) fn draw_menu(&mut self) {
-        let c = self.theme.chrome();
+        let c = self.cur_theme.chrome();
         let Some((r, pad, row_h, sep_h)) = self.menu_layout() else { return };
         let Some(m) = self.menu.as_ref() else { return };
         let (items, hover) = (m.items.clone(), m.hover);
@@ -415,9 +416,9 @@ impl App {
             };
             let picked = hover == Some(i);
             if picked {
-                self.canvas.round_fill(Rect { x: r.x + pad / 2, y: top, w: r.w - pad, h: row_h }, pad / 2, self.accent, 255);
+                self.canvas.round_fill(Rect { x: r.x + pad / 2, y: top, w: r.w - pad, h: row_h }, pad / 2, self.cur_accent, 255);
             }
-            let (main, dim) = if picked { (on(self.accent), mix(self.accent, on(self.accent), 200)) } else { (c.text, c.faint) };
+            let (main, dim) = if picked { (on(self.cur_accent), mix(self.cur_accent, on(self.cur_accent), 200)) } else { (c.text, c.faint) };
             let ty = top + (row_h - ui.height) / 2;
             self.canvas.text(ui, &item.label, (r.x + pad * 3 / 2) as f32, ty, main, r);
             if !item.hint.is_empty() {

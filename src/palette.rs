@@ -31,6 +31,7 @@ pub enum Action {
     FontSmaller,
     FontReset,
     StatusLine,
+    Broadcast,
     Settings,
     Palette,
     Commands,
@@ -182,6 +183,7 @@ pub fn commands() -> Vec<Item> {
         c("Text smaller", "Ctrl -", Action::FontSmaller),
         c("Text as it was", "Ctrl 0", Action::FontReset),
         c("Status line, on or off", "", Action::StatusLine),
+        c("Type into every pane of the workspace, or one", "Alt Shift B", Action::Broadcast),
         c("Settings", "Ctrl ,", Action::Settings),
         c("Find a workspace, pane or project", "Ctrl K", Action::Palette),
     ]

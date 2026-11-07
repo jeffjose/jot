@@ -123,8 +123,8 @@ impl App {
                 let r = zone_rect(r, z);
                 let m = self.px(4.0);
                 let inner = Rect { x: r.x + m, y: r.y + m, w: r.w - 2 * m, h: r.h - 2 * m };
-                self.canvas.round_fill(inner, self.px(8.0), self.accent, 70);
-                self.canvas.ring(inner, self.px(8.0), self.px(2.0), self.accent);
+                self.canvas.round_fill(inner, self.px(8.0), self.cur_accent, 70);
+                self.canvas.ring(inner, self.px(8.0), self.px(2.0), self.cur_accent);
             }
         }
         // The ghost: the pane's picture under the pointer, see-through.
@@ -134,9 +134,9 @@ impl App {
             let below = self.pointer.1 + self.px(14.0);
             let y = if below + h + self.px(8.0) > self.canvas.height { self.pointer.1 - h - self.px(14.0) } else { below };
             let r = Rect { x, y, w: *w, h: *h };
-            self.canvas.panel(Rect { x: x - 1, y: y - 1, w: w + 2, h: h + 2 }, self.px(6.0), 0x000000, self.accent);
+            self.canvas.panel(Rect { x: x - 1, y: y - 1, w: w + 2, h: h + 2 }, self.px(6.0), 0x000000, self.cur_accent);
             self.canvas.blit(pixels, *w, *h, x, y, 190);
-            self.canvas.ring(Rect { x: r.x - 1, y: r.y - 1, w: r.w + 2, h: r.h + 2 }, self.px(6.0), self.px(2.0), self.accent);
+            self.canvas.ring(Rect { x: r.x - 1, y: r.y - 1, w: r.w + 2, h: r.h + 2 }, self.px(6.0), self.px(2.0), self.cur_accent);
         }
         self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
     }

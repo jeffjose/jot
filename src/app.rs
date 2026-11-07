@@ -59,6 +59,8 @@ pub struct Pane {
     /// Every row to be drawn, not only the ones that changed.
     full: bool,
     cursor_was: Option<u16>,
+    /// The theme its terminal has: its workspace's, or the settings'.
+    theme: &'static Theme,
     caption: String,
     /// Wrote something while its workspace was not shown.
     activity: bool,
@@ -81,6 +83,11 @@ pub struct Workspace {
     root: Node,
     focus: PaneId,
     zoom: Option<PaneId>,
+    /// Its own accent and theme, by name, over the ones in the settings.
+    accent: Option<String>,
+    theme: Option<String>,
+    /// What is typed goes to every pane in it.
+    broadcast: bool,
 }
 
 enum Drag {
@@ -106,6 +113,10 @@ pub struct App {
     theme: &'static Theme,
     /// The colour of what is picked out: the pane you are in, menus.
     accent: u32,
+    /// The accent and theme now: the current workspace's own, else the
+    /// settings'. What is drawn takes these.
+    cur_accent: u32,
+    cur_theme: &'static Theme,
     panes: HashMap<PaneId, Pane>,
     workspaces: Vec<Workspace>,
     current: usize,
@@ -191,6 +202,8 @@ impl App {
             scale: 1.0,
             theme,
             accent,
+            cur_accent: accent,
+            cur_theme: theme,
             panes: HashMap::new(),
             workspaces: Vec::new(),
             current: 0,
@@ -272,7 +285,7 @@ impl App {
         let caption = folder_name(&start.cwd);
         self.panes.insert(
             id,
-            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, caption, activity: false, started: Instant::now(), lines: Vec::new() },
+            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new() },
         );
         id
     }
@@ -285,7 +298,7 @@ impl App {
             id
         });
         let name = if spec.name.is_empty() { folder_name(&spec.folder()) } else { spec.name.clone() };
-        self.workspaces.push(Workspace { name, root, focus: ids[0], zoom: None });
+        self.workspaces.push(Workspace { name, root, focus: ids[0], zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), broadcast: false });
     }
 
     /// The workspaces to begin with: those saved, else those in the
@@ -297,7 +310,7 @@ impl App {
             None if !self.config.workspaces.is_empty() => (std::mem::take(&mut self.config.workspaces), 0, None),
             None => {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| pty::home());
-                (vec![WorkspaceSpec { name: String::new(), cwd: Some(cwd.display().to_string()), panes: vec![], split: None, layout: None }], 0, None)
+                (vec![WorkspaceSpec { name: String::new(), cwd: Some(cwd.display().to_string()), panes: vec![], split: None, layout: None, ..Default::default() }], 0, None)
             }
         };
         for spec in &specs {
@@ -441,7 +454,7 @@ impl App {
             }
             // Its workspace was closed with it: it comes back as one.
             None => {
-                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None });
+                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, broadcast: false });
                 self.go_to(self.workspaces.len() - 1);
             }
         }
@@ -534,7 +547,7 @@ impl App {
 
     fn new_workspace(&mut self) {
         let cwd = self.focused().and_then(|f| self.panes.get(&f)).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
-        self.add_workspace(&WorkspaceSpec { name: String::new(), cwd: Some(cwd.display().to_string()), panes: vec![], split: None, layout: None });
+        self.add_workspace(&WorkspaceSpec { name: String::new(), cwd: Some(cwd.display().to_string()), panes: vec![], split: None, layout: None, ..Default::default() });
         self.go_to(self.workspaces.len() - 1);
     }
 
@@ -625,9 +638,31 @@ impl App {
         self.clip_set(text, primary);
     }
 
+    /// The panes what is typed goes to: the one you are in, or, with
+    /// broadcast on, every pane of its workspace.
+    pub(super) fn input_targets(&self, id: PaneId) -> Vec<PaneId> {
+        match self.workspaces.get(self.current) {
+            Some(ws) if ws.broadcast && !self.roam_shown && ws.root.contains(id) => {
+                let mut ids = Vec::new();
+                ws.root.panes(&mut ids);
+                ids
+            }
+            _ => vec![id],
+        }
+    }
+
+    /// Typing into every pane of the workspace at once, or back to one.
+    pub(super) fn toggle_broadcast(&mut self) {
+        if let Some(ws) = self.workspaces.get_mut(self.current) {
+            ws.broadcast = !ws.broadcast;
+        }
+        self.refresh_panes();
+    }
+
     fn paste(&mut self, primary: bool) {
         let (Some(text), Some(id)) = (self.clip_get(primary), self.focused()) else { return };
-        if let Some(p) = self.panes.get_mut(&id) {
+        for id in self.input_targets(id) {
+            let Some(p) = self.panes.get_mut(&id) else { continue };
             let bytes = p.term.encode_paste(&text);
             p.pty.write(&bytes);
             p.term.scroll_to_bottom();
@@ -680,6 +715,7 @@ impl App {
                 (KeyCode::Comma, _) => self.go_to((self.current + self.workspaces.len() - 1) % self.workspaces.len()),
                 (KeyCode::Period, _) => self.go_to((self.current + 1) % self.workspaces.len()),
                 (KeyCode::KeyN, true) => self.new_workspace(),
+                (KeyCode::KeyB, true) => self.toggle_broadcast(),
                 (KeyCode::KeyP, true) => self.paste(false),
                 (KeyCode::Backquote, false) => self.toggle_roam(),
                 _ => return false,
@@ -773,7 +809,6 @@ impl App {
             return;
         }
         let Some(id) = self.focused() else { return };
-        let Some(p) = self.panes.get_mut(&id) else { return };
         let action = match (event.state, event.repeat) {
             (ElementState::Released, _) => sys::GHOSTTY_KEY_ACTION_RELEASE,
             (_, true) => sys::GHOSTTY_KEY_ACTION_REPEAT,
@@ -797,17 +832,23 @@ impl App {
             _ => "",
         };
         let text = event.text.as_deref().filter(|t| !t.is_empty()).unwrap_or(if m.alt_key() { logical } else { "" });
-        let bytes = p.term.encode_key(crate::keys::ghostty(code), mods, action, text, unshifted);
-        if crate::debug() && event.state == ElementState::Pressed {
-            eprintln!("key {code:?} mods {m:?} text {:?} logical {logical:?} unshifted {unshifted:#x} -> {bytes:?}", event.text.as_deref());
-        }
-        if !bytes.is_empty() {
-            p.pty.write(&bytes);
-            if !p.term.at_bottom() {
-                p.term.scroll_to_bottom();
-                self.redraw();
+        // Broadcasting, every pane in the workspace gets the key, each as
+        // its own program would have it.
+        for target in self.input_targets(id) {
+            let Some(p) = self.panes.get_mut(&target) else { continue };
+            let bytes = p.term.encode_key(crate::keys::ghostty(code), mods, action, text, unshifted);
+            if crate::debug() && event.state == ElementState::Pressed && target == id {
+                eprintln!("key {code:?} mods {m:?} text {:?} logical {logical:?} unshifted {unshifted:#x} -> {bytes:?}", event.text.as_deref());
+            }
+            if !bytes.is_empty() {
+                p.pty.write(&bytes);
+                if !p.term.at_bottom() {
+                    p.term.scroll_to_bottom();
+                    self.full = true;
+                }
             }
         }
+        self.redraw();
     }
 
     /// The pane under a point, and the cell in it.
@@ -1056,11 +1097,37 @@ impl App {
         }
     }
 
+    /// The accent and theme now, and every pane in its workspace's theme.
+    pub(super) fn retint(&mut self) {
+        let ws = self.workspaces.get(self.current);
+        self.cur_theme = ws.and_then(|w| w.theme.as_deref()).map(Theme::by_name).unwrap_or(self.theme);
+        self.cur_accent = ws.and_then(|w| w.accent.as_deref()).map(crate::theme::accent).unwrap_or(self.accent);
+        let mut wanted: Vec<(PaneId, &'static Theme)> = Vec::new();
+        for ws in &self.workspaces {
+            let t = ws.theme.as_deref().map(Theme::by_name).unwrap_or(self.theme);
+            let mut ids = Vec::new();
+            ws.root.panes(&mut ids);
+            wanted.extend(ids.into_iter().map(|id| (id, t)));
+        }
+        wanted.extend(self.roam.map(|r| (r, self.theme)));
+        for (id, t) in wanted {
+            if let Some(p) = self.panes.get_mut(&id) {
+                if !std::ptr::eq(p.theme, t) {
+                    p.term.set_theme(t);
+                    p.theme = t;
+                    p.full = true;
+                    self.full = true;
+                }
+            }
+        }
+    }
+
     fn draw(&mut self) {
+        self.retint();
         self.refresh_captions();
         let full = std::mem::take(&mut self.full);
         if full {
-            self.canvas.fill(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height }, self.theme.divider());
+            self.canvas.fill(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height }, self.cur_theme.divider());
             self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
         }
         let ids: Vec<PaneId> = if let Some(z) = self.ws().zoom {
@@ -1112,11 +1179,11 @@ impl App {
     fn draw_pane(&mut self, id: PaneId, n: usize, full: bool, focused: bool) {
         let (cw, ch) = (self.fonts.cell_w, self.fonts.cell_h);
         let cap_h = self.caption_h();
-        let (sel, tfg) = (self.theme.selection, self.theme.fg);
+        let (sel, tfg) = (self.cur_theme.selection, self.cur_theme.fg);
         let min_contrast = self.config.min_contrast;
         let (rows, cols) = self.panes.get(&id).map_or((0, 0), |p| (p.rows, p.cols));
         let (hl_all, hl_pick) = self.find_spans(id, rows, cols);
-        let (link_sp, link_color) = (self.link_spans(id), self.accent);
+        let (link_sp, link_color) = (self.link_spans(id), self.cur_accent);
         let Some(p) = self.panes.get_mut(&id) else { return };
         let full = full || p.full;
         p.full = false;
@@ -1237,9 +1304,9 @@ impl App {
         let h = self.caption_h();
         let bar = Rect { x: rect.x, y: rect.y + rect.h - h, w: rect.w, h };
         let (bg, fg) = if focused {
-            (self.accent, crate::canvas::on(self.accent))
+            (self.cur_accent, crate::canvas::on(self.cur_accent))
         } else {
-            let (bg, fg) = self.theme.idle_caption();
+            let (bg, fg) = self.cur_theme.idle_caption();
             (bg, if activity { ACTIVITY } else { fg })
         };
         self.canvas.fill(bar, bg);
@@ -1247,12 +1314,18 @@ impl App {
         let pad = self.px(6.0) as f32;
         let label = if n == 0 { format!("~  {caption}") } else { format!("{n}  {caption}") };
         self.canvas.text(&mut self.fonts.ui, &label, bar.x as f32 + pad, ty, fg, bar);
-        if scrolled {
-            let tag = " SCROLLED ";
+        // Tags at the right: scrolled back, and typing into every pane.
+        let broadcast = n > 0 && self.workspaces.get(self.current).is_some_and(|w| w.broadcast);
+        let mut right = bar.x + bar.w - pad as i32;
+        for (on, tag, color) in [(scrolled, " SCROLLED ", SCROLLED), (broadcast, " TYPING INTO ALL ", 0xE5484D)] {
+            if !on {
+                continue;
+            }
             let w = self.fonts.ui.width(tag);
-            let r = Rect { x: bar.x + bar.w - w - pad as i32, y: bar.y, w, h };
-            self.canvas.fill(r, SCROLLED);
-            self.canvas.text(&mut self.fonts.ui, tag, r.x as f32, ty, 0x191111, r);
+            let r = Rect { x: right - w, y: bar.y, w, h };
+            self.canvas.fill(r, color);
+            self.canvas.text(&mut self.fonts.ui, tag, r.x as f32, ty, crate::canvas::on(color), r);
+            right = r.x - pad as i32 / 2;
         }
         self.damage.push(bar);
     }
@@ -1343,7 +1416,7 @@ impl App {
         let workspaces = self
             .workspaces
             .iter()
-            .map(|ws| WorkspaceSpec { name: ws.name.clone(), cwd: None, panes: vec![], split: None, layout: Some(persist::spec(&ws.root, &describe)) })
+            .map(|ws| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &describe)), accent: ws.accent.clone(), theme: ws.theme.clone(), ..Default::default() })
             .collect();
         let roam = self.roam.and_then(|r| panes.get(&r)).and_then(|p| p.pty.cwd()).or(self.roam_cwd.clone()).map(|p| persist::shorten(&p));
         persist::save_session(&Session { current: self.current, roam, workspaces });

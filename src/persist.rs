@@ -36,7 +36,7 @@ pub enum Spec {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WorkspaceSpec {
     #[serde(default)]
     pub name: String,
@@ -49,6 +49,11 @@ pub struct WorkspaceSpec {
     pub split: Option<Dir>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<Spec>,
+    /// Its own accent and theme, over the ones in the settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 /// A pane to be started: its command and folder.
@@ -320,7 +325,7 @@ mod tests {
         assert!(matches!(node, Node::Split { dir: Dir::Down, .. }));
         // And back.
         let spec = spec(&node, &|_| ("claude".into(), None));
-        let text = toml::to_string(&WorkspaceSpec { name: "x".into(), cwd: None, panes: vec![], split: None, layout: Some(spec) }).unwrap();
+        let text = toml::to_string(&WorkspaceSpec { name: "x".into(), cwd: None, panes: vec![], split: None, layout: Some(spec), ..Default::default() }).unwrap();
         let back: WorkspaceSpec = toml::from_str(&text).unwrap();
         assert!(matches!(back.layout, Some(Spec::Down { ref h, .. }) if h.len() == 2), "{text}");
     }

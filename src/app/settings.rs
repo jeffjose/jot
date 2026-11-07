@@ -11,7 +11,7 @@ use crate::font;
 use crate::theme::{ACCENTS, THEMES};
 
 
-const SECTIONS: [&str; 4] = ["Appearance", "Fonts", "Keys", "About"];
+const SECTIONS: [&str; 5] = ["Appearance", "Workspaces", "Fonts", "Keys", "About"];
 
 /// A setting, for Reset.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -26,6 +26,8 @@ pub enum Key {
     UiSize,
     Captions,
     StatusLine,
+    /// A workspace's theme, in the list of themes.
+    WsTheme,
 }
 
 const ALL_KEYS: [Key; 10] = [Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine];
@@ -43,10 +45,16 @@ pub enum Hit {
     Thumb,
     Track,
     Close,
+    /// A workspace's accent: an index into the accents, or none for the settings'.
+    WsAccent(usize, usize),
+    WsTheme(usize),
+    WsBroadcast(usize),
 }
 
 pub struct Dropdown {
     pub key: Key,
+    /// For a workspace's theme, which workspace.
+    pub ws: usize,
     pub items: Vec<String>,
     pub filter: crate::field::TextField,
     pub selected: usize,
@@ -98,6 +106,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Alt 1–9", "Go to a workspace"),
     ("Alt ,  Alt .", "The workspace before, after"),
     ("Alt Shift N", "New workspace in this pane's folder"),
+    ("Alt Shift B", "Type into every pane of the workspace, and back"),
     ("Alt `", "Roaming terminal"),
     ("Ctrl Shift C", "Copy"),
     ("Ctrl Shift V", "Paste"),
@@ -117,6 +126,7 @@ fn config_key(key: Key) -> &'static str {
         Key::UiSize => "ui-font-size",
         Key::Captions => "captions",
         Key::StatusLine => "status-line",
+        Key::WsTheme => "theme",
     }
 }
 
@@ -151,6 +161,7 @@ impl App {
             Key::UiSize => c.ui_font_size != persist::default_ui_font_size(),
             Key::Captions => !c.captions,
             Key::StatusLine => c.status_line,
+            Key::WsTheme => false,
         }
     }
 
@@ -158,10 +169,9 @@ impl App {
         let Some(theme) = THEMES.get(i) else { return };
         self.theme = theme;
         self.config.theme = theme.name.to_string();
-        for p in self.panes.values_mut() {
-            p.term.set_theme(theme);
-            p.full = true;
-        }
+        // Each pane takes it, unless its workspace has a theme of its own,
+        // as the next frame is drawn.
+        self.full = true;
         persist::set_config_value("theme", &format!("{:?}", theme.name));
     }
 
@@ -213,6 +223,7 @@ impl App {
                 self.config.captions = true;
                 self.relayout();
             }
+            Key::WsTheme => {}
             Key::StatusLine => {
                 self.config.status_line = false;
                 self.relayout();
@@ -276,17 +287,48 @@ impl App {
                 if let Some(s) = &mut self.settings {
                     let items = if key == Key::Family { s.mono.get_or_insert_with(|| font::families(true)).clone() } else { s.all.get_or_insert_with(|| font::families(false)).clone() };
                     let selected = items.iter().position(|n| n.eq_ignore_ascii_case(&current)).unwrap_or(0);
-                    s.dropdown = Some(Dropdown { key, items, filter: crate::field::TextField::default(), selected, first: selected.saturating_sub(4), anchor });
+                    s.dropdown = Some(Dropdown { key, ws: 0, items, filter: crate::field::TextField::default(), selected, first: selected.saturating_sub(4), anchor });
                 }
             }
             Hit::Item(i) => {
-                let picked = self.settings.as_mut().and_then(|s| s.dropdown.take()).and_then(|d| d.items.get(i).cloned().map(|n| (d.key, n)));
-                if let Some((key, name)) = picked {
-                    self.set_family(key, name);
+                let picked = self.settings.as_mut().and_then(|s| s.dropdown.take()).and_then(|d| d.items.get(i).cloned().map(|n| (d.key, d.ws, i, n)));
+                match picked {
+                    // The first of a workspace's themes is the settings' own.
+                    Some((Key::WsTheme, wi, i, name)) => {
+                        if let Some(ws) = self.workspaces.get_mut(wi) {
+                            ws.theme = (i > 0).then_some(name);
+                        }
+                        self.unsaved = true;
+                        self.full = true;
+                    }
+                    Some((key, _, _, name)) => self.set_family(key, name),
+                    None => {}
                 }
             }
             Hit::Reset(key) => self.reset(key),
             Hit::Close => return self.close_settings(),
+            Hit::WsAccent(wi, i) => {
+                if let Some(ws) = self.workspaces.get_mut(wi) {
+                    ws.accent = ACCENTS.get(i).map(|(n, _)| n.to_string());
+                }
+                self.unsaved = true;
+            }
+            Hit::WsBroadcast(wi) => {
+                if let Some(ws) = self.workspaces.get_mut(wi) {
+                    ws.broadcast = !ws.broadcast;
+                }
+                self.refresh_panes();
+            }
+            Hit::WsTheme(wi) => {
+                let anchor = self.settings.as_ref().and_then(|s| s.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r)).unwrap_or_default();
+                let current = self.workspaces.get(wi).and_then(|w| w.theme.clone());
+                let mut items = vec!["Settings' theme".to_string()];
+                items.extend(THEMES.iter().map(|t| t.name.to_string()));
+                let selected = current.and_then(|c| items.iter().position(|n| *n == c)).unwrap_or(0);
+                if let Some(s) = &mut self.settings {
+                    s.dropdown = Some(Dropdown { key: Key::WsTheme, ws: wi, items, filter: crate::field::TextField::default(), selected, first: selected.saturating_sub(4), anchor });
+                }
+            }
             Hit::Thumb | Hit::Track => {}
         }
         self.full = true;
@@ -456,12 +498,12 @@ impl App {
     }
 
     pub(super) fn draw_settings(&mut self) {
-        let c = self.theme.chrome();
+        let c = self.cur_theme.chrome();
         let Some(mut st) = self.settings.take() else { return };
         let scale = self.scale;
         let px = |v: f32| (v * scale).round() as i32;
         let r = self.settings_rect();
-        let accent = self.accent;
+        let accent = self.cur_accent;
         let accent_text = mix(accent, 0xFFFFFF, 110);
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         let hover = st.hover;
@@ -470,6 +512,7 @@ impl App {
         let current_accent = ACCENTS.iter().position(|(_, c)| *c == self.accent);
         let (family, size, ui_family, ui_size, line_height) = (self.config.font_family.clone(), self.font_size, self.config.ui_font_family.clone(), self.config.ui_font_size, self.config.line_height);
         let (captions, status_line) = (self.config.captions, self.config.status_line);
+        let ws_rows: Vec<(String, Option<String>, Option<String>, bool, bool)> = self.workspaces.iter().enumerate().map(|(i, w)| (w.name.clone(), w.accent.clone(), w.theme.clone(), w.broadcast, i == self.current)).collect();
         let min_contrast = self.config.min_contrast;
         let version = crate::version();
         let canvas_h = self.canvas.height;
@@ -531,6 +574,7 @@ impl App {
         let field_h = uh + px(14.0);
         let row_h = uh + px(4.0) + sh_ + 2 * row_pad;
         let rule = mix(c.panel, c.edge, 160);
+        let field_w = px(260.0).min(body.w / 2);
         let scroll = st.scroll;
 
         // A heading for each section.
@@ -662,6 +706,63 @@ impl App {
 
         }
         if section == 1 {
+        heading(canvas, fonts, &mut y, &mut tops, "Workspaces");
+        canvas.text(&mut fonts.small, "Each workspace can have its own accent and theme, over the ones under Appearance.", body.x as f32, y - px(8.0), c.dim, view);
+        y += sh_ + px(12.0);
+        for (wi, (name, accent_name, theme_name, broadcast, here)) in ws_rows.iter().enumerate() {
+            // The workspace's name, its accent as a dot.
+            let its = accent_name.as_deref().map(crate::theme::accent).unwrap_or(accent);
+            canvas.round_fill(Rect { x: body.x, y: y + px(4.0) + (uh - px(10.0)) / 2, w: px(10.0), h: px(10.0) }, px(5.0), its, 255);
+            let end = canvas.text(&mut fonts.ui, name, (body.x + px(18.0)) as f32, y + px(4.0), c.text, view);
+            if *here {
+                canvas.text(&mut fonts.small, "you are here", (end + px(10.0)) as f32, y + px(4.0) + (uh - sh_) / 2, c.faint, view);
+            }
+            // Its theme, at the right.
+            let field = Rect { x: right - field_w, y, w: field_w, h: field_h };
+            canvas.round_fill(field, px(7.0), if hover == Some(Hit::WsTheme(wi)) { c.hover } else { c.field }, 255);
+            canvas.ring(field, px(7.0), 1, c.edge);
+            let shown = theme_name.clone().unwrap_or_else(|| "Settings' theme".into());
+            canvas.text_fit(&mut fonts.ui, &shown, field.x + px(12.0), field.y + (field_h - uh) / 2, field_w - px(44.0), if theme_name.is_some() { c.text } else { c.dim }, field);
+            page.push((field, Hit::WsTheme(wi)));
+            y += field_h + px(10.0);
+            // Its accent: the settings', or a colour of its own.
+            let d = px(20.0);
+            let gap = px(8.0);
+            let per_row = ((body.w - px(90.0) + gap) / (d + gap)).max(1);
+            let chip = Rect { x: body.x, y, w: px(78.0), h: d };
+            canvas.round_fill(chip, d / 2, if accent_name.is_none() { c.hover } else { c.field }, 255);
+            if accent_name.is_none() {
+                canvas.ring(chip, d / 2, 1, c.text);
+            }
+            canvas.text(&mut fonts.small, "Settings'", (chip.x + px(10.0)) as f32, chip.y + (d - sh_) / 2, c.text, view);
+            page.push((chip, Hit::WsAccent(wi, usize::MAX)));
+            for (i, (an, color)) in ACCENTS.iter().enumerate() {
+                let (col, rowi) = (i as i32 % per_row, i as i32 / per_row);
+                let dot = Rect { x: body.x + px(90.0) + col * (d + gap), y: y + rowi * (d + gap), w: d, h: d };
+                canvas.round_fill(dot, d / 2, *color, 255);
+                if accent_name.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(an)) {
+                    canvas.ring(Rect { x: dot.x - px(3.0), y: dot.y - px(3.0), w: d + px(6.0), h: d + px(6.0) }, d, px(2.0), c.text);
+                }
+                page.push((dot, Hit::WsAccent(wi, i)));
+            }
+            y += ((ACCENTS.len() as i32 + per_row - 1) / per_row) * (d + gap) + px(6.0);
+            // Typing into all its panes.
+            let mid = y + row_h / 2 - row_pad;
+            canvas.text(&mut fonts.ui, "Type into every pane", body.x as f32, mid - uh / 2, c.text, view);
+            canvas.text(&mut fonts.small, "Alt Shift B", (body.x + px(170.0)) as f32, mid - sh_ / 2, c.faint, view);
+            let (sw, shh) = (px(40.0), px(22.0));
+            let pill = Rect { x: right - sw, y: mid - shh / 2, w: sw, h: shh };
+            canvas.round_fill(pill, shh / 2, if *broadcast { accent } else { c.hover }, 255);
+            let k = shh - px(6.0);
+            let kx = if *broadcast { pill.x + sw - k - px(3.0) } else { pill.x + px(3.0) };
+            canvas.round_fill(Rect { x: kx, y: pill.y + px(3.0), w: k, h: k }, k / 2, 0xFFFFFF, 255);
+            page.push((Rect { x: pill.x - px(4.0), y: pill.y - px(4.0), w: sw + px(8.0), h: shh + px(8.0) }, Hit::WsBroadcast(wi)));
+            y += row_h - row_pad;
+            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
+            y += px(16.0);
+        }
+        }
+        if section == 2 {
         // ---- Fonts ----
         heading(canvas, fonts, &mut y, &mut tops, "Fonts");
         let field_w = px(260.0).min(body.w / 2);
@@ -699,7 +800,7 @@ impl App {
         y += px(32.0);
 
         }
-        if section == 2 {
+        if section == 3 {
         // ---- Keys ----
         heading(canvas, fonts, &mut y, &mut tops, "Keys");
         let key_h = sh_ + px(10.0);
@@ -719,7 +820,7 @@ impl App {
         y += px(32.0);
 
         }
-        if section == 3 {
+        if section == 4 {
         // ---- About ----
         heading(canvas, fonts, &mut y, &mut tops, "About");
         for (k, v) in [
@@ -789,7 +890,12 @@ impl App {
             }
             d.first = d.first.min(shown.len().saturating_sub(rows));
             hits.push((list, Hit::Track));
-            let current = if d.key == Key::Family { &family } else { &ui_family };
+            let ws_theme_name = if d.key == Key::WsTheme { ws_rows.get(d.ws).map(|w| w.2.clone().unwrap_or_else(|| "Settings' theme".into())).unwrap_or_default() } else { String::new() };
+            let current = match d.key {
+                Key::Family => &family,
+                Key::WsTheme => &ws_theme_name,
+                _ => &ui_family,
+            };
             for (k, (i, name)) in shown.iter().enumerate().skip(d.first).take(rows) {
                 let rr = Rect { x: list.x + px(6.0), y: filter.y + field_h + px(6.0) + (k - d.first) as i32 * row, w: list.w - px(12.0), h: row };
                 if k == d.selected {
