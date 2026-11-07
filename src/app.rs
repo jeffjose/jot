@@ -37,6 +37,7 @@ mod links;
 mod mouse;
 mod popout;
 mod settings;
+mod toast;
 
 // Colours from Radix, as the screen setup has them.
 const STATUS_BG: u32 = 0x111111;
@@ -170,6 +171,7 @@ pub struct App {
     /// When the wheel last turned, and how many quick turns in a row.
     wheel_at: Instant,
     wheel_streak: u32,
+    toasts: Vec<toast::Toast>,
     /// Pictures' pixels, by pane and picture, with the generation read.
     pictures: HashMap<(PaneId, u32), (u64, std::rc::Rc<vt::Picture>)>,
     triggers: Vec<automate::Trigger>,
@@ -282,6 +284,7 @@ impl App {
             pending_popouts: Vec::new(),
             wheel_at: Instant::now(),
             wheel_streak: 0,
+            toasts: Vec::new(),
             pictures: HashMap::new(),
             triggers: Vec::new(),
             fired: HashMap::new(),
@@ -1005,7 +1008,7 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
-        if self.settings_click() || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
+        if (button == MouseButton::Left && self.toast_click()) || self.settings_click() || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
             return;
         }
         let (x, y) = self.pointer;
@@ -1299,7 +1302,9 @@ impl App {
         let t0 = Instant::now();
         self.retint();
         self.refresh_captions();
-        let full = std::mem::take(&mut self.full);
+        // With notices up, the frame is drawn whole, so panes do not draw
+        // over them.
+        let full = std::mem::take(&mut self.full) || !self.toasts.is_empty();
         if full {
             self.canvas.fill(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height }, self.cur_theme.divider());
             self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
@@ -1347,6 +1352,7 @@ impl App {
             self.draw_menu();
             self.draw_settings();
             self.draw_editor();
+            self.draw_toasts();
         }
         let drawn = t0.elapsed();
         self.present();
@@ -1802,6 +1808,7 @@ impl ApplicationHandler<()> for App {
         }
         // Once a second for the captions and the clock, and to save the
         // folders the panes have moved to.
+        self.expire_toasts();
         if ENDING.load(Ordering::SeqCst) {
             self.save_scrollback();
             self.save();

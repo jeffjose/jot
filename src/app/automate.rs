@@ -85,6 +85,7 @@ impl App {
         let text = plain(bytes);
         let place = self.pane_name(id);
         let cwd = self.panes.get(&id).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
+        let mut toasts: Vec<(String, String)> = Vec::new();
         for (i, t) in self.triggers.iter().enumerate() {
             let Some(line) = text.lines().find(|l| t.pattern.is_match(l)) else { continue };
             // Not more than once in three seconds for a pane.
@@ -107,8 +108,11 @@ impl App {
                         run_detached(cmd, &cwd, &[("JTERM_MATCH", &line), ("JTERM_PANE", &place)]);
                     }
                 }
-                _ => notify(&format!("jterm · {place}"), &line),
+                _ => toasts.push((place.clone(), line.clone())),
             }
+        }
+        for (title, body) in toasts {
+            self.toast(&title, &body, None, Some(id));
         }
     }
 
@@ -209,7 +213,7 @@ impl App {
                 None => "jterm: no pane by that name\n".into(),
             },
             Some("notify") => {
-                notify("jterm", &args[1..].join(" "));
+                self.toast("jterm", &args[1..].join(" "), None, None);
                 String::new()
             }
             _ => format!("jterm: one of {} is needed\n", crate::remote::COMMANDS.join(", ")),

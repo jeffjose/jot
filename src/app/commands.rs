@@ -53,6 +53,7 @@ impl App {
             return;
         }
         let (_, row) = Self::cursor_row(p);
+        let mut notices: Vec<(String, String, u32)> = Vec::new();
         for e in events {
             match e {
                 ShellEvent::Prompt => {
@@ -85,11 +86,15 @@ impl App {
                             Some(0) | None => "done".to_string(),
                             Some(n) => format!("failed, exit {n}"),
                         };
-                        automate::notify(&format!("jterm · {place}"), &format!("{} · {how} in {}", line.trim(), human(took)));
+                        let color = if exit.is_some_and(|e| e != 0) { 0xE5484D } else { 0x30A46C };
+                        notices.push((place.clone(), format!("{} · {how} in {}", line.trim(), human(took)), color));
                         p.activity = true;
                     }
                 }
             }
+        }
+        for (title, body, color) in notices {
+            self.toast(&title, &body, Some(color), Some(id));
         }
     }
 
