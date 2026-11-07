@@ -159,6 +159,10 @@ pub struct App {
     /// A button held down in a pane whose program has the mouse.
     mouse_held: Option<(PaneId, sys::GhosttyMouseButton)>,
     copy_mode: Option<copymode::CopyMode>,
+    /// When the panes' scrollback was last kept.
+    scrollback_at: Instant,
+    /// Panes to put in windows of their own once the main one is up.
+    pending_popouts: Vec<persist::Spec>,
     /// Pictures' pixels, by pane and picture, with the generation read.
     pictures: HashMap<(PaneId, u32), (u64, std::rc::Rc<vt::Picture>)>,
     triggers: Vec<automate::Trigger>,
@@ -267,6 +271,8 @@ impl App {
             ghost: None,
             mouse_held: None,
             copy_mode: None,
+            scrollback_at: Instant::now(),
+            pending_popouts: Vec::new(),
             pictures: HashMap::new(),
             triggers: Vec::new(),
             fired: HashMap::new(),
@@ -356,8 +362,12 @@ impl App {
     /// config, else one shell where jterm was started.
     fn start(&mut self) {
         let session = self.session.take();
+        let restoring = session.is_some();
         let (specs, current, roam) = match session {
-            Some(s) => (s.workspaces, s.current, s.roam),
+            Some(s) => {
+                self.pending_popouts = s.popouts;
+                (s.workspaces, s.current, s.roam)
+            }
             None if !self.config.workspaces.is_empty() => (std::mem::take(&mut self.config.workspaces), 0, None),
             None => {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| pty::home());
@@ -369,6 +379,15 @@ impl App {
         }
         self.current = current.min(self.workspaces.len().saturating_sub(1));
         self.roam_cwd = roam.map(|r| persist::expand(&r));
+        if restoring {
+            for (wi, ws) in self.workspaces.iter().enumerate() {
+                let mut ids = Vec::new();
+                ws.root.panes(&mut ids);
+                for (pi, id) in ids.iter().enumerate() {
+                    restore_scrollback(self.panes.get_mut(id), &format!("{}-{}", wi + 1, pi + 1));
+                }
+            }
+        }
         self.load_triggers();
     }
 
@@ -557,6 +576,7 @@ impl App {
         } else {
             self.workspaces.remove(wi);
             if self.workspaces.is_empty() {
+                self.save_scrollback();
                 self.save();
                 event_loop.exit();
                 return;
@@ -1591,6 +1611,28 @@ impl App {
     }
 
     /// The workspaces as they are now, written out.
+    /// Every pane's scrollback kept, by its place: "1-2" for workspace
+    /// 1's second pane, "p1" for the first popped out.
+    fn save_scrollback(&mut self) {
+        let mut dumps = Vec::new();
+        for (wi, ws) in self.workspaces.iter().enumerate() {
+            let mut ids = Vec::new();
+            ws.root.panes(&mut ids);
+            for (pi, id) in ids.iter().enumerate() {
+                if let Some(text) = self.panes.get(id).and_then(|p| p.term.dump(5000)) {
+                    dumps.push((format!("{}-{}", wi + 1, pi + 1), text));
+                }
+            }
+        }
+        for (i, po) in self.popouts.iter().enumerate() {
+            if let Some(text) = self.panes.get(&po.pane).and_then(|p| p.term.dump(5000)) {
+                dumps.push((format!("p{}", i + 1), text));
+            }
+        }
+        persist::save_scrollback(&dumps);
+        self.scrollback_at = Instant::now();
+    }
+
     fn save(&mut self) {
         let panes = &self.panes;
         let describe = |id: PaneId| match panes.get(&id) {
@@ -1603,7 +1645,8 @@ impl App {
             .map(|ws| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &describe)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), ..Default::default() })
             .collect();
         let roam = self.roam.and_then(|r| panes.get(&r)).and_then(|p| p.pty.cwd()).or(self.roam_cwd.clone()).map(|p| persist::shorten(&p));
-        persist::save_session(&Session { current: self.current, roam, workspaces });
+        let popouts = self.popouts.iter().map(|po| persist::spec(&Node::Pane(po.pane), &describe)).collect();
+        persist::save_session(&Session { current: self.current, roam, workspaces, popouts });
         self.saved_at = Instant::now();
         self.unsaved = false;
     }
@@ -1637,6 +1680,17 @@ impl ApplicationHandler<()> for App {
         }
         self.window = Some(window);
         self.start();
+        // The panes that were in windows of their own, in them again.
+        for (i, spec) in std::mem::take(&mut self.pending_popouts).into_iter().enumerate() {
+            let (cmd, cwd) = match spec {
+                persist::Spec::Pane { cmd, cwd } => (cmd, cwd.map(|c| persist::expand(&c)).unwrap_or_else(pty::home)),
+                persist::Spec::Command(cmd) => (cmd, pty::home()),
+                _ => continue,
+            };
+            let id = self.spawn(Start { cmd, cwd });
+            restore_scrollback(self.panes.get_mut(&id), &format!("p{}", i + 1));
+            self.open_popout_window(id, event_loop);
+        }
         self.load_recent();
         self.set_title();
         self.relayout();
@@ -1662,6 +1716,7 @@ impl ApplicationHandler<()> for App {
         match event {
 
             WindowEvent::CloseRequested => {
+                self.save_scrollback();
                 self.save();
                 event_loop.exit();
             }
@@ -1716,6 +1771,15 @@ impl ApplicationHandler<()> for App {
         }
         // Once a second for the captions and the clock, and to save the
         // folders the panes have moved to.
+        if ENDING.load(Ordering::SeqCst) {
+            self.save_scrollback();
+            self.save();
+            return event_loop.exit();
+        }
+        // The panes' scrollback is kept every five minutes as well as at the end.
+        if self.scrollback_at.elapsed() > Duration::from_secs(300) {
+            self.save_scrollback();
+        }
         if self.saved_at.elapsed() > Duration::from_secs(30) {
             self.save();
         }
@@ -1761,4 +1825,29 @@ pub(super) fn present_frame(surface: &mut Surface<Rc<Window>, Rc<Window>>, windo
     };
     window.pre_present_notify();
     let _ = if whole || rects.is_empty() { buffer.present() } else { buffer.present_with_damage(&rects) };
+}
+
+/// What a pane held when jterm last ended, shown above its new prompt,
+/// with a line saying when it was kept.
+fn restore_scrollback(pane: Option<&mut Pane>, name: &str) {
+    let (Some(p), Some((text, when))) = (pane, persist::load_scrollback(name)) else { return };
+    let ago = when.elapsed().map(commands::human).unwrap_or_default();
+    let line = format!("\x1b[0m\r\n\x1b[2m── kept from the last run, {ago} ago ──\x1b[0m\r\n");
+    p.term.write(text.as_bytes());
+    p.term.write(line.as_bytes());
+}
+
+/// Set when jterm is asked to end (SIGTERM, SIGHUP, as at a logout): the
+/// next turn of the loop keeps everything and ends.
+static ENDING: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_end_signal(_: libc::c_int) {
+    ENDING.store(true, Ordering::SeqCst);
+}
+
+pub fn catch_end_signals() {
+    unsafe {
+        libc::signal(libc::SIGTERM, on_end_signal as extern "C" fn(libc::c_int) as libc::sighandler_t);
+        libc::signal(libc::SIGHUP, on_end_signal as extern "C" fn(libc::c_int) as libc::sighandler_t);
+    }
 }

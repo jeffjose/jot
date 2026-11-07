@@ -262,13 +262,16 @@ pub struct Session {
     pub roam: Option<String>,
     #[serde(default, rename = "workspace")]
     pub workspaces: Vec<WorkspaceSpec>,
+    /// Panes that were in windows of their own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub popouts: Vec<Spec>,
 }
 
 fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join("jterm")
 }
 
-fn state_dir() -> PathBuf {
+pub fn state_dir() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".local/state")).join("jterm")
 }
 
@@ -420,4 +423,37 @@ fn default_renderer() -> String {
 
 fn default_action() -> String {
     "notify".into()
+}
+
+/// Where panes' scrollback is kept between runs.
+fn scrollback_dir() -> PathBuf {
+    state_dir().join("scrollback")
+}
+
+/// Each pane's scrollback, by its place (as "1-2", workspace and pane),
+/// written; any kept from panes that are gone taken away.
+pub fn save_scrollback(dumps: &[(String, String)]) {
+    let dir = scrollback_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    for (name, text) in dumps {
+        let tmp = dir.join(format!("{name}.vt.tmp"));
+        if std::fs::write(&tmp, text).is_ok() {
+            let _ = std::fs::rename(tmp, dir.join(format!("{name}.vt")));
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().trim_end_matches(".vt").to_string();
+            if !dumps.iter().any(|(n, _)| *n == name) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+/// A pane's scrollback from the last run, and when it was kept.
+pub fn load_scrollback(name: &str) -> Option<(String, std::time::SystemTime)> {
+    let path = scrollback_dir().join(format!("{name}.vt"));
+    let when = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+    Some((std::fs::read_to_string(path).ok()?, when))
 }

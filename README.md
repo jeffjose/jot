@@ -140,3 +140,12 @@ Enter runs it, Shift Enter puts it back at the prompt.
 
 For tcsh, `~/dotfiles/shell/jterm.tcsh` adds the marks to twig's
 precmd and postcmd; .cshrc sources it when TERM_PROGRAM is jterm.
+
+## Between runs
+
+jterm keeps the workspaces as you left them, the panes popped out into
+windows of their own included, and each pane's scrollback, its last
+5000 lines with their colours: when it ends, every five minutes, and
+when it is asked to end (SIGTERM, SIGHUP, as at a logout). Started
+again, each pane shows what it held above its new prompt, under a line
+saying when it was kept, and its command starts afresh in its folder.

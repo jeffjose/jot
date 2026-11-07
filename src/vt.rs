@@ -797,3 +797,36 @@ impl Terminal {
         (x, total.saturating_sub(rows as u64) + y as u64)
     }
 }
+
+impl Terminal {
+    /// All the terminal holds, scrollback and screen, as text with its
+    /// colours (VT), its last `max` lines; to be shown again after a
+    /// restart.
+    pub fn dump(&self, max: usize) -> Option<String> {
+        unsafe {
+            let mut sel: GhosttySelection = std::mem::zeroed();
+            if ghostty_terminal_select_all(self.raw, &mut sel) != GHOSTTY_SUCCESS {
+                return None;
+            }
+            let mut f = null_mut();
+            ghostty_formatter_terminal_new(null(), &mut f, self.raw);
+            let emit: GhosttyFormatterFormat = GHOSTTY_FORMATTER_FORMAT_VT;
+            ghostty_formatter_set(f, GHOSTTY_FORMATTER_OPT_EMIT, &emit as *const _ as *const c_void);
+            let trim = true;
+            ghostty_formatter_set(f, GHOSTTY_FORMATTER_OPT_TRIM, &trim as *const bool as *const c_void);
+            ghostty_formatter_set(f, GHOSTTY_FORMATTER_OPT_SELECTION, &sel as *const _ as *const c_void);
+            let (mut ptr, mut len) = (null_mut(), 0usize);
+            let ok = ghostty_formatter_format_alloc(f, null(), &mut ptr, &mut len) == GHOSTTY_SUCCESS && !ptr.is_null();
+            let text = ok.then(|| String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned());
+            if !ptr.is_null() {
+                ghostty_free(null(), ptr, len);
+            }
+            ghostty_formatter_free(f);
+            let text = text?;
+            let lines: Vec<&str> = text.lines().collect();
+            let from = lines.len().saturating_sub(max);
+            let out = lines[from..].join("\r\n");
+            (!out.trim().is_empty()).then_some(out)
+        }
+    }
+}

@@ -33,6 +33,11 @@ impl App {
         let ws = self.ws_mut();
         ws.zoom = None;
         ws.focus = ids[0];
+        self.open_popout_window(id, event_loop);
+    }
+
+    /// A window of its own for pane `id`, which is in no workspace.
+    pub(super) fn open_popout_window(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
         let (cols, rows) = self.panes.get(&id).map_or((80, 24), |p| (p.cols, p.rows));
         let size = winit::dpi::PhysicalSize::new((cols as i32 * self.fonts.cell_w + self.px(24.0)) as u32, (rows as i32 * self.fonts.cell_h + self.px(16.0) + self.caption_h()) as u32);
         let title = self.panes.get(&id).map(|p| p.caption.clone()).unwrap_or_default();
