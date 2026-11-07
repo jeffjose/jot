@@ -54,7 +54,7 @@ impl App {
         let Some(p) = self.panes.get(&id) else { return Vec::new() };
         let mut rows: Vec<(String, String)> = Vec::new();
         let shell = p.pty.pid;
-        let pgrp = unsafe { libc::tcgetpgrp(p.pty.fd) };
+        let pgrp = p.pty.foreground_group();
         if pgrp > 0 && pgrp != shell {
             rows.push(("running".into(), cmdline(pgrp).unwrap_or_else(|| "?".into())));
             rows.push(("pid".into(), format!("{pgrp} (its process group)")));
@@ -76,8 +76,7 @@ impl App {
         if let Some(cwd) = p.pty.cwd() {
             rows.push(("folder".into(), persist::shorten(&cwd)));
         }
-        let tty = unsafe { libc::ptsname(p.pty.fd) };
-        let tty = if tty.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(tty) }.to_string_lossy().into_owned() };
+        let tty = std::fs::read_link(format!("/proc/{}/fd/0", p.pty.pid)).map(|t| t.display().to_string()).unwrap_or_default();
         rows.push(("terminal".into(), format!("{tty} · {}×{}", p.cols, p.rows)));
         if let Some(b) = p.shell.blocks.last().filter(|b| !b.command.is_empty()) {
             let how = match b.exit {
@@ -207,7 +206,7 @@ impl App {
     /// The process a report is about: the running job, else the shell.
     fn report_root(&self, id: PaneId) -> Option<(i32, bool)> {
         let p = self.panes.get(&id)?;
-        let pgrp = unsafe { libc::tcgetpgrp(p.pty.fd) };
+        let pgrp = p.pty.foreground_group();
         Some(if pgrp > 0 && pgrp != p.pty.pid { (pgrp, true) } else { (p.pty.pid, false) })
     }
 

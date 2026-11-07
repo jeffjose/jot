@@ -13,6 +13,8 @@ pub enum Action {
     /// Split, the new pane before: left, or up.
     SplitBefore(Dir),
     Close,
+    /// The window closed and every pane ended, the session with them.
+    QuitAll,
     NewPane,
     Reopen,
     Zoom,
@@ -237,6 +239,7 @@ pub fn commands() -> Vec<Item> {
         c("Type into multiple panes", "Alt Shift M", Action::Broadcast),
         c("Pane command line: run or queue", "Alt ;", Action::CommandLine),
         c("Settings", "Ctrl ,", Action::Settings),
+        c("Quit and end all panes", "", Action::QuitAll),
         c("Go to workspace, pane or folder", "Ctrl K", Action::Palette),
     ]
 }

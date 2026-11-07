@@ -39,6 +39,9 @@ pub enum Spec {
         /// Empty space, not a terminal.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         empty: bool,
+        /// Its pane in the running session, to be taken up again.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u64>,
     },
 }
 
@@ -71,6 +74,8 @@ pub struct WorkspaceSpec {
 pub struct Start {
     pub cmd: String,
     pub cwd: PathBuf,
+    /// A pane the session already has, to be taken up rather than started.
+    pub pane: Option<u64>,
 }
 
 impl WorkspaceSpec {
@@ -111,10 +116,10 @@ fn build(spec: &Spec, cwd: &Path, start: &mut impl FnMut(Start) -> PaneId) -> No
         Some(if n == 1 { children.into_iter().next().unwrap() } else { Node::Split { dir, children, sizes } })
     };
     match spec {
-        Spec::Command(cmd) => Node::Pane(start(Start { cmd: cmd.clone(), cwd: cwd.to_path_buf() })),
-        Spec::Pane { cmd, cwd: dir, .. } => {
+        Spec::Command(cmd) => Node::Pane(start(Start { cmd: cmd.clone(), cwd: cwd.to_path_buf(), pane: None })),
+        Spec::Pane { cmd, cwd: dir, id, .. } => {
             let cwd = dir.as_deref().map(expand).unwrap_or_else(|| cwd.to_path_buf());
-            Node::Pane(start(Start { cmd: cmd.clone(), cwd }))
+            Node::Pane(start(Start { cmd: cmd.clone(), cwd, pane: *id }))
         }
         Spec::Across { v, sizes } => split(Dir::Across, v, sizes, &mut |k| build(k, cwd, start)).unwrap_or_else(|| build(&Spec::Command(String::new()), cwd, start)),
         Spec::Down { h, sizes } => split(Dir::Down, h, sizes, &mut |k| build(k, cwd, start)).unwrap_or_else(|| build(&Spec::Command(String::new()), cwd, start)),
@@ -127,7 +132,7 @@ pub fn spec(node: &Node, pane: &impl Fn(PaneId) -> (String, Option<PathBuf>, Vec
     match node {
         Node::Pane(id) => {
             let (cmd, cwd, pins, empty) = pane(*id);
-            Spec::Pane { cmd, cwd: cwd.map(|p| shorten(&p)), pins, empty }
+            Spec::Pane { cmd, cwd: cwd.map(|p| shorten(&p)), pins, empty, id: Some(*id) }
         }
         Node::Split { dir, children, sizes } => {
             let kids = children.iter().map(|c| spec(c, pane)).collect();

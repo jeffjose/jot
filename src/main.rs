@@ -9,6 +9,7 @@ mod font;
 mod gpu;
 mod keys;
 mod layout;
+mod mux;
 mod persist;
 mod palette;
 mod pty;
@@ -35,6 +36,7 @@ jot: a terminal with splits and workspaces
         | send PANE TEXT | focus PANE | notify TEXT
                    control the running jot
   jot setup      add jot and its icon to the desktop's programs
+  jot serve SOCK  a session (started by jot itself)
   jot --version
 
 Keys:
@@ -61,6 +63,9 @@ Keys:
   Shift PageUp/Down    scroll up / down a page
   Ctrl = - 0           zoom in, out, reset
 
+Closing the window leaves its panes running; starting jot again takes them up,
+screens and scrollback as they were. Ctrl P, "Quit and end all panes", ends them.
+
 Settings and workspaces: ~/.config/jot/config.toml";
 
 pub fn version() -> String {
@@ -79,6 +84,11 @@ fn main() {
     }
     if args.first().is_some_and(|a| a == "setup") {
         return setup();
+    }
+    // `jot serve PATH`: a session, started by a window.
+    if args.first().is_some_and(|a| a == "serve") {
+        let Some(path) = args.get(1) else { return eprintln!("jot serve: which socket?") };
+        return mux::server::run(std::path::Path::new(path));
     }
     let mut fresh = false;
     for arg in std::env::args().skip(1) {

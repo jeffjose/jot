@@ -139,9 +139,9 @@ impl App {
                 let at = line.map(|n| format!(" +{n}")).unwrap_or_default();
                 let cwd = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(pty::home);
                 let quoted = format!("'{}'", path.display().to_string().replace('\'', "'\\''"));
-                self.split_with(Dir::Across, Start { cmd: format!("{editor}{at} {quoted}"), cwd });
+                self.split_with(Dir::Across, Start { cmd: format!("{editor}{at} {quoted}"), cwd, pane: None });
             }
-            Target::Folder(path) => self.split_with(Dir::Across, Start { cmd: String::new(), cwd: path }),
+            Target::Folder(path) => self.split_with(Dir::Across, Start { cmd: String::new(), cwd: path, pane: None }),
         }
         if let Some(p) = self.panes.get_mut(&link.pane) {
             p.full = true;

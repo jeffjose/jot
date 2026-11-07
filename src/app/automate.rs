@@ -196,7 +196,7 @@ impl App {
                     None => Vec::new(),
                 };
                 let cwd = self.focused().and_then(|f| self.panes.get(&f)).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
-                self.split_with(if down { Dir::Down } else { Dir::Across }, Start { cmd: cmd.join(" "), cwd });
+                self.split_with(if down { Dir::Down } else { Dir::Across }, Start { cmd: cmd.join(" "), cwd, pane: None });
                 format!("{}\n", self.focused().map(|f| self.pane_name(f)).unwrap_or_default())
             }
             Some("send") => match (args.get(1).and_then(|n| self.pane_named(n)), args.get(2)) {

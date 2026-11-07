@@ -240,6 +240,13 @@ impl App {
             Action::Split(dir) => self.split(dir),
             Action::SplitBefore(dir) => self.split_side(dir, true),
             Action::Close => self.close_pane(event_loop),
+            Action::QuitAll => {
+                // Every pane ended, not left in the session.
+                self.save_scrollback();
+                self.popouts.clear();
+                self.panes.clear();
+                event_loop.exit();
+            }
             Action::NewPane => self.new_pane(),
             Action::Reopen => self.reopen(),
             Action::Zoom => {

@@ -177,6 +177,10 @@ impl App {
                 }
             }
         }
+        // Replayed on attaching: long done, nothing to tell.
+        if self.replaying {
+            return;
+        }
         for (title, body, color) in told.into_iter().chain(notices) {
             self.toast(&title, &body, Some(color), Some(id));
         }

@@ -6,7 +6,7 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -142,7 +142,6 @@ enum Drag {
 pub struct App {
     config: Config,
     proxy: EventLoopProxy<()>,
-    tx: Sender<Output>,
     rx: Receiver<Output>,
     /// Set while a wake is on its way, so a burst of output wakes the
     /// window once.
@@ -270,6 +269,14 @@ pub struct App {
     captions_at: Instant,
     clock: String,
     session: Option<Session>,
+    /// The session the panes run in.
+    mux: Arc<crate::mux::Client>,
+    /// Panes the session had when this window took it up, until the
+    /// layout takes them up.
+    held: HashMap<u64, crate::mux::Held>,
+    /// Panes taken up whose output is yet to be replayed.
+    replays: Vec<(PaneId, Vec<u8>)>,
+    replaying: bool,
 }
 
 fn hostname() -> String {
@@ -308,6 +315,36 @@ impl App {
             let _ = req_tx.send(r);
             let _ = wake.send_event(());
         });
+        // The session the panes run in: one no window has, or a new one.
+        let woken = Arc::new(AtomicBool::new(false));
+        let attached = {
+            let (tx, proxy, woken) = (tx.clone(), proxy.clone(), woken.clone());
+            crate::mux::Client::open(move |heard| {
+                let out = match heard {
+                    crate::mux::Heard::Output(id, b) => Output::Bytes(id, b),
+                    crate::mux::Heard::Exit(id) => Output::Exit(id),
+                    crate::mux::Heard::Mode(id, raw) => Output::Mode(id, raw),
+                    crate::mux::Heard::Gone => Output::Gone,
+                };
+                let _ = tx.send(out);
+                if !woken.swap(true, Ordering::AcqRel) {
+                    let _ = proxy.send_event(());
+                }
+            })
+        };
+        let attached = match attached {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("jot: could not start a session: {e}");
+                std::process::exit(1);
+            }
+        };
+        // Taking up a session that has panes: its layout, not the last
+        // one saved, and nothing offered.
+        let taking_up = !attached.panes.is_empty();
+        let session = if taking_up { toml::from_str::<Session>(&attached.layout).ok() } else { session };
+        let next_id = attached.panes.iter().map(|h| h.pane + 1).max().unwrap_or(1);
+        let held: HashMap<u64, crate::mux::Held> = attached.panes.into_iter().map(|h| (h.pane, h)).collect();
         let font_size = config.font_size;
         let theme = Theme::by_name(&config.theme);
         let accent = crate::theme::accent(&config.accent);
@@ -316,9 +353,8 @@ impl App {
             font_size,
             config,
             proxy,
-            tx,
             rx,
-            woken: Arc::new(AtomicBool::new(false)),
+            woken,
             gpu: None,
             window: None,
             surface: None,
@@ -334,7 +370,7 @@ impl App {
             roam: None,
             roam_shown: false,
             roam_cwd: None,
-            next_id: 1,
+            next_id,
             dividers: Vec::new(),
             full: true,
             resized: None,
@@ -377,7 +413,7 @@ impl App {
             wheel_streak: 0,
             toasts: Vec::new(),
             offered: None,
-            may_offer: true,
+            may_offer: !taking_up,
             pictures: HashMap::new(),
             triggers: Vec::new(),
             fired: HashMap::new(),
@@ -395,6 +431,10 @@ impl App {
             captions_at: Instant::now() - Duration::from_secs(10),
             clock: clock(),
             session,
+            mux: attached.client,
+            held,
+            replays: Vec::new(),
+            replaying: false,
         }
     }
 
@@ -419,36 +459,80 @@ impl App {
         self.fonts.ui.height + self.px(6.0)
     }
 
-    /// Starts a pane: its program on a PTY, and the terminal it writes to.
+    /// Starts a pane: its program in the session, and the terminal it
+    /// writes to. A pane the session already has is taken up instead, its
+    /// output to be replayed.
     fn spawn(&mut self, start: Start) -> PaneId {
-        let id = self.next_id;
-        self.next_id += 1;
         let (cols, rows) = (80, 24);
-        let pty = match Pty::spawn(&start.cmd, &start.cwd, cols, rows, (0, 0)) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("jot: could not start a shell: {e}");
-                std::process::exit(1);
+        let held = start.pane.and_then(|p| self.held.remove(&p));
+        let (id, pid, cmd) = match held {
+            Some(h) => {
+                self.replays.push((h.pane, h.log));
+                (h.pane, h.pid, h.cmd)
+            }
+            None => {
+                let id = self.next_id;
+                self.next_id += 1;
+                match self.mux.spawn(id, &start.cmd, &start.cwd, cols, rows, (0, 0)) {
+                    Ok(pid) => (id, pid, start.cmd),
+                    Err(e) => {
+                        eprintln!("jot: could not start a shell: {e}");
+                        std::process::exit(1);
+                    }
+                }
             }
         };
-        let fd = pty.fd;
-        let reply: vt::Reply = Box::new(move |bytes: &[u8]| unsafe {
-            libc::write(fd, bytes.as_ptr() as *const libc::c_void, bytes.len());
-        });
-        let term = Terminal::new(cols, rows, self.config.scrollback, self.theme, reply);
-        let (tx, proxy, woken) = (self.tx.clone(), self.proxy.clone(), self.woken.clone());
-        pty.read_on_thread(id, move |out| {
-            let _ = tx.send(out);
-            if !woken.swap(true, Ordering::AcqRel) {
-                let _ = proxy.send_event(());
+        let pty = Pty { pane: id, pid, mux: self.mux.clone(), raw: false };
+        let mux = self.mux.clone();
+        let reply: vt::Reply = Box::new(move |bytes: &[u8]| {
+            if !mux.mute.load(Ordering::Acquire) {
+                mux.input(id, bytes);
             }
         });
-        let caption = folder_name(&start.cwd);
+        let term = Terminal::new(cols, rows, self.config.scrollback, self.theme, reply);
+        let caption = folder_name(&pty.cwd().unwrap_or(start.cwd));
         self.panes.insert(
             id,
-            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0 },
+            Pane { term, pty, cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0 },
         );
         id
+    }
+
+    /// Panes taken up from the session: what they printed, replayed into
+    /// their terminals, at the sizes it was printed at, then their own.
+    fn replay_held(&mut self) {
+        if self.replays.is_empty() || self.workspaces.is_empty() {
+            return;
+        }
+        self.replaying = true;
+        self.mux.mute.store(true, Ordering::Release);
+        for (id, log) in std::mem::take(&mut self.replays) {
+            for e in crate::mux::log_entries(&log) {
+                let Some(p) = self.panes.get_mut(&id) else { break };
+                match e {
+                    crate::mux::Entry::Size(cols, rows) => {
+                        let (cw, ch) = (self.fonts.cell_w as u32, self.fonts.cell_h as u32);
+                        p.term.resize(cols, rows, cw, ch);
+                        p.cols = cols;
+                        p.rows = rows;
+                    }
+                    crate::mux::Entry::Bytes(b) => {
+                        p.term.write(b);
+                        if !p.has_images && b.windows(3).any(|w| w == b"\x1b_G") {
+                            p.has_images = true;
+                        }
+                        self.shell_events(id);
+                    }
+                }
+            }
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.full = true;
+            }
+        }
+        self.mux.mute.store(false, Ordering::Release);
+        self.replaying = false;
+        // Back to the sizes the window gives them.
+        self.relayout();
     }
 
     fn add_workspace(&mut self, spec: &WorkspaceSpec) {
@@ -501,12 +585,14 @@ impl App {
             }
         }
         let session = self.session.take();
-        let restoring = session.is_some();
+        let taking_up = !self.held.is_empty();
+        let restoring = session.is_some() && !taking_up;
         let (specs, current, roam) = match session {
             Some(s) => {
                 self.pending_popouts = s.popouts;
                 (s.workspaces, s.current, s.roam)
             }
+            None if taking_up => (Vec::new(), 0, None),
             None if !self.config.workspaces.is_empty() => (std::mem::take(&mut self.config.workspaces), 0, None),
             None => {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| pty::home());
@@ -515,6 +601,20 @@ impl App {
         };
         for spec in &specs {
             self.add_workspace(spec);
+        }
+        // Panes the session has that the layout did not take up (popped
+        // out, roaming, or the layout lost): a workspace of their own.
+        let popped: Vec<u64> = self.pending_popouts.iter().filter_map(|s| if let persist::Spec::Pane { id, .. } = s { *id } else { None }).collect();
+        let mut left: Vec<u64> = self.held.keys().copied().filter(|p| !popped.contains(p)).collect();
+        left.sort();
+        if !left.is_empty() || self.workspaces.is_empty() {
+            let panes = left.iter().map(|id| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*id) }).collect::<Vec<_>>();
+            let layout = match panes.len() {
+                0 => None,
+                1 => panes.into_iter().next(),
+                _ => Some(persist::Spec::Across { v: panes, sizes: Vec::new() }),
+            };
+            self.add_workspace(&WorkspaceSpec { name: if taking_up { "Kept".into() } else { String::new() }, layout, ..Default::default() });
         }
         self.current = current.min(self.workspaces.len().saturating_sub(1));
         self.roam_cwd = roam.map(|r| persist::expand(&r));
@@ -528,6 +628,7 @@ impl App {
             }
         }
         self.load_triggers();
+        self.replay_held();
     }
 
     fn ws(&self) -> &Workspace {
@@ -652,7 +753,7 @@ impl App {
     fn split_side(&mut self, dir: Dir, before: bool) {
         let at = self.focused().unwrap_or(0);
         let cwd = self.panes.get(&at).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
-        self.split_at(dir, before, Start { cmd: String::new(), cwd });
+        self.split_at(dir, before, Start { cmd: String::new(), cwd, pane: None });
     }
 
     /// Splits the pane you are in, the new one running `start`.
@@ -698,7 +799,7 @@ impl App {
     /// afresh in its folder, as Ctrl Shift T brings back a tab.
     fn reopen(&mut self) {
         let Some(c) = self.closed.pop() else { return };
-        let id = self.spawn(Start { cmd: c.cmd, cwd: c.cwd });
+        let id = self.spawn(Start { cmd: c.cmd, cwd: c.cwd, pane: None });
         let wi = self.workspaces.iter().position(|w| w.name == c.workspace);
         match wi {
             Some(wi) => {
@@ -830,7 +931,7 @@ impl App {
     fn toggle_roam(&mut self) {
         if self.roam.is_none() {
             let cwd = self.roam_cwd.clone().unwrap_or_else(pty::home);
-            self.roam = Some(self.spawn(Start { cmd: String::new(), cwd }));
+            self.roam = Some(self.spawn(Start { cmd: String::new(), cwd, pane: None }));
         }
         self.roam_shown = !self.roam_shown;
         self.unsaved = true;
@@ -1507,6 +1608,7 @@ impl App {
     /// Reads in what the panes wrote.
     fn drain(&mut self, event_loop: &ActiveEventLoop) {
         self.woken.store(false, Ordering::Release);
+        self.replay_held();
         while let Ok(req) = self.requests.try_recv() {
             self.answer(req, event_loop);
         }
@@ -1550,6 +1652,20 @@ impl App {
                     }
                 }
                 Output::Exit(id) => exited.push(id),
+                Output::Mode(id, raw) => {
+                    if let Some(p) = self.panes.get_mut(&id) {
+                        p.pty.raw = raw;
+                    }
+                    if raw {
+                        self.queue_tick(id);
+                    }
+                }
+                Output::Gone => {
+                    eprintln!("jot: the session ended");
+                    self.mux.detach();
+                    event_loop.exit();
+                    return;
+                }
             }
         }
         if let (true, Some(id)) = (search_again, searched) {
@@ -2135,7 +2251,12 @@ impl App {
             .collect();
         let roam = self.roam.and_then(|r| panes.get(&r)).and_then(|p| p.pty.cwd()).or(self.roam_cwd.clone()).map(|p| persist::shorten(&p));
         let popouts = self.popouts.iter().map(|po| persist::spec(&Node::Pane(po.pane), &describe)).collect();
-        persist::save_session(&Session { current: self.current, roam, workspaces, popouts });
+        let session = Session { current: self.current, roam, workspaces, popouts };
+        // The session keeps it too, for the next window to take up.
+        if let Ok(text) = toml::to_string(&session) {
+            self.mux.layout(text);
+        }
+        persist::save_session(&session);
         self.saved_at = Instant::now();
         self.unsaved = false;
     }
@@ -2358,15 +2479,19 @@ impl App {
     /// The panes that were in windows of their own, in them again.
     pub(super) fn open_pending_popouts(&mut self, event_loop: &ActiveEventLoop) {
         for (i, spec) in std::mem::take(&mut self.pending_popouts).into_iter().enumerate() {
-            let (cmd, cwd) = match spec {
-                persist::Spec::Pane { cmd, cwd, .. } => (cmd, cwd.map(|c| persist::expand(&c)).unwrap_or_else(pty::home)),
-                persist::Spec::Command(cmd) => (cmd, pty::home()),
+            let (cmd, cwd, pane) = match spec {
+                persist::Spec::Pane { cmd, cwd, id, .. } => (cmd, cwd.map(|c| persist::expand(&c)).unwrap_or_else(pty::home), id),
+                persist::Spec::Command(cmd) => (cmd, pty::home(), None),
                 _ => continue,
             };
-            let id = self.spawn(Start { cmd, cwd });
-            restore_scrollback(self.panes.get_mut(&id), &format!("p{}", i + 1));
+            let held = pane.is_some_and(|p| self.held.contains_key(&p));
+            let id = self.spawn(Start { cmd, cwd, pane });
+            if !held {
+                restore_scrollback(self.panes.get_mut(&id), &format!("p{}", i + 1));
+            }
             self.open_popout_window(id, event_loop);
         }
+        self.replay_held();
     }
 }
 
@@ -2425,5 +2550,14 @@ mod icon_test {
     #[test]
     fn icon_decodes() {
         assert!(super::app_icon().is_some());
+    }
+}
+
+impl Drop for App {
+    /// The window going: its panes left running in the session, for the
+    /// next window to take up. (A pane closed while the window is open
+    /// still ends.)
+    fn drop(&mut self) {
+        self.mux.detach();
     }
 }

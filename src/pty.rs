@@ -7,7 +7,8 @@ use std::io;
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 
-pub struct Pty {
+/// A program on a pseudo-terminal of this process's: the session server's.
+pub struct Local {
     /// Our end of the pseudo-terminal.
     pub fd: RawFd,
     /// The shell's process.
@@ -18,6 +19,10 @@ pub struct Pty {
 pub enum Output {
     Bytes(u64, Vec<u8>),
     Exit(u64),
+    /// Whether it reads keys one at a time, now (see [`Local::raw`]).
+    Mode(u64, bool),
+    /// The session the panes were in ended.
+    Gone,
 }
 
 fn shell() -> String {
@@ -28,11 +33,11 @@ fn winsize(cols: u16, rows: u16, w: u32, h: u32) -> libc::winsize {
     libc::winsize { ws_col: cols, ws_row: rows, ws_xpixel: (w.min(65535)) as u16, ws_ypixel: (h.min(65535)) as u16 }
 }
 
-impl Pty {
+impl Local {
     /// Starts `command` (or, when empty, a login shell) in `cwd`. A
     /// command is run by the shell, and the shell stays on after it ends,
     /// in the same folder, as if it had been typed.
-    pub fn spawn(command: &str, cwd: &Path, cols: u16, rows: u16, px: (u32, u32)) -> io::Result<Pty> {
+    pub fn spawn(command: &str, cwd: &Path, cols: u16, rows: u16, px: (u32, u32)) -> io::Result<Local> {
         let shell = shell();
         let name = Path::new(&shell).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "sh".into());
         // Everything the child needs is made before the fork: after it,
@@ -80,7 +85,7 @@ impl Pty {
             let flags = libc::fcntl(fd, libc::F_GETFD);
             libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
         }
-        Ok(Pty { fd, pid })
+        Ok(Local { fd, pid })
     }
 
     /// Reads what the program writes on a thread of its own, handing it
@@ -107,9 +112,9 @@ impl Pty {
             .expect("pty reader thread");
     }
 
-    pub fn write(&self, mut bytes: &[u8]) {
+    pub fn write_fd(fd: RawFd, mut bytes: &[u8]) {
         while !bytes.is_empty() {
-            let n = unsafe { libc::write(self.fd, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
+            let n = unsafe { libc::write(fd, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
             if n < 0 {
                 if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
                     continue;
@@ -125,6 +130,69 @@ impl Pty {
         unsafe { libc::ioctl(self.fd, libc::TIOCSWINSZ, &ws) };
     }
 
+    /// Whether the program reads keys one at a time (ICANON off): a
+    /// shell at its prompt, vim; not one reading whole lines.
+    pub fn raw(&self) -> bool {
+        let mut t: libc::termios = unsafe { std::mem::zeroed() };
+        (unsafe { libc::tcgetattr(self.fd, &mut t) }) == 0 && t.c_lflag & libc::ICANON == 0
+    }
+}
+
+impl Drop for Local {
+    fn drop(&mut self) {
+        unsafe {
+            libc::kill(self.pid, libc::SIGHUP);
+            libc::close(self.fd);
+            // Reaped without waiting; one not yet gone is reaped by the
+            // next pane's, or when jot ends.
+            libc::waitpid(self.pid, std::ptr::null_mut(), libc::WNOHANG);
+        }
+    }
+}
+
+/// Reaps children that have ended, so none are left as zombies.
+pub fn reap() {
+    unsafe { while libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) > 0 {} }
+}
+
+pub fn home() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// A pane's program as the window has it: in the session server, reached
+/// through the session's socket. What it is doing is read from /proc, as
+/// the session is on this machine.
+pub struct Pty {
+    pub pane: u64,
+    /// The shell's process.
+    pub pid: libc::pid_t,
+    pub mux: std::sync::Arc<crate::mux::Client>,
+    /// Whether it reads keys one at a time, as the session last said.
+    pub raw: bool,
+}
+
+impl Pty {
+    pub fn write(&self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            self.mux.input(self.pane, bytes);
+        }
+    }
+
+    pub fn resize(&self, cols: u16, rows: u16, px: (u32, u32)) {
+        self.mux.resize(self.pane, cols, rows, px);
+    }
+
+    /// The process group in the foreground of its terminal: the shell's
+    /// own when it waits for a command, else the job's.
+    pub fn foreground_group(&self) -> libc::pid_t {
+        // The 8th field of /proc/PID/stat, tpgid: the 6th after the
+        // name's closing parenthesis.
+        std::fs::read_to_string(format!("/proc/{}/stat", self.pid))
+            .ok()
+            .and_then(|s| s.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(5).and_then(|v| v.parse().ok())))
+            .unwrap_or(-1)
+    }
+
     /// The folder the shell is in now.
     pub fn cwd(&self) -> Option<PathBuf> {
         std::fs::read_link(format!("/proc/{}/cwd", self.pid)).ok()
@@ -133,7 +201,7 @@ impl Pty {
     /// The name of what is running in the foreground: the shell itself
     /// when it is waiting for a command.
     pub fn foreground(&self) -> Option<String> {
-        let pgrp = unsafe { libc::tcgetpgrp(self.fd) };
+        let pgrp = self.foreground_group();
         let pid = if pgrp > 0 { pgrp } else { self.pid };
         let mut comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
         comm.truncate(comm.trim_end().len());
@@ -153,29 +221,15 @@ impl Pty {
 
     /// Whether the shell is running something.
     pub fn busy(&self) -> bool {
-        let pgrp = unsafe { libc::tcgetpgrp(self.fd) };
+        let pgrp = self.foreground_group();
         (pgrp > 0 && pgrp != self.pid)
             || std::fs::read_to_string(format!("/proc/{0}/task/{0}/children", self.pid)).is_ok_and(|k| !k.trim().is_empty())
     }
 }
 
 impl Drop for Pty {
+    /// Its shell hung up on, unless the window is only going.
     fn drop(&mut self) {
-        unsafe {
-            libc::kill(self.pid, libc::SIGHUP);
-            libc::close(self.fd);
-            // Reaped without waiting; one not yet gone is reaped by the
-            // next pane's, or when jot ends.
-            libc::waitpid(self.pid, std::ptr::null_mut(), libc::WNOHANG);
-        }
+        self.mux.close(self.pane);
     }
-}
-
-/// Reaps children that have ended, so none are left as zombies.
-pub fn reap() {
-    unsafe { while libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) > 0 {} }
-}
-
-pub fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }

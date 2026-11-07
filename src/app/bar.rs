@@ -353,7 +353,7 @@ impl App {
     /// the shell has the terminal.
     fn job(&self, id: PaneId) -> Option<libc::pid_t> {
         let p = self.panes.get(&id)?;
-        let pgrp = unsafe { libc::tcgetpgrp(p.pty.fd) };
+        let pgrp = p.pty.foreground_group();
         (pgrp > 0 && pgrp != p.pty.pid).then_some(pgrp)
     }
 
@@ -641,9 +641,7 @@ impl App {
             p.shell.queue_due = false;
             return;
         }
-        let mut t: libc::termios = unsafe { std::mem::zeroed() };
-        let reading = unsafe { libc::tcgetattr(p.pty.fd, &mut t) } == 0 && t.c_lflag & libc::ICANON == 0;
-        if reading {
+        if p.pty.raw {
             p.shell.queue_due = false;
             self.run_next(id);
         }
