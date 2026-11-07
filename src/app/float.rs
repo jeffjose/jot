@@ -50,6 +50,10 @@ impl App {
     /// focus; focused, only the way back. At rest just the two icons, out
     /// of the way; with the pointer on them, their panel and the one lit.
     pub(super) fn draw_float(&mut self, id: PaneId) {
+        // With captions, the buttons are in the caption.
+        if self.config.captions {
+            return;
+        }
         self.multi_tags.retain(|(_, p, k)| !(*p == id && matches!(k, watch::Tag::Focus | watch::Tag::Minimize)));
         if self.float_pane != Some(id) || self.roam_shown || !self.ws().root.contains(id) || self.ws().minimized.contains(&id) {
             return;

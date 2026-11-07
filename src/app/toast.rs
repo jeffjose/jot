@@ -68,7 +68,7 @@ impl App {
         let w = px(380.0).min(self.canvas.width - px(32.0));
         let (uh, sh) = (self.fonts.ui.height, self.fonts.small.height);
         let h = px(14.0) + uh + px(4.0) + sh + px(14.0);
-        let mut bottom = self.canvas.height - self.status_h() - self.caption_h() - px(12.0);
+        let mut bottom = self.canvas.height - self.status_h() - px(12.0);
         for i in (0..self.toasts.len()).rev() {
             let r = Rect { x: self.canvas.width - w - px(16.0), y: bottom - h, w, h };
             let (title, body, color) = (self.toasts[i].title.clone(), self.toasts[i].body.clone(), self.toasts[i].color);

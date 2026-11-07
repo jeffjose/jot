@@ -361,10 +361,6 @@ pub mod icons {
     pub const FOCUS: char = '\u{e219}';
     pub const UNFOCUS: char = '\u{e21f}';
     pub const RESTART: char = '\u{e14a}';
-    pub const KEYBOARD: char = '\u{e2a0}';
-    pub const TEE: char = '\u{e2a1}';
-    pub const FILTER: char = '\u{e2a2}';
-    pub const BELL: char = '\u{e2a3}';
     pub const PLAY: char = '\u{e13f}';
     pub const CLOSE: char = '\u{e1b1}';
     pub const MINUS: char = '\u{e2a4}';

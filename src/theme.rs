@@ -29,11 +29,6 @@ impl Theme {
         self.toward(if self.dark { 40 } else { 50 })
     }
 
-    /// The caption of a pane you are not in, and its words.
-    pub fn idle_caption(&self) -> (u32, u32) {
-        (self.toward(if self.dark { 18 } else { 22 }), self.toward(150))
-    }
-
 }
 
 const fn t(name: &'static str, dark: bool, bg: u32, fg: u32, cursor: u32, selection: u32, ansi: [u32; 16]) -> Theme {

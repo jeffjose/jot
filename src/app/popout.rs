@@ -79,7 +79,7 @@ impl App {
         for po in &mut self.popouts {
             let rect = Rect { x: 0, y: 0, w: po.canvas.width, h: po.canvas.height };
             let Some(p) = self.panes.get_mut(&po.pane) else { continue };
-            let content = Rect { x: pad, y: top, w: (rect.w - 2 * pad).max(0), h: (rect.h - cap - top).max(0) };
+            let content = Rect { x: pad, y: cap + top, w: (rect.w - 2 * pad).max(0), h: (rect.h - cap - top).max(0) };
             let cols = (content.w / cw).clamp(1, u16::MAX as i32) as u16;
             let rows = (content.h / ch).clamp(1, u16::MAX as i32) as u16;
             if (cols, rows) != (p.cols, p.rows) {

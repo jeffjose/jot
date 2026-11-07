@@ -54,7 +54,8 @@ impl App {
 
     /// Whether panes show their handle: not with one alone on screen.
     fn handles_shown(&self) -> bool {
-        if self.roam_shown || self.ws().zoom.is_some() {
+        // With captions, the caption is what a pane is carried by.
+        if self.roam_shown || self.ws().zoom.is_some() || self.config.captions {
             return false;
         }
         let mut ids = Vec::new();
@@ -127,7 +128,7 @@ impl App {
         let cap = self.caption_h();
         let mut ids = Vec::new();
         self.ws().root.panes(&mut ids);
-        ids.into_iter().find(|id| self.panes.get(id).is_some_and(|p| Rect { x: p.rect.x, y: p.rect.y + p.rect.h - cap, w: p.rect.w, h: cap }.contains(x, y)))
+        ids.into_iter().find(|id| self.panes.get(id).is_some_and(|p| Rect { x: p.rect.x, y: p.rect.y, w: p.rect.w, h: cap }.contains(x, y)))
     }
 
     pub(super) fn carry_move(&mut self, x: i32, y: i32) {
