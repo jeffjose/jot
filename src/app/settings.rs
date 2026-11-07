@@ -30,9 +30,10 @@ pub enum Key {
     WsTheme,
     Ligatures,
     CommandBars,
+    WsColors,
 }
 
-const ALL_KEYS: [Key; 12] = [Key::CommandBars, Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine];
+const ALL_KEYS: [Key; 13] = [Key::WsColors, Key::CommandBars, Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
@@ -151,6 +152,7 @@ fn config_key(key: Key) -> &'static str {
         Key::WsTheme => "theme",
         Key::Ligatures => "ligatures",
         Key::CommandBars => "command-bars",
+        Key::WsColors => "workspace-colors",
     }
 }
 
@@ -188,6 +190,7 @@ impl App {
             Key::WsTheme => false,
             Key::Ligatures => !c.ligatures,
             Key::CommandBars => c.command_bars,
+            Key::WsColors => !c.workspace_colors,
         }
     }
 
@@ -250,6 +253,10 @@ impl App {
                 self.relayout();
             }
             Key::WsTheme => {}
+            Key::WsColors => {
+                self.config.workspace_colors = true;
+                self.retint();
+            }
             Key::CommandBars => {
                 self.config.command_bars = false;
                 self.refresh_panes();
@@ -314,6 +321,10 @@ impl App {
                         self.config.captions = !self.config.captions;
                         self.config.captions
                     }
+                    Key::WsColors => {
+                        self.config.workspace_colors = !self.config.workspace_colors;
+                        self.config.workspace_colors
+                    }
                     Key::CommandBars => {
                         self.config.command_bars = !self.config.command_bars;
                         self.config.command_bars
@@ -328,6 +339,9 @@ impl App {
                     }
                 };
                 persist::set_config_value(config_key(key), if on { "true" } else { "false" });
+                if key == Key::WsColors {
+                    self.retint();
+                }
                 if key == Key::CommandBars {
                     self.refresh_panes();
                 }
@@ -675,6 +689,7 @@ impl App {
         let (family, size, ui_family, ui_size, line_height) = (self.config.font_family.clone(), self.font_size, self.config.ui_font_family.clone(), self.config.ui_font_size, self.config.line_height);
         let (captions, status_line) = (self.config.captions, self.config.status_line);
         let ws_rows: Vec<(String, Option<String>, Option<String>, bool)> = self.workspaces.iter().enumerate().map(|(i, w)| (w.name.clone(), w.accent.clone(), w.theme.clone(), i == self.current)).collect();
+        let (ws_given, ws_colors) = (self.ws_accents(), self.config.workspace_colors);
         let min_contrast = self.config.min_contrast;
         let ligatures = self.config.ligatures;
         let command_bars = self.config.command_bars;
@@ -874,10 +889,23 @@ impl App {
         heading(canvas, fonts, &mut y, &mut tops, "Workspaces");
         canvas.text(&mut fonts.small, "Each can have its own accent and theme; Default is the one under Appearance. Click a name to rename it.", body.x as f32, y - px(8.0), c.dim, view);
         y += sh_ + px(12.0);
+        {
+            let mid = title(canvas, fonts, &mut page, y, "A colour for each", "All but the first get an accent of their own, kept by name, unless you pick one.", Key::WsColors);
+            let (sw, sh) = (px(40.0), px(22.0));
+            let pill = Rect { x: right - sw, y: mid - sh / 2, w: sw, h: sh };
+            canvas.round_fill(pill, sh / 2, if ws_colors { accent } else { c.hover }, 255);
+            let k = sh - px(6.0);
+            let kx = if ws_colors { pill.x + sw - k - px(3.0) } else { pill.x + px(3.0) };
+            canvas.round_fill(Rect { x: kx, y: pill.y + px(3.0), w: k, h: k }, k / 2, 0xFFFFFF, 255);
+            page.push((Rect { x: pill.x - px(4.0), y: pill.y - px(4.0), w: sw + px(8.0), h: sh + px(8.0) }, Hit::Toggle(Key::WsColors)));
+            y += row_h;
+            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
+            y += px(16.0);
+        }
         let many = ws_rows.len() > 1;
         for (wi, (name, accent_name, theme_name, here)) in ws_rows.iter().enumerate() {
             // The workspace's name, its accent as a dot.
-            let its = accent_name.as_deref().map(crate::theme::accent).unwrap_or(accent);
+            let (its, auto) = ws_given.get(wi).copied().unwrap_or((accent, false));
             canvas.round_fill(Rect { x: body.x, y: y + (field_h - px(10.0)) / 2, w: px(10.0), h: px(10.0) }, px(5.0), its, 255);
             let ty = y + (field_h - uh) / 2;
             let end = match renaming.as_ref().filter(|(rw, _)| *rw == wi) {
@@ -940,7 +968,7 @@ impl App {
             canvas.text_fit(&mut fonts.ui, &shown, field.x + px(12.0), field.y + (field_h - uh) / 2, field_w - px(44.0), if theme_name.is_some() { c.text } else { c.dim }, field);
             page.push((field, Hit::WsTheme(wi)));
             // Its accent, beside: a swatch of it, which opens the colours.
-            let its_name = accent_name.clone().unwrap_or_else(|| "Default".into());
+            let its_name = accent_name.clone().unwrap_or_else(|| if auto { "Auto" } else { "Default" }.into());
             let sw = fonts.ui.width(&its_name) + px(52.0);
             let swatch = Rect { x: field.x - px(10.0) - sw, y, w: sw, h: field_h };
             canvas.round_fill(swatch, px(7.0), if hover == Some(Hit::WsAccentOpen(wi)) { c.hover } else { c.field }, 255);
@@ -1089,8 +1117,13 @@ impl App {
             let chip = Rect { x: pop.x + px(10.0), y: pop.y + px(10.0), w: pop.w - px(20.0), h: chip_h };
             let on_settings = current.is_none();
             canvas.round_fill(chip, px(6.0), if on_settings { c.hover } else if hover == Some(Hit::WsAccent(wi, usize::MAX)) { c.field } else { c.panel }, 255);
-            canvas.round_fill(Rect { x: chip.x + px(8.0), y: chip.y + (chip_h - px(12.0)) / 2, w: px(12.0), h: px(12.0) }, px(6.0), self.accent, 255);
-            canvas.text(&mut fonts.ui, "Default accent", (chip.x + px(28.0)) as f32, chip.y + (chip_h - uh) / 2, c.text, chip);
+            let dot = Rect { x: chip.x + px(8.0), y: chip.y + (chip_h - px(12.0)) / 2, w: px(12.0), h: px(12.0) };
+            if ws_colors && wi > 0 {
+                canvas.ring(dot, px(6.0), px(1.5).max(1), c.dim);
+            } else {
+                canvas.round_fill(dot, px(6.0), self.accent, 255);
+            }
+            canvas.text(&mut fonts.ui, if ws_colors && wi > 0 { "Auto" } else { "Default accent" }, (chip.x + px(28.0)) as f32, chip.y + (chip_h - uh) / 2, c.text, chip);
             hits.push((chip, Hit::WsAccent(wi, usize::MAX)));
             for (i, (an, color)) in ACCENTS.iter().enumerate() {
                 let (col, row) = (i as i32 % cols, i as i32 / cols);

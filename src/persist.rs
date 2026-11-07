@@ -178,6 +178,10 @@ pub struct Config {
     /// ended, with its time when it failed or was slow.
     #[serde(default)]
     pub command_bars: bool,
+    /// Workspaces without an accent of their own are each given a
+    /// different one, all but the first.
+    #[serde(default = "yes")]
+    pub workspace_colors: bool,
     /// The colour theme, by name.
     #[serde(default = "default_theme")]
     pub theme: String,
@@ -257,7 +261,7 @@ fn default_projects() -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), restore: default_restore(), status_line: false, captions: true, ligatures: true, command_bars: false, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), restore: default_restore(), status_line: false, captions: true, ligatures: true, command_bars: false, workspace_colors: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), workspaces: Vec::new() }
     }
 }
 

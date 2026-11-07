@@ -197,3 +197,32 @@ impl Theme {
         }
     }
 }
+
+/// Accents far from each other and from the blues, in the order
+/// workspaces are given them.
+pub static AUTO: [&str; 11] = ["orange", "jade", "crimson", "amber", "violet", "cyan", "tomato", "grass", "plum", "teal", "pink"];
+
+/// Each workspace's accent, and whether it was given one rather than
+/// choosing it. The first has the default; each other without one of its
+/// own gets one of AUTO, picked by its name so it keeps the same one from
+/// day to day, and none the same as another's while there are enough.
+pub fn workspace_accents(workspaces: &[(&str, Option<&str>)], default: u32, auto: bool) -> Vec<(u32, bool)> {
+    let mut used: Vec<u32> = vec![default];
+    used.extend(workspaces.iter().filter_map(|(_, a)| a.map(accent)));
+    workspaces
+        .iter()
+        .enumerate()
+        .map(|(i, (name, chosen))| match chosen {
+            Some(a) => (accent(a), false),
+            None if i == 0 || !auto => (default, false),
+            None => {
+                // FNV-1a: the same name, the same start, on every run.
+                let h = name.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+                let start = (h % AUTO.len() as u64) as usize;
+                let pick = (0..AUTO.len()).map(|k| accent(AUTO[(start + k) % AUTO.len()])).find(|c| !used.contains(c)).unwrap_or_else(|| accent(AUTO[start]));
+                used.push(pick);
+                (pick, true)
+            }
+        })
+        .collect()
+}

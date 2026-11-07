@@ -48,6 +48,10 @@
 # ended, with its time when it failed or was slow (shell integration).
 # command-bars = false
 
+# Workspaces without an accent of their own each get a different one;
+# the first keeps the accent above.
+# workspace-colors = true
+
 # A status line along the bottom of the window: host, workspaces, clock.
 # status-line = false
 

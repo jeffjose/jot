@@ -1305,10 +1305,17 @@ impl App {
     }
 
     /// The accent and theme now, and every pane in its workspace's theme.
+    /// Each workspace's accent, and whether it was given one rather than
+    /// choosing it.
+    pub(super) fn ws_accents(&self) -> Vec<(u32, bool)> {
+        let named: Vec<(&str, Option<&str>)> = self.workspaces.iter().map(|w| (w.name.as_str(), w.accent.as_deref())).collect();
+        crate::theme::workspace_accents(&named, self.accent, self.config.workspace_colors)
+    }
+
     pub(super) fn retint(&mut self) {
         let ws = self.workspaces.get(self.current);
         self.cur_theme = ws.and_then(|w| w.theme.as_deref()).map(Theme::by_name).unwrap_or(self.theme);
-        self.cur_accent = ws.and_then(|w| w.accent.as_deref()).map(crate::theme::accent).unwrap_or(self.accent);
+        self.cur_accent = self.ws_accents().get(self.current).map_or(self.accent, |a| a.0);
         let mut wanted: Vec<(PaneId, &'static Theme)> = Vec::new();
         for ws in &self.workspaces {
             let t = ws.theme.as_deref().map(Theme::by_name).unwrap_or(self.theme);
