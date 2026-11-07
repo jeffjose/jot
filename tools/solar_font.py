@@ -30,8 +30,8 @@ from picosvg.svg import SVG
 
 # jot's name for an icon, and the Solar drawing that stands for it.
 PICKS = {
-    "FOCUS": "full-screen", "UNFOCUS": "quit-full-screen", "RESTART": "restart", "KEYBOARD": "keyboard",
-    "TEE": "diskette", "FILTER": "filter", "BELL": "bell", "PLAY": "play", "CLOSE": "close",
+    "FOCUS": "full-screen", "UNFOCUS": "quit-full-screen", "RESTART": "restart",
+    "PLAY": "play", "CLOSE": "close",
     "MINUS": "minus", "CHEVRON_DOWN": "alt-arrow-down", "ARROW_RIGHT": "arrow-right",
 }
 

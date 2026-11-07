@@ -488,7 +488,7 @@ impl App {
         if !self.config.captions {
             return 0;
         }
-        self.fonts.ui.height + self.px(6.0)
+        self.fonts.ui.height + self.px(9.0)
     }
 
     /// Starts a pane: its program in the session, and the terminal it
@@ -774,7 +774,7 @@ impl App {
             let bar = self.bar_height(id);
             let pins = self.pins_height(id);
             let Some(p) = self.panes.get_mut(&id) else { continue };
-            let content = Rect { x: rect.x + pad, y: rect.y + top + pins, w: (rect.w - 2 * pad).max(0), h: (rect.h - cap - top - bar - pins).max(0) };
+            let content = Rect { x: rect.x + pad, y: rect.y + cap + top + pins, w: (rect.w - 2 * pad).max(0), h: (rect.h - cap - top - bar - pins).max(0) };
             let cols = (content.w / cw).clamp(1, u16::MAX as i32) as u16;
             let rows = (content.h / ch).clamp(1, u16::MAX as i32) as u16;
             // Only a change of rows or columns is told to the program: a
@@ -1955,7 +1955,7 @@ impl App {
         let rect = p.rect;
         let content = p.content;
         if full {
-            self.canvas.fill(Rect { x: rect.x, y: rect.y, w: rect.w, h: rect.h - cap_h }, dbg);
+            self.canvas.fill(Rect { x: rect.x, y: rect.y + cap_h, w: rect.w, h: rect.h - cap_h }, dbg);
         }
         let mut extra = Vec::new();
         extra.extend(p.cursor_was.map(|(_, y)| y));
@@ -2128,89 +2128,117 @@ impl App {
         self.draw_float(id);
     }
 
+    /// The caption along the top of a pane, as Chrome draws its tabs: the
+    /// focused pane's a lighter surface, a touch of the accent in it, the
+    /// others a quiet step off the pane. In it, the number and title; then
+    /// the pane's tags, each a dot and a word; then restart (while a
+    /// command runs), minimize and focus.
     #[allow(clippy::too_many_arguments)]
     fn draw_caption(&mut self, id: PaneId, rect: Rect, n: usize, caption: &str, focused: bool, activity: bool, into: Option<bool>) {
         let h = self.caption_h();
-        let bar = Rect { x: rect.x, y: rect.y + rect.h - h, w: rect.w, h };
-        let (bg, fg) = if focused {
-            (self.cur_accent, crate::canvas::on(self.cur_accent))
-        } else {
-            let (bg, fg) = self.cur_theme.idle_caption();
-            (bg, if activity { ACTIVITY } else { fg })
+        let bar = Rect { x: rect.x, y: rect.y, w: rect.w, h };
+        let t = self.cur_theme;
+        let accent = self.cur_accent;
+        let (white, black) = (0xFFFFFF, 0x000000);
+        let (bg, fg, dim, num) = match (focused, t.dark) {
+            (true, true) => (mix(mix(t.bg, white, 33), accent, 26), 0xF2F2F3, 0xA9ABB2, mix(accent, white, 64)),
+            (true, false) => (mix(white, accent, 15), 0x17181B, 0x5C5F66, mix(accent, black, 64)),
+            (false, true) => (mix(t.bg, white, 12), if activity { ACTIVITY } else { 0x9A9CA2 }, 0x6E7077, 0x6E7077),
+            (false, false) => (mix(t.bg, black, 18), if activity { ACTIVITY } else { 0x5C5F66 }, 0x8A8D94, 0x8A8D94),
         };
+        let lift = if t.dark { white } else { black };
         self.canvas.fill(bar, bg);
         let ty = bar.y + (h - self.fonts.ui.height) / 2;
-        let pad = self.px(6.0) as f32;
-        let label = if n == 0 { format!("~  {caption}") } else { format!("{n}  {caption}") };
-        self.canvas.text(&mut self.fonts.ui, &label, bar.x as f32 + pad, ty, fg, bar);
-        // Tags at the right: copy mode, and the pane's watchers and typing
-        // into several, the last buttons that toggle or stop.
-        let mut right = bar.x + bar.w - pad as i32;
-        let copying = self.copy_mode.as_ref().is_some_and(|c| self.panes.get(&c.pane).is_some_and(|p| p.rect == rect));
+        let pad = self.px(10.0);
+        let b = h - self.px(6.0);
+        let icon = self.px(12.0);
         self.multi_tags.retain(|(_, p, _)| *p != id);
-        // At the far right, while a command runs, the restart button. (Focus
-        // and minimize float at the pane's top right: draw_float.)
+        // The buttons, from the right: focus, minimize, restart.
+        let mut right = bar.x + bar.w - self.px(4.0);
+        let zoomed = self.ws().zoom.is_some();
+        let many = {
+            let mut ids = Vec::new();
+            self.ws().root.panes(&mut ids);
+            ids.len() > 1
+        };
+        let in_layout = n > 0 && self.ws().root.contains(id);
         let running = self.panes.get(&id).is_some_and(|p| p.shell.marked && !p.shell.at_prompt && p.shell.running.is_some());
-        if n > 0 && running {
-            let r = Rect { x: right - h + pad as i32, y: bar.y, w: h, h };
-            if self.multi_lit == Some((id, watch::Tag::Restart)) {
-                self.canvas.fill(r, mix(bg, fg, 50));
-            }
-            let size = h * 6 / 10;
-            self.canvas.icon(crate::canvas::icons::RESTART, size, r.x + (h - size) / 2, r.y + (h - size) / 2, fg, r);
-            self.multi_tags.push((r, id, watch::Tag::Restart));
-            right = r.x - pad as i32 / 2;
+        let mut buttons: Vec<(watch::Tag, char)> = Vec::new();
+        if in_layout && (many || zoomed) {
+            buttons.push((watch::Tag::Focus, if zoomed { crate::canvas::icons::UNFOCUS } else { crate::canvas::icons::FOCUS }));
         }
-        // The pane's watchers and its typing into several, each a pill
-        // with its icon, that a click stops or toggles.
+        if in_layout && many && !zoomed {
+            buttons.push((watch::Tag::Minimize, crate::canvas::icons::MINUS));
+        }
+        if n > 0 && running {
+            buttons.push((watch::Tag::Restart, crate::canvas::icons::RESTART));
+        }
+        for (kind, glyph) in buttons {
+            let r = Rect { x: right - b, y: bar.y + (h - b) / 2, w: b, h: b };
+            let lit = self.multi_lit == Some((id, kind));
+            if lit {
+                self.canvas.round_fill(r, self.px(5.0), lift, 24);
+            }
+            self.canvas.icon_in(glyph, r, icon, if lit { fg } else { dim });
+            self.multi_tags.push((r, id, kind));
+            right = r.x - self.px(2.0);
+        }
+        // The pane's tags: copy mode, typing into several, its watchers,
+        // each a colored dot and a word; a click stops or toggles it.
+        let copying = self.copy_mode.as_ref().is_some_and(|c| self.panes.get(&c.pane).is_some_and(|p| p.rect == rect));
         let (tee, filter) = self.panes.get(&id).map_or((None, None), |p| (p.tee.as_ref().map(|t| format!("{} ({})", t.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), t.lines)), p.filter.as_ref().map(|f| (f.text.clone(), f.armed))));
-        let mut tags: Vec<(watch::Tag, String, u32, char)> = Vec::new();
+        let mut tags: Vec<(Option<watch::Tag>, String, u32)> = Vec::new();
+        if copying {
+            tags.push((None, "copy".into(), 0xFFC53D));
+        }
         if let Some(included) = into {
-            tags.push((watch::Tag::Multi, if included { "MULTI" } else { "SKIPPED" }.into(), if included { 0xE5484D } else { 0x6F6F6F }, crate::canvas::icons::KEYBOARD));
+            tags.push((Some(watch::Tag::Multi), if included { "multi" } else { "skipped" }.into(), if included { 0xE5484D } else { 0x6F6F6F }));
         }
         if let Some(name) = tee {
-            tags.push((watch::Tag::Tee, format!("TEE {name}"), 0x12A594, crate::canvas::icons::TEE));
+            tags.push((Some(watch::Tag::Tee), format!("tee {name}"), 0x12A594));
         }
         if self.panes.get(&id).is_some_and(|p| p.shell.notify) {
-            tags.push((watch::Tag::Notify, "NOTIFY".into(), 0xFFC53D, crate::canvas::icons::BELL));
+            tags.push((Some(watch::Tag::Notify), "notify".into(), 0xFFC53D));
         }
         if let Some((text, armed)) = filter {
-            let label = if armed { format!("NEXT: {text}") } else { text };
-            tags.push((watch::Tag::Filter, label, 0x8E4EC6, crate::canvas::icons::FILTER));
+            tags.push((Some(watch::Tag::Filter), if armed { format!("next: {text}") } else { format!("filter {text}") }, 0x8E4EC6));
         }
-        for (kind, label, base, icon) in tags {
-            let lit = self.multi_lit == Some((id, kind));
-            let color = if lit { mix(base, 0xFFFFFF, 40) } else { base };
-            let (gap, size) = (self.px(6.0), self.px(15.0).min(h - self.px(4.0)));
-            // A tee has a stop button at its end, an × of its own.
-            let stop = if kind == watch::Tag::Tee { h } else { 0 };
-            let w = (gap + size + gap + self.fonts.ui.width(&label) + gap + stop).min(bar.w / 2);
-            let r = Rect { x: right - w, y: bar.y, w, h };
-            self.canvas.fill(r, color);
-            let fg = crate::canvas::on(color);
-            self.canvas.icon(icon, size, r.x + gap, bar.y + (h - size) / 2, fg, r);
-            self.canvas.text_fit(&mut self.fonts.ui, &label, r.x + gap + size + gap, ty, r.w - size - gap * 3 - stop, fg, r);
-            let body = Rect { w: r.w - stop, ..r };
+        right -= self.px(4.0);
+        let small = self.fonts.small.height;
+        let dot = self.px(6.0);
+        for (kind, label, color) in tags.into_iter().rev() {
+            let lit = kind.is_some_and(|k| self.multi_lit == Some((id, k)));
+            // A tee has a stop button after its word.
+            let stop = if kind == Some(watch::Tag::Tee) { b } else { 0 };
+            let gap = self.px(6.0);
+            let w = (gap + dot + gap + self.fonts.small.width(&label) + gap + stop).min(bar.w / 3);
+            let r = Rect { x: right - w, y: bar.y + (h - b) / 2, w, h: b };
+            if lit {
+                self.canvas.round_fill(Rect { w: r.w - stop, ..r }, self.px(5.0), lift, 24);
+            }
+            self.canvas.round_fill(Rect { x: r.x + gap, y: bar.y + (h - dot) / 2, w: dot, h: dot }, self.px(2.0), color, 255);
+            self.canvas.text_fit(&mut self.fonts.small, &label, r.x + gap + dot + gap, bar.y + (h - small) / 2, r.w - dot - gap * 3 - stop, if lit { fg } else { dim }, r);
             if stop > 0 {
-                let x = Rect { x: r.x + r.w - stop, y: r.y, w: stop, h };
+                let x = Rect { x: r.x + r.w - stop, ..Rect { w: stop, ..r } };
                 let x_lit = self.multi_lit == Some((id, watch::Tag::TeeStop));
-                self.canvas.fill(x, if x_lit { mix(base, 0x000000, 60) } else { mix(base, 0x000000, 25) });
-                self.canvas.icon_in(crate::canvas::icons::CLOSE, x, h * 6 / 10, fg);
+                if x_lit {
+                    self.canvas.round_fill(x, self.px(5.0), lift, 24);
+                }
+                self.canvas.icon_in(crate::canvas::icons::CLOSE, x, icon, if x_lit { fg } else { dim });
                 self.multi_tags.push((x, id, watch::Tag::TeeStop));
             }
-            self.multi_tags.push((body, id, kind));
-            right = r.x - pad as i32 / 2;
-        }
-        for (on, tag, color) in [(copying, " COPY ", 0xFFC53D)] {
-            if !on {
-                continue;
+            if let Some(k) = kind {
+                self.multi_tags.push((Rect { w: r.w - stop, ..r }, id, k));
             }
-            let w = self.fonts.ui.width(tag);
-            let r = Rect { x: right - w, y: bar.y, w, h };
-            self.canvas.fill(r, color);
-            self.canvas.text(&mut self.fonts.ui, tag, r.x as f32, ty, crate::canvas::on(color), r);
-            right = r.x - pad as i32 / 2;
+            right = r.x - self.px(2.0);
         }
+        // The number and title, in what room is left.
+        let mut x = bar.x + pad;
+        if n > 0 {
+            x = self.canvas.text(&mut self.fonts.ui, &format!("{n}"), x as f32, ty, num, bar) + self.px(8.0);
+        }
+        let room = right - self.px(8.0) - x;
+        self.canvas.text_fit(&mut self.fonts.ui, caption, x, ty, room.max(0), fg, bar);
         self.damage.push(bar);
     }
 

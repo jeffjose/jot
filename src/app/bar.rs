@@ -487,8 +487,7 @@ impl App {
             return;
         }
         let Some(p) = self.panes.get(&id) else { return };
-        let cap = if self.config.captions { self.caption_h() } else { 0 };
-        let area = Rect { x: p.rect.x, y: p.rect.y + p.rect.h - cap - h, w: p.rect.w, h };
+        let area = Rect { x: p.rect.x, y: p.rect.y + p.rect.h - h, w: p.rect.w, h };
         let (queue, paused, ran, after) = (p.shell.queue.clone(), p.shell.paused, p.shell.ran.clone(), p.shell.after.clone());
         // Each pane waited on, named as @ names it.
         let after: Vec<(String, String)> = after.into_iter().map(|(t, cmd)| (self.pane_number(t), cmd)).collect();

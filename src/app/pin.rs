@@ -77,7 +77,7 @@ impl App {
         let (x, y) = self.pointer;
         let Some(id) = self.panes.iter().find(|(id, p)| {
             let h = self.pins_height(**id);
-            h > 0 && Rect { x: p.rect.x, y: p.rect.y, w: p.rect.w, h }.contains(x, y)
+            h > 0 && Rect { x: p.rect.x, y: p.rect.y + self.caption_h(), w: p.rect.w, h }.contains(x, y)
         }).map(|(id, _)| *id) else {
             return false;
         };
@@ -99,7 +99,7 @@ impl App {
             return;
         }
         let Some(p) = self.panes.get(&id) else { return };
-        let area = Rect { x: p.rect.x, y: p.rect.y, w: p.rect.w, h };
+        let area = Rect { x: p.rect.x, y: p.rect.y + self.caption_h(), w: p.rect.w, h };
         let running = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.trim().to_string());
         let rows: Vec<(usize, String, Option<(Instant, Option<i32>)>)> = p.pins.iter().enumerate().skip(p.pins_scroll).take(SHOWN).map(|(i, pin)| (i, pin.cmd.clone(), pin.last)).collect();
         let (total, scroll) = (p.pins.len(), p.pins_scroll);
