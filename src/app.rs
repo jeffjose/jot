@@ -103,6 +103,8 @@ pub struct Workspace {
     on_focus: Option<String>,
     /// What is typed goes to every pane in it.
     broadcast: bool,
+    /// Panes clicked out of what is typed into, while broadcasting.
+    left_out: Vec<PaneId>,
 }
 
 enum Drag {
@@ -373,7 +375,7 @@ impl App {
             id
         });
         let name = if spec.name.is_empty() { folder_name(&spec.folder()) } else { spec.name.clone() };
-        self.workspaces.push(Workspace { name, root, focus: ids[0], zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false });
+        self.workspaces.push(Workspace { name, root, focus: ids[0], zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new() });
         self.run_hook(self.workspaces.len() - 1, true);
     }
 
@@ -563,7 +565,7 @@ impl App {
             }
             // Its workspace was closed with it: it comes back as one.
             None => {
-                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false });
+                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new() });
                 self.go_to(self.workspaces.len() - 1);
             }
         }
@@ -757,25 +759,38 @@ impl App {
         self.clip_set(text, primary);
     }
 
-    /// The panes what is typed goes to: the one you are in, or, with
-    /// broadcast on, every pane of its workspace.
+    /// The panes what is typed goes to: the one you are in, or, typing
+    /// into several, every pane of its workspace not clicked out.
     pub(super) fn input_targets(&self, id: PaneId) -> Vec<PaneId> {
         match self.workspaces.get(self.current) {
             Some(ws) if ws.broadcast && !self.roam_shown && ws.root.contains(id) => {
                 let mut ids = Vec::new();
                 ws.root.panes(&mut ids);
-                ids
+                ids.retain(|p| !ws.left_out.contains(p));
+                if ids.is_empty() {
+                    vec![id]
+                } else {
+                    ids
+                }
             }
             _ => vec![id],
         }
     }
 
-    /// Typing into every pane of the workspace at once, or back to one.
+    /// Typing into several panes, or back to one. It starts with all of
+    /// the workspace's; a click on a pane leaves it out, or takes it back.
     pub(super) fn toggle_broadcast(&mut self) {
         if let Some(ws) = self.workspaces.get_mut(self.current) {
             ws.broadcast = !ws.broadcast;
+            ws.left_out.clear();
         }
         self.refresh_panes();
+    }
+
+    /// While typing into several, whether a pane gets what is typed.
+    pub(super) fn typed_into(&self, id: PaneId) -> Option<bool> {
+        let ws = self.workspaces.get(self.current)?;
+        (ws.broadcast && ws.root.contains(id)).then(|| !ws.left_out.contains(&id))
     }
 
     fn paste(&mut self, primary: bool) {
@@ -1036,6 +1051,21 @@ impl App {
         let (x, y) = self.pointer;
         if button == MouseButton::Left && self.mods.control_key() && self.open_link() {
             return;
+        }
+        // Typing into several: a click on a pane leaves it out, or takes
+        // it back; it does not go to the pane.
+        if button == MouseButton::Left && !self.roam_shown && self.caption_at(x, y).is_none() {
+            if let Some((id, _)) = self.pane_at(x, y) {
+                if let Some(into) = self.typed_into(id) {
+                    let ws = &mut self.workspaces[self.current];
+                    if into {
+                        ws.left_out.push(id);
+                    } else {
+                        ws.left_out.retain(|p| *p != id);
+                    }
+                    return self.refresh_panes();
+                }
+            }
         }
         if let (Some((id, _)), Some(b)) = (self.pane_at(x, y), App::button_of(button)) {
             if self.mouse_to_program(id) && !self.mods.control_key() && self.caption_at(x, y).is_none() {
@@ -1585,13 +1615,14 @@ impl App {
         let activity = p.activity;
         if full {
             if self.config.captions {
-                self.draw_caption(rect, n, &caption, focused, scrolled, activity);
+                let into = self.typed_into(id);
+                self.draw_caption(rect, n, &caption, focused, scrolled, activity, into);
             }
         }
         self.draw_blocks(id);
     }
 
-    fn draw_caption(&mut self, rect: Rect, n: usize, caption: &str, focused: bool, scrolled: bool, activity: bool) {
+    fn draw_caption(&mut self, rect: Rect, n: usize, caption: &str, focused: bool, scrolled: bool, activity: bool, into: Option<bool>) {
         let h = self.caption_h();
         let bar = Rect { x: rect.x, y: rect.y + rect.h - h, w: rect.w, h };
         let (bg, fg) = if focused {
@@ -1606,10 +1637,10 @@ impl App {
         let label = if n == 0 { format!("~  {caption}") } else { format!("{n}  {caption}") };
         self.canvas.text(&mut self.fonts.ui, &label, bar.x as f32 + pad, ty, fg, bar);
         // Tags at the right: scrolled back, and typing into every pane.
-        let broadcast = n > 0 && self.workspaces.get(self.current).is_some_and(|w| w.broadcast);
+        let (typing, left_out) = (into == Some(true), into == Some(false));
         let mut right = bar.x + bar.w - pad as i32;
         let copying = self.copy_mode.as_ref().is_some_and(|c| self.panes.get(&c.pane).is_some_and(|p| p.rect == rect));
-        for (on, tag, color) in [(copying, " COPY ", 0xFFC53D), (scrolled && !copying, " SCROLLED ", SCROLLED), (broadcast, " TYPING INTO ALL ", 0xE5484D)] {
+        for (on, tag, color) in [(copying, " COPY ", 0xFFC53D), (scrolled && !copying, " SCROLLED ", SCROLLED), (typing, " TYPING ", 0xE5484D), (left_out, " LEFT OUT ", 0x6F6F6F)] {
             if !on {
                 continue;
             }

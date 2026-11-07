@@ -129,7 +129,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Alt 1–9", "Go to a workspace"),
     ("Alt ,  Alt .", "The workspace before, after"),
     ("Alt Shift N", "New workspace in this pane's folder"),
-    ("Alt Shift B", "Type into every pane of the workspace, and back"),
+    ("Alt Shift B", "Type into several panes; click one to leave it out"),
     ("Alt P", "Copy mode: hjkl, v or V, y to copy"),
     ("Alt Shift O", "Pop the pane out into a window, and back"),
     ("Ctrl Shift ↑ ↓", "The prompt before or after"),

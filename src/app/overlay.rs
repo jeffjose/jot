@@ -396,6 +396,7 @@ impl App {
                 c("New pane", "Ctrl T", Action::NewPane),
                 c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
                 c("Pop out", "Alt Shift O", Action::PopOut),
+                c("Type into several panes", "Alt Shift B", Action::Broadcast),
                 None,
                 c("Clear screen and scrollback", "", Action::Clear),
             ],
