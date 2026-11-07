@@ -34,6 +34,7 @@ mod dnd;
 mod find;
 mod links;
 mod mouse;
+mod popout;
 mod settings;
 
 // Colours from Radix, as the screen setup has them.
@@ -159,6 +160,9 @@ pub struct App {
     fired: HashMap<(usize, PaneId), Instant>,
     /// What the `jterm` command asks.
     requests: Receiver<crate::remote::Request>,
+    /// Panes in windows of their own, and the one with the keyboard.
+    popouts: Vec<popout::Popout>,
+    focused_popout: Option<WindowId>,
     /// What was run from the palette lately, the latest first.
     recent: Vec<String>,
     /// Panes closed, the last last, for Ctrl Shift T.
@@ -255,6 +259,8 @@ impl App {
             triggers: Vec::new(),
             fired: HashMap::new(),
             requests,
+            popouts: Vec::new(),
+            focused_popout: None,
             recent: Vec::new(),
             closed: Vec::new(),
             copied: (None, None),
@@ -361,6 +367,9 @@ impl App {
 
     /// The pane keys go to.
     fn focused(&self) -> Option<PaneId> {
+        if let Some(po) = self.focused_popout.and_then(|w| self.popouts.iter().find(|p| p.window.id() == w)) {
+            return Some(po.pane);
+        }
         if self.roam_shown {
             return self.roam;
         }
@@ -374,6 +383,7 @@ impl App {
     /// Lays out every workspace, so panes not shown are the right size
     /// too, and resizes the terminals whose size changed.
     fn relayout(&mut self) {
+        self.lay_out_popouts();
         let area = self.area();
         let mut shown = Vec::new();
         for (i, ws) in self.workspaces.iter().enumerate() {
@@ -496,6 +506,14 @@ impl App {
     /// Closes a pane, its workspace with it when it was the last; jterm
     /// with the last workspace.
     fn close(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // A pane in a window of its own takes the window with it.
+        if let Some(i) = self.popout_of(id) {
+            self.popouts.remove(i);
+            self.focused_popout = None;
+            self.panes.remove(&id);
+            self.full = true;
+            return self.redraw();
+        }
         // A search borrows its pane's terminal, so it goes first.
         if self.find.as_ref().is_some_and(|f| f.pane == id) {
             self.find = None;
@@ -706,6 +724,22 @@ impl App {
     fn binding(&mut self, code: KeyCode, event_loop: &ActiveEventLoop) -> bool {
         let m = self.mods;
         let (alt, ctrl, shift, sup) = (m.alt_key(), m.control_key(), m.shift_key(), m.super_key());
+        // In a popped-out window: back in, close, copy and paste; the
+        // rest are the program's.
+        if let Some(wid) = self.focused_popout {
+            match (code, alt, ctrl, shift) {
+                (KeyCode::KeyO, true, false, true) => self.pop_in(wid),
+                (KeyCode::KeyW, false, true, false) => {
+                    if let Some(id) = self.focused() {
+                        self.close(id, event_loop);
+                    }
+                }
+                (KeyCode::KeyC, false, true, true) => self.copy(false),
+                (KeyCode::KeyV, false, true, true) => self.paste(false),
+                _ => return false,
+            }
+            return true;
+        }
         if alt && !ctrl && !sup {
             match (code, shift) {
                 (KeyCode::KeyS, false) => self.split(Dir::Down),
@@ -748,6 +782,7 @@ impl App {
                 (KeyCode::Period, _) => self.go_to((self.current + 1) % self.workspaces.len()),
                 (KeyCode::KeyN, true) => self.new_workspace(),
                 (KeyCode::KeyB, true) => self.toggle_broadcast(),
+                (KeyCode::KeyO, true) => self.pop_out(event_loop),
                 (KeyCode::KeyP, true) => self.paste(false),
                 (KeyCode::KeyP, false) => self.open_copy_mode(),
                 (KeyCode::Backquote, false) => self.toggle_roam(),
@@ -1118,6 +1153,9 @@ impl App {
                         any = true;
                     }
                     self.check_triggers(id, &bytes);
+                    if let Some(i) = self.popout_of(id) {
+                        self.popouts[i].window.request_redraw();
+                    }
                 }
                 Output::Exit(id) => exited.push(id),
             }
@@ -1505,40 +1543,10 @@ impl App {
     }
 
     fn present(&mut self) {
-        let (Some(surface), Some(window)) = (self.surface.as_mut(), self.window.as_ref()) else { return };
         let damage = std::mem::take(&mut self.damage);
-        if damage.is_empty() {
-            return;
+        if let (Some(surface), Some(window)) = (self.surface.as_mut(), self.window.as_ref()) {
+            present_frame(surface, window, &self.canvas, damage);
         }
-        let Ok(mut buffer) = surface.buffer_mut() else { return };
-        let width = self.canvas.width as usize;
-        if buffer.len() != self.canvas.pixels.len() {
-            return;
-        }
-        let whole = buffer.age() != 1 || damage.iter().any(|d| d.w == self.canvas.width && d.h == self.canvas.height);
-        let rects: Vec<softbuffer::Rect> = if whole {
-            buffer.copy_from_slice(&self.canvas.pixels);
-            vec![]
-        } else {
-            damage
-                .iter()
-                .filter_map(|d| {
-                    let x0 = d.x.clamp(0, self.canvas.width) as usize;
-                    let x1 = (d.x + d.w).clamp(0, self.canvas.width) as usize;
-                    let y0 = d.y.clamp(0, self.canvas.height) as usize;
-                    let y1 = (d.y + d.h).clamp(0, self.canvas.height) as usize;
-                    if x0 >= x1 || y0 >= y1 {
-                        return None;
-                    }
-                    for y in y0..y1 {
-                        buffer[y * width + x0..y * width + x1].copy_from_slice(&self.canvas.pixels[y * width + x0..y * width + x1]);
-                    }
-                    Some(softbuffer::Rect { x: x0 as u32, y: y0 as u32, width: NonZeroU32::new((x1 - x0) as u32)?, height: NonZeroU32::new((y1 - y0) as u32)? })
-                })
-                .collect()
-        };
-        window.pre_present_notify();
-        let _ = if whole || rects.is_empty() { buffer.present() } else { buffer.present_with_damage(&rects) };
     }
 
     /// The workspaces as they are now, written out.
@@ -1587,8 +1595,21 @@ impl ApplicationHandler<()> for App {
         self.drain(event_loop);
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, wid: WindowId, event: WindowEvent) {
+        // A popped-out pane's window: its own drawing, mouse and size;
+        // its keys go where every key goes, to the pane with the keyboard.
+        if self.window.as_ref().is_some_and(|w| w.id() != wid) {
+            let keys = matches!(event, WindowEvent::KeyboardInput { .. } | WindowEvent::ModifiersChanged(_));
+            if keys || !self.popout_event(wid, &event) {
+                if !keys {
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
         match event {
+
             WindowEvent::CloseRequested => {
                 self.save();
                 event_loop.exit();
@@ -1648,4 +1669,41 @@ impl ApplicationHandler<()> for App {
             self.redraw();
         }
     }
+}
+
+/// What was drawn on a canvas, put on its window: the parts that changed,
+/// or all of it when the window's buffer is not the last one shown.
+pub(super) fn present_frame(surface: &mut Surface<Rc<Window>, Rc<Window>>, window: &Window, canvas: &Canvas, damage: Vec<Rect>) {
+    if damage.is_empty() {
+        return;
+    }
+    let Ok(mut buffer) = surface.buffer_mut() else { return };
+    let width = canvas.width as usize;
+    if buffer.len() != canvas.pixels.len() {
+        return;
+    }
+    let whole = buffer.age() != 1 || damage.iter().any(|d| d.w == canvas.width && d.h == canvas.height);
+    let rects: Vec<softbuffer::Rect> = if whole {
+        buffer.copy_from_slice(&canvas.pixels);
+        vec![]
+    } else {
+        damage
+            .iter()
+            .filter_map(|d| {
+                let x0 = d.x.clamp(0, canvas.width) as usize;
+                let x1 = (d.x + d.w).clamp(0, canvas.width) as usize;
+                let y0 = d.y.clamp(0, canvas.height) as usize;
+                let y1 = (d.y + d.h).clamp(0, canvas.height) as usize;
+                if x0 >= x1 || y0 >= y1 {
+                    return None;
+                }
+                for y in y0..y1 {
+                    buffer[y * width + x0..y * width + x1].copy_from_slice(&canvas.pixels[y * width + x0..y * width + x1]);
+                }
+                Some(softbuffer::Rect { x: x0 as u32, y: y0 as u32, width: NonZeroU32::new((x1 - x0) as u32)?, height: NonZeroU32::new((y1 - y0) as u32)? })
+            })
+            .collect()
+    };
+    window.pre_present_notify();
+    let _ = if whole || rects.is_empty() { buffer.present() } else { buffer.present_with_damage(&rects) };
 }

@@ -257,6 +257,7 @@ impl App {
             Action::FontReset => self.set_font_size(self.config.font_size),
             Action::Settings => self.open_settings(),
             Action::Broadcast => self.toggle_broadcast(),
+            Action::PopOut => self.pop_out(event_loop),
             Action::Palette => self.open_palette(),
             Action::Commands => self.open_palette_with(">"),
             Action::StatusLine => {
@@ -342,6 +343,7 @@ impl App {
             c("Split one above another", "Alt S", Action::Split(Dir::Down)),
             c(if self.ws().zoom.is_some() { "Show all panes" } else { "Pane alone" }, "Alt Shift M", Action::Zoom),
             c("New pane", "Ctrl T", Action::NewPane),
+            c("Pop out", "Alt Shift O", Action::PopOut),
             c("Close pane", "Ctrl W", Action::Close),
             c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
             None,
