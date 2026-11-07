@@ -24,16 +24,12 @@ use crate::font::Fonts;
 use crate::layout::{neighbour, Divider, Dir, Node, PaneId, Rect};
 use crate::persist::{self, Config, Session, Start, WorkspaceSpec};
 use crate::pty::{self, Output, Pty};
+use crate::theme::Theme;
 use crate::vt::{self, sys, Cell, Terminal};
 
+mod overlay;
+
 // Colours from Radix, as the screen setup has them.
-const BG: u32 = 0x111111;
-const FG: u32 = 0xEEEEEE;
-const DIVIDER: u32 = 0x3A3A3A;
-const ACTIVE_BG: u32 = 0xEC5D5E; // red 10
-const ACTIVE_FG: u32 = 0x191111;
-const IDLE_BG: u32 = 0x2A2A2A; // gray 4
-const IDLE_FG: u32 = 0x8D8D8D; // gray 9
 const STATUS_BG: u32 = 0x111111;
 const STATUS_FG: u32 = 0xB4B4B4;
 const CURRENT_BG: u32 = 0x30A46C; // green 9
@@ -43,7 +39,6 @@ const BADGE_FG: u32 = 0x113264;
 const ACTIVITY: u32 = 0xFFCA16; // amber
 const BELL: u32 = 0xFF9592; // red 11
 const SCROLLED: u32 = 0xFFC53D;
-const SELECTION: u32 = 0x0D3868; // blue 5
 const ROAM_BG: u32 = 0x6E56CF; // violet 9
 
 pub struct Pane {
@@ -93,6 +88,7 @@ pub struct App {
     fonts: Fonts,
     font_size: f32,
     scale: f32,
+    theme: &'static Theme,
     panes: HashMap<PaneId, Pane>,
     workspaces: Vec<Workspace>,
     current: usize,
@@ -112,6 +108,10 @@ pub struct App {
     clipboard: Option<arboard::Clipboard>,
     /// Workspace tabs on the status line, for clicks.
     tabs: Vec<(Rect, usize)>,
+    palette: Option<crate::palette::Palette>,
+    menu: Option<overlay::Menu>,
+    /// What was run from the palette lately, the latest first.
+    recent: Vec<String>,
     saved_at: Instant,
     unsaved: bool,
     captions_at: Instant,
@@ -148,6 +148,7 @@ impl App {
     pub fn new(proxy: EventLoopProxy<()>, config: Config, session: Option<Session>) -> App {
         let (tx, rx) = channel();
         let font_size = config.font_size;
+        let theme = Theme::by_name(&config.theme);
         App {
             fonts: Fonts::new(font_size, font_size * 0.9),
             font_size,
@@ -160,6 +161,7 @@ impl App {
             surface: None,
             canvas: Canvas::new(),
             scale: 1.0,
+            theme,
             panes: HashMap::new(),
             workspaces: Vec::new(),
             current: 0,
@@ -176,6 +178,9 @@ impl App {
             last_click: None,
             clipboard: None,
             tabs: Vec::new(),
+            palette: None,
+            menu: None,
+            recent: Vec::new(),
             saved_at: Instant::now(),
             unsaved: false,
             captions_at: Instant::now() - Duration::from_secs(10),
@@ -188,8 +193,14 @@ impl App {
         (v * self.scale).round() as i32
     }
 
+    /// The status line's height: none unless the config asks for it, so
+    /// the panes run to the bottom edge and screen can have its own.
     fn status_h(&self) -> i32 {
-        self.fonts.ui.height + self.px(8.0)
+        if self.config.status_line {
+            self.fonts.ui.height + self.px(8.0)
+        } else {
+            0
+        }
     }
 
     fn caption_h(&self) -> i32 {
@@ -212,7 +223,7 @@ impl App {
         let reply: vt::Reply = Box::new(move |bytes: &[u8]| unsafe {
             libc::write(fd, bytes.as_ptr() as *const libc::c_void, bytes.len());
         });
-        let term = Terminal::new(cols, rows, self.config.scrollback, FG, BG, reply);
+        let term = Terminal::new(cols, rows, self.config.scrollback, self.theme, reply);
         let (tx, proxy, woken) = (self.tx.clone(), self.proxy.clone(), self.woken.clone());
         pty.read_on_thread(id, move |out| {
             let _ = tx.send(out);
@@ -541,13 +552,7 @@ impl App {
             return true;
         }
         if sup && !alt && !ctrl && code == KeyCode::KeyK {
-            if let Some(p) = self.focused().and_then(|f| self.panes.get_mut(&f)) {
-                p.term.clear();
-                // The shell draws its prompt again at the top.
-                p.pty.write(b"\x0c");
-                p.full = true;
-                self.redraw();
-            }
+            self.open_palette();
             return true;
         }
         if ctrl && shift && !alt {
@@ -584,6 +589,18 @@ impl App {
 
     fn key(&mut self, event: winit::event::KeyEvent, event_loop: &ActiveEventLoop) {
         let PhysicalKey::Code(code) = event.physical_key else { return };
+        if self.palette.is_some() {
+            if event.state == ElementState::Pressed {
+                self.palette_key(&event, event_loop);
+            }
+            return;
+        }
+        if self.menu.is_some() && event.state == ElementState::Pressed {
+            self.close_overlay();
+            if code == KeyCode::Escape {
+                return;
+            }
+        }
         if event.state == ElementState::Pressed && self.binding(code, event_loop) {
             return;
         }
@@ -637,8 +654,20 @@ impl App {
         })
     }
 
-    fn mouse_press(&mut self, button: MouseButton) {
+    fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
+        if self.overlay_click(button, event_loop) {
+            return;
+        }
         let (x, y) = self.pointer;
+        if button == MouseButton::Right {
+            if let Some((id, _)) = self.pane_at(x, y) {
+                if !self.roam_shown {
+                    self.set_focus(id);
+                }
+            }
+            self.open_menu();
+            return;
+        }
         if button == MouseButton::Left {
             if let Some(&(_, i)) = self.tabs.iter().find(|(r, _)| r.contains(x, y)) {
                 self.go_to(i);
@@ -678,6 +707,12 @@ impl App {
 
     fn mouse_move(&mut self, x: i32, y: i32) {
         self.pointer = (x, y);
+        if self.overlay_hover(x, y) {
+            if let Some(w) = &self.window {
+                w.set_cursor(CursorIcon::Default);
+            }
+            return;
+        }
         match &self.drag {
             Some(Drag::Divider(d)) => {
                 let fraction = match d.dir {
@@ -818,7 +853,7 @@ impl App {
         self.refresh_captions();
         let full = std::mem::take(&mut self.full);
         if full {
-            self.canvas.fill(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height }, DIVIDER);
+            self.canvas.fill(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height }, self.theme.divider());
             self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
         }
         let ids: Vec<PaneId> = if let Some(z) = self.ws().zoom {
@@ -831,12 +866,16 @@ impl App {
         let focus = self.focused();
         // Under the roaming terminal, panes are drawn only when all of it
         // is, so that what they write does not land on top of it.
-        if full || !self.roam_shown {
+        // Under the palette, the menu or the roaming terminal, panes are
+        // drawn only when all of it is, so that what they write does not
+        // land on top.
+        let floating = self.palette.is_some() || self.menu.is_some();
+        if full || !(self.roam_shown || floating) {
             for (n, id) in ids.iter().enumerate() {
                 self.draw_pane(*id, n + 1, full, Some(*id) == focus && !self.roam_shown);
             }
         }
-        if self.roam_shown {
+        if self.roam_shown && (full || !floating) {
             if let Some(r) = self.roam {
                 if full {
                     let rect = self.panes[&r].rect;
@@ -846,8 +885,12 @@ impl App {
                 self.draw_pane(r, 0, full, true);
             }
         }
-        if full {
+        if full && self.config.status_line {
             self.draw_status();
+        }
+        if full {
+            self.draw_palette();
+            self.draw_menu();
         }
         self.present();
     }
@@ -855,6 +898,7 @@ impl App {
     fn draw_pane(&mut self, id: PaneId, n: usize, full: bool, focused: bool) {
         let (cw, ch) = (self.fonts.cell_w, self.fonts.cell_h);
         let cap_h = self.caption_h();
+        let (sel, tfg) = (self.theme.selection, self.theme.fg);
         let Some(p) = self.panes.get_mut(&id) else { return };
         let full = full || p.full;
         p.full = false;
@@ -894,7 +938,7 @@ impl App {
                     std::mem::swap(&mut fg, &mut bg);
                 }
                 if c.selected {
-                    bg = SELECTION;
+                    bg = sel;
                 }
                 if c.flags & vt::FAINT != 0 {
                     fg = mix(bg, fg, 150);
@@ -912,7 +956,7 @@ impl App {
                 let (mut fg, bg) = colors(c);
                 let on_cursor = cursor.visible && focused && cursor.y == y && cursor.x as usize == x && cursor.style == sys::GHOSTTY_CURSOR_STYLE_BLOCK;
                 if on_cursor {
-                    canvas.fill(Rect { x: left, y: top, w: cw, h: ch }, cursor.color.unwrap_or(FG));
+                    canvas.fill(Rect { x: left, y: top, w: cw, h: ch }, cursor.color.unwrap_or(tfg));
                     fg = bg;
                 }
                 if c.flags & vt::INVISIBLE == 0 {
@@ -932,7 +976,7 @@ impl App {
             }
             if cursor.visible && cursor.y == y {
                 let left = content.x + cursor.x as i32 * cw;
-                let color = cursor.color.unwrap_or(FG);
+                let color = cursor.color.unwrap_or(tfg);
                 let t = (cw / 8).max(1);
                 if !focused || cursor.style == sys::GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW {
                     canvas.fill(Rect { x: left, y: top, w: cw, h: t }, color);
@@ -959,7 +1003,12 @@ impl App {
     fn draw_caption(&mut self, rect: Rect, n: usize, caption: &str, focused: bool, scrolled: bool, activity: bool) {
         let h = self.caption_h();
         let bar = Rect { x: rect.x, y: rect.y + rect.h - h, w: rect.w, h };
-        let (bg, fg) = if focused { (ACTIVE_BG, ACTIVE_FG) } else { (IDLE_BG, if activity { ACTIVITY } else { IDLE_FG }) };
+        let (bg, fg) = if focused {
+            self.theme.active_caption()
+        } else {
+            let (bg, fg) = self.theme.idle_caption();
+            (bg, if activity { ACTIVITY } else { fg })
+        };
         self.canvas.fill(bar, bg);
         let ty = bar.y + (h - self.fonts.ui.height) / 2;
         let pad = self.px(6.0) as f32;
@@ -970,7 +1019,7 @@ impl App {
             let w = self.fonts.ui.width(tag);
             let r = Rect { x: bar.x + bar.w - w - pad as i32, y: bar.y, w, h };
             self.canvas.fill(r, SCROLLED);
-            self.canvas.text(&mut self.fonts.ui, tag, r.x as f32, ty, ACTIVE_FG, r);
+            self.canvas.text(&mut self.fonts.ui, tag, r.x as f32, ty, 0x191111, r);
         }
         self.damage.push(bar);
     }
@@ -1088,6 +1137,8 @@ impl ApplicationHandler<()> for App {
         }
         self.window = Some(window);
         self.start();
+        self.load_recent();
+        self.set_title();
         self.relayout();
     }
 
@@ -1115,7 +1166,7 @@ impl ApplicationHandler<()> for App {
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } => self.key(event, event_loop),
             WindowEvent::CursorMoved { position, .. } => self.mouse_move(position.x as i32, position.y as i32),
-            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => self.mouse_press(button),
+            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => self.mouse_press(button, event_loop),
             WindowEvent::MouseInput { state: ElementState::Released, .. } => self.mouse_release(),
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {

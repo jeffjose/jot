@@ -8,7 +8,7 @@ use std::process::Command;
 
 use fontdue::{Font, FontSettings};
 
-const REGULAR: &[u8] = include_bytes!("../assets/FiraCode-Regular.ttf");
+const REGULAR: &[u8] = include_bytes!("../assets/FiraCode-Medium.ttf");
 const BOLD: &[u8] = include_bytes!("../assets/FiraCode-Bold.ttf");
 const UI: &[u8] = include_bytes!("../assets/Geist-Medium.ttf");
 

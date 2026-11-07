@@ -155,14 +155,32 @@ pub struct Config {
     pub font_size: f32,
     #[serde(default = "default_scrollback")]
     pub scrollback: usize,
+    /// A status line along the bottom: host, workspaces, clock.
+    #[serde(default)]
+    pub status_line: bool,
+    /// The colour theme, by name.
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// Folders whose folders are projects, offered by the palette to open
+    /// as workspaces.
+    #[serde(default = "default_projects")]
+    pub projects: Vec<String>,
     /// Workspaces to start with when there is no saved session.
     #[serde(default, rename = "workspace")]
     pub workspaces: Vec<WorkspaceSpec>,
 }
 
+fn default_theme() -> String {
+    "Dark Modern".into()
+}
+
+fn default_projects() -> Vec<String> {
+    ["~/scripts", "~/code", "~/src", "~/projects", "~/dev"].iter().map(|s| s.to_string()).collect()
+}
+
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), status_line: false, theme: default_theme(), projects: default_projects(), workspaces: Vec::new() }
     }
 }
 

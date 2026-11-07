@@ -12,6 +12,8 @@ pub mod sys {
 }
 use sys::*;
 
+use crate::theme::Theme;
+
 pub const BOLD: u16 = 1 << 0;
 pub const FAINT: u16 = 1 << 2;
 pub const INVERSE: u16 = 1 << 4;
@@ -82,7 +84,7 @@ unsafe extern "C" fn on_write_pty(_t: GhosttyTerminal, user: *mut c_void, data: 
 }
 
 impl Terminal {
-    pub fn new(cols: u16, rows: u16, scrollback: usize, fg: Rgb, bg: Rgb, reply: Reply) -> Terminal {
+    pub fn new(cols: u16, rows: u16, scrollback: usize, theme: &Theme, reply: Reply) -> Terminal {
         unsafe {
             let mut raw = null_mut();
             assert_eq!(ghostty_terminal_new(null(), &mut raw, cols.max(1), rows.max(1)), GHOSTTY_SUCCESS, "libghostty: terminal_new");
@@ -102,10 +104,25 @@ impl Terminal {
             let f: GhosttyTerminalWritePtyFn = Some(on_write_pty);
             ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_WRITE_PTY, f.map_or(null(), |f| f as *const c_void));
             ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollback as *const usize as *const c_void);
-            let (fg, bg) = (to_ghostty(fg), to_ghostty(bg));
-            ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &fg as *const _ as *const c_void);
-            ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg as *const _ as *const c_void);
+            term.set_theme(theme);
             term
+        }
+    }
+
+    /// The theme's colours: its ground, text and cursor, and its sixteen
+    /// colours over the top of the usual 256.
+    pub fn set_theme(&mut self, theme: &Theme) {
+        unsafe {
+            let (fg, bg, cursor) = (to_ghostty(theme.fg), to_ghostty(theme.bg), to_ghostty(theme.cursor));
+            ghostty_terminal_set(self.raw, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &fg as *const _ as *const c_void);
+            ghostty_terminal_set(self.raw, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg as *const _ as *const c_void);
+            ghostty_terminal_set(self.raw, GHOSTTY_TERMINAL_OPT_COLOR_CURSOR, &cursor as *const _ as *const c_void);
+            let mut palette = [GhosttyColorRgb { r: 0, g: 0, b: 0 }; 256];
+            ghostty_terminal_get(self.raw, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT, palette.as_mut_ptr() as *mut c_void);
+            for (i, c) in theme.ansi.iter().enumerate() {
+                palette[i] = to_ghostty(*c);
+            }
+            ghostty_terminal_set(self.raw, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, palette.as_ptr() as *const c_void);
         }
     }
 

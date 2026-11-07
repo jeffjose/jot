@@ -7,7 +7,9 @@ mod font;
 mod keys;
 mod layout;
 mod persist;
+mod palette;
 mod pty;
+mod theme;
 mod vt;
 
 use winit::event_loop::EventLoop;

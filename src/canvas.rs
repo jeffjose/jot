@@ -47,6 +47,42 @@ impl Canvas {
         }
     }
 
+    /// A rectangle with rounded corners, its edges smoothed, laid over
+    /// what is there at `alpha` (0 to 255).
+    pub fn round_fill(&mut self, r: Rect, radius: i32, color: u32, alpha: u32) {
+        let radius = radius.min(r.w / 2).min(r.h / 2).max(0);
+        let rad = radius as f32;
+        for y in r.y.max(0)..(r.y + r.h).min(self.height) {
+            let row = (y * self.width) as usize;
+            for x in r.x.max(0)..(r.x + r.w).min(self.width) {
+                // Distance into a corner's curve, for the pixels in one.
+                let (dx, dy) = (
+                    if x < r.x + radius { (r.x + radius) as f32 - (x as f32 + 0.5) } else if x >= r.x + r.w - radius { (x as f32 + 0.5) - (r.x + r.w - radius) as f32 } else { 0.0 },
+                    if y < r.y + radius { (r.y + radius) as f32 - (y as f32 + 0.5) } else if y >= r.y + r.h - radius { (y as f32 + 0.5) - (r.y + r.h - radius) as f32 } else { 0.0 },
+                );
+                let cover = if dx > 0.0 && dy > 0.0 { (rad + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0) } else { 1.0 };
+                let a = (cover * alpha as f32) as u32;
+                if a > 0 {
+                    let p = &mut self.pixels[row + x as usize];
+                    *p = blend(*p, color, a);
+                }
+            }
+        }
+    }
+
+    /// A floating panel, as jog draws its menus: a soft shadow, a thin
+    /// edge, and a faint light along the top.
+    pub fn panel(&mut self, r: Rect, radius: i32, fill: u32, edge: u32) {
+        let spread = (radius * 3 / 2).clamp(6, 16);
+        for i in (1..=spread).step_by(2) {
+            let s = Rect { x: r.x - i, y: r.y - i + spread / 3, w: r.w + 2 * i, h: r.h + 2 * i };
+            self.round_fill(s, radius + i, 0x000000, (28 * (spread - i + 1) / spread) as u32);
+        }
+        self.round_fill(r, radius, edge, 255);
+        self.round_fill(Rect { x: r.x + 1, y: r.y + 1, w: r.w - 2, h: r.h - 2 }, radius - 1, fill, 255);
+        self.round_fill(Rect { x: r.x + radius, y: r.y + 1, w: r.w - 2 * radius, h: 1 }, 0, 0xFFFFFF, 18);
+    }
+
     /// A glyph's coverage laid over the canvas in `color`, its cell's top
     /// left at `(x, y)`, kept inside `clip`.
     pub fn glyph(&mut self, g: &Glyph, x: i32, y: i32, color: u32, clip: Rect) {
