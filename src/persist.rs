@@ -371,7 +371,7 @@ mod tests {
         let node = s.workspaces[1].build(&mut |_| 9);
         assert!(matches!(node, Node::Split { dir: Dir::Down, .. }));
         // And back.
-        let spec = spec(&node, &|_| ("claude".into(), None));
+        let spec = spec(&node, &|_| ("claude".into(), None, Vec::new()));
         let text = toml::to_string(&WorkspaceSpec { name: "x".into(), cwd: None, panes: vec![], split: None, layout: Some(spec), ..Default::default() }).unwrap();
         let back: WorkspaceSpec = toml::from_str(&text).unwrap();
         assert!(matches!(back.layout, Some(Spec::Down { ref h, .. }) if h.len() == 2), "{text}");
