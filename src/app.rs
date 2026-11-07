@@ -825,7 +825,7 @@ impl App {
 
 
     /// While typing into several, a pane left out, or taken back in.
-    fn toggle_multi_pane(&mut self, id: PaneId) {
+    pub(super) fn toggle_multi_pane(&mut self, id: PaneId) {
         let Some(into) = self.typed_into(id) else { return };
         let ws = &mut self.workspaces[self.current];
         if into {
@@ -1092,9 +1092,13 @@ impl App {
             // Typing is beginning fresh: the offer of the last session goes.
             self.dismiss_offer();
         }
+        // Ctrl Backspace at a shell prompt: a word rubbed out, as Alt
+        // Backspace (Esc DEL) is to tcsh, bash and zsh. In programs it is
+        // left as it is.
+        let word_back = code == KeyCode::Backspace && m.control_key() && !m.alt_key() && !m.shift_key() && event.state != ElementState::Released;
         for target in self.input_targets(id) {
             let Some(p) = self.panes.get_mut(&target) else { continue };
-            let bytes = p.term.encode_key(crate::keys::ghostty(code), mods, action, text, unshifted);
+            let bytes = if word_back && p.shell.at_prompt { b"\x1b\x7f".to_vec() } else { p.term.encode_key(crate::keys::ghostty(code), mods, action, text, unshifted) };
             if crate::debug() && event.state == ElementState::Pressed && target == id {
                 eprintln!("key {code:?} mods {m:?} text {:?} logical {logical:?} unshifted {unshifted:#x} -> {bytes:?}", event.text.as_deref());
             }
@@ -1171,6 +1175,12 @@ impl App {
                 self.mouse_held = Some((id, b));
                 self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_PRESS, Some(b));
                 return;
+            }
+        }
+        // A tag on a caption, right clicked: what can be done with it.
+        if button == MouseButton::Right {
+            if let Some((id, kind)) = self.multi_tags.iter().find(|(r, _, _)| r.contains(x, y)).map(|(_, id, kind)| (*id, *kind)) {
+                return self.open_tag_menu(id, kind);
             }
         }
         if button == MouseButton::Right {

@@ -44,7 +44,7 @@ Keys:
   Ctrl w, Alt x        close pane
   Ctrl Shift t         reopen closed pane
   Alt Shift f          focus pane / show all
-  Alt Shift m          type into multiple panes
+  Alt Shift m          multi: type into every pane
   Alt ;                pane command line: run, or queue behind what runs
   Alt Shift o          move pane to a new window, and back
   Alt arrows, Alt =    resize pane, equalize pane sizes

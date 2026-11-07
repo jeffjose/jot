@@ -36,6 +36,14 @@ pub enum Action {
     CopyOutput,
     CopyCommand,
     CommandLine,
+    /// From a caption's tags, for the pane with this id: typing into
+    /// several, a tee, a filter.
+    MultiSkip(u64),
+    MultiAll,
+    TeeStop(u64),
+    TeeOpen(u64),
+    TeeCopyPath(u64),
+    FilterStop(u64),
     Settings,
     Palette,
     /// Opens the n-th submenu of the right-click menu.

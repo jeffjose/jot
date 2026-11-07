@@ -103,7 +103,13 @@ impl App {
                 }
             }
         }
-        items.extend(palette::commands());
+        // Commands with a state named by what they do now: Start or Stop.
+        items.extend(palette::commands().into_iter().map(|mut i| {
+            if let Some(label) = self.state_label(&i.action) {
+                i.label = label.into();
+            }
+            i
+        }));
         let roots: Vec<PathBuf> = self.config.projects.iter().map(|p| persist::expand(p)).collect();
         let open: Vec<String> = self.workspaces.iter().map(|w| w.name.clone()).collect();
         for dir in palette::projects(&roots) {
@@ -298,6 +304,25 @@ impl App {
             Action::CopyOutput => self.copy_output_at(self.menu_at),
             Action::CopyCommand => self.copy_command_at(self.menu_at),
             Action::CommandLine => self.toggle_bar(),
+            Action::MultiSkip(id) => self.toggle_multi_pane(id),
+            Action::MultiAll => {
+                if let Some(ws) = self.workspaces.get_mut(self.current) {
+                    ws.left_out.clear();
+                }
+                self.refresh_panes();
+            }
+            Action::TeeStop(id) => self.stop_tee(id),
+            Action::TeeOpen(id) => {
+                if let Some(path) = self.panes.get(&id).and_then(|p| p.tee.as_ref()).map(|t| t.path.clone()) {
+                    automate::run_detached(&format!("xdg-open '{}'", path.display().to_string().replace('\'', "")), &pty::home(), &[]);
+                }
+            }
+            Action::TeeCopyPath(id) => {
+                if let Some(path) = self.panes.get(&id).and_then(|p| p.tee.as_ref()).map(|t| t.path.display().to_string()) {
+                    self.clip_set(path, false);
+                }
+            }
+            Action::FilterStop(id) => self.stop_filter(id),
             Action::Palette => self.open_palette(),
             Action::Submenu(_) => {}
             Action::StatusLine => {
@@ -395,12 +420,12 @@ impl App {
         ]);
         let children = vec![
             vec![
-                c(if self.ws().zoom.is_some() { "Show all panes" } else { "Focus pane" }, "Alt Shift F", Action::Zoom),
+                c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom),
                 c("New pane", "Ctrl T", Action::NewPane),
                 c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
                 c("Move to new window", "Alt Shift O", Action::PopOut),
                 c("Command line", "Alt ;", Action::CommandLine),
-                c("Type into multiple panes", "Alt Shift M", Action::Broadcast),
+                c(self.state_label(&Action::Broadcast).unwrap_or_default(), "Alt Shift M", Action::Broadcast),
                 None,
                 c("Clear terminal", "", Action::Clear),
             ],
@@ -616,5 +641,55 @@ impl App {
         if let (Some(w), Some(ws)) = (&self.window, self.workspaces.get(self.current)) {
             w.set_title(&format!("{} · jterm", ws.name));
         }
+    }
+}
+
+impl App {
+    /// The menu for a tag on a pane's caption, at the pointer.
+    pub(super) fn open_tag_menu(&mut self, id: PaneId, kind: super::watch::Tag) {
+        use super::watch::Tag;
+        let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
+        let mut items: Vec<Option<Item>> = match kind {
+            Tag::Multi => {
+                let skipped = self.typed_into(id) == Some(false);
+                let any_skipped = self.workspaces.get(self.current).is_some_and(|w| !w.left_out.is_empty());
+                vec![
+                    c("Stop multi", "Alt Shift M", Action::Broadcast),
+                    None,
+                    c(if skipped { "Include this pane" } else { "Skip this pane" }, "click", Action::MultiSkip(id)),
+                    if any_skipped { c("Include all panes", "", Action::MultiAll) } else { None },
+                ]
+            }
+            Tag::Tee => {
+                let name = self.panes.get(&id).and_then(|p| p.tee.as_ref()).and_then(|t| t.path.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                vec![c(&format!("Stop writing to {name}"), "click", Action::TeeStop(id)), None, c(&format!("Open {name}"), "", Action::TeeOpen(id)), c("Copy its path", "", Action::TeeCopyPath(id))]
+            }
+            Tag::Filter => vec![c("Stop filtering", "click", Action::FilterStop(id))],
+        };
+        while matches!(items.last(), Some(None)) {
+            items.pop();
+        }
+        self.palette = None;
+
+        self.menu_at = self.pointer;
+        self.menu = Some(Menu { items, at: self.pointer, hover: None, children: Vec::new(), open: None });
+        self.full = true;
+        self.redraw();
+    }
+}
+
+impl App {
+    /// What a command that turns something on and off is called now: by
+    /// what it would do.
+    pub(super) fn state_label(&self, action: &Action) -> Option<&'static str> {
+        Some(match action {
+            Action::Broadcast if self.ws().broadcast => "Stop multi",
+            Action::Broadcast => "Start multi",
+            Action::Zoom if self.ws().zoom.is_some() => "Unfocus pane",
+            Action::Zoom => "Focus pane",
+            Action::StatusLine if self.config.status_line => "Hide status line",
+            Action::StatusLine => "Show status line",
+            _ => return None,
+        })
     }
 }

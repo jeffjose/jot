@@ -94,14 +94,14 @@ impl App {
             Command::new("split", "Split right", Does::Act(Action::Split(Dir::Across))),
             Command::new("split-down", "Split down", Does::Act(Action::Split(Dir::Down))),
             if self.ws().zoom.is_some() {
-                Command::new("unfocus", "Show all panes", Does::Act(Action::Zoom))
+                Command::new("unfocus", "Unfocus pane: show all", Does::Act(Action::Zoom))
             } else {
-                Command::new("focus", "Show this pane alone", Does::Act(Action::Zoom))
+                Command::new("focus", "Focus pane: this one alone", Does::Act(Action::Zoom))
             },
             if self.ws().broadcast {
-                Command::new("multi", "Back to typing into one pane", Does::Act(Action::Broadcast))
+                Command::new("multi", "Stop multi", Does::Act(Action::Broadcast))
             } else {
-                Command::new("multi", "Type into multiple panes", Does::Act(Action::Broadcast))
+                Command::new("multi", "Start multi: type into every pane", Does::Act(Action::Broadcast))
             },
             Command::new("new-workspace", "New workspace in this folder", Does::Act(Action::NewWorkspace)),
             Command::new("rename", "Rename this workspace", Does::Rename),
