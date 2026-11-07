@@ -32,6 +32,7 @@ mod automate;
 mod bar;
 mod commands;
 mod copymode;
+mod info;
 mod dnd;
 mod find;
 mod links;
@@ -83,6 +84,8 @@ pub struct Pane {
     /// A picture has been sent to it (kitty graphics): only then are its
     /// pictures looked for, each frame.
     has_images: bool,
+    /// Text to be printed into its terminal, by jterm, as /info is.
+    print: Option<info::Print>,
 }
 
 /// A pane closed, to bring back.
@@ -161,6 +164,8 @@ pub struct App {
     /// A pane's own command line, open, and where its buttons are.
     bar: Option<bar::Bar>,
     bar_hits: Vec<(Rect, PaneId, bar::BarHit)>,
+    /// Which of them the pointer is on, to light it.
+    bar_lit: Option<usize>,
     /// Commands run now from a bar, as they end: pane, output, status.
     ran: Arc<std::sync::Mutex<Vec<(PaneId, String, i32)>>>,
     last_click: Option<(Instant, (u16, u16), u8)>,
@@ -291,6 +296,7 @@ impl App {
             slash: None,
             bar: None,
             bar_hits: Vec::new(),
+            bar_lit: None,
             ran: Default::default(),
             last_click: None,
             clipboard: None,
@@ -378,7 +384,7 @@ impl App {
         let caption = folder_name(&start.cwd);
         self.panes.insert(
             id,
-            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false },
+            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None },
         );
         id
     }
@@ -1216,7 +1222,7 @@ impl App {
                 }
             }
             None => {
-                if self.handle_hover(x, y) {
+                if self.bar_hover(x, y) || self.handle_hover(x, y) {
                     return;
                 }
                 self.update_link();
@@ -1948,7 +1954,8 @@ impl ApplicationHandler<()> for App {
         for id in &due {
             self.queue_tick(*id);
         }
-        let soon = if due.is_empty() { Duration::from_secs(1) } else { Duration::from_millis(50) };
+        let printing = self.print_tick();
+        let soon = if due.is_empty() && !printing { Duration::from_secs(1) } else { Duration::from_millis(50) };
         event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + soon));
         if self.captions_at.elapsed() >= Duration::from_secs(1) {
             self.redraw();

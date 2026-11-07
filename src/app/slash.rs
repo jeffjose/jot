@@ -31,6 +31,8 @@ pub enum Does {
     Cwd,
     /// The pane's running job: Ctrl C to it, or killed.
     Stop,
+    /// What is running in the pane, and the pane itself.
+    Info,
     Kill,
 }
 
@@ -79,6 +81,7 @@ impl App {
     pub(super) fn slash_commands(&self) -> Vec<Command> {
         let mut all = vec![
             Command::new("settings", "Open settings", Does::Act(Action::Settings)),
+            Command::new("info", "What this pane is running: pid, time, memory", Does::Info),
             Command::new("split", "Split right", Does::Act(Action::Split(Dir::Across))),
             Command::new("split-down", "Split down", Does::Act(Action::Split(Dir::Down))),
             if self.ws().zoom.is_some() {
@@ -420,6 +423,7 @@ impl App {
             Does::Insert(text) => self.slash_insert(id, &text),
             Does::Run(cmd) => write(self, format!("{cmd}\r").as_bytes()),
             Does::Stop => self.stop_job(id),
+            Does::Info => self.print_info(id),
             Does::Kill => self.kill_job(id),
             Does::Date => self.slash_insert(id, &date_today()),
             Does::Cwd => {
@@ -509,7 +513,7 @@ fn kind_of(d: &Does) -> &'static str {
         Does::Cd => "go",
         Does::Insert(_) | Does::Date | Does::Cwd => "insert",
         Does::Run(_) => "run",
-        Does::Stop | Does::Kill => "job",
+        Does::Stop | Does::Kill | Does::Info => "job",
     }
 }
 

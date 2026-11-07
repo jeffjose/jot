@@ -39,7 +39,8 @@ pub struct Shell {
     /// A prompt came: the next in the queue goes once the shell's line
     /// editor is reading, so that it is not echoed twice.
     pub queue_due: bool,
-    /// What was run from the pane's command line, oldest first.
+    /// What the pane ran, oldest first: at its prompt, from its command
+    /// line, from its queue.
     pub history: Vec<String>,
     /// A command run now, beside the shell: its line, what it printed so
     /// far, and its exit status once it ended.
@@ -109,6 +110,16 @@ impl App {
                     // the row before it.
                     let end = row.saturating_sub(1).max(start);
                     p.shell.blocks.push(Block { row: start, end, exit, took, command: line.trim().to_string() });
+                    // Every command the pane ran is in its history, however it
+                    // was typed: at the prompt, in its command line, queued.
+                    let cmd = line.trim().to_string();
+                    if !cmd.is_empty() {
+                        p.shell.history.retain(|h| *h != cmd);
+                        p.shell.history.push(cmd);
+                        if p.shell.history.len() > 500 {
+                            p.shell.history.remove(0);
+                        }
+                    }
                     if p.shell.blocks.len() > 2000 {
                         p.shell.blocks.remove(0);
                     }

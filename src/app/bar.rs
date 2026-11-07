@@ -36,31 +36,37 @@ pub enum BarHit {
 }
 
 const QUEUE_SHOWN: usize = 5;
-const OUTPUT_SHOWN: usize = 6;
+const OUTPUT_SHOWN: usize = 10;
 
 impl App {
     fn bar_row_h(&self) -> i32 {
         self.fonts.ui.height + self.px(12.0)
     }
 
-    /// How many rows the bar takes at the bottom of a pane: none, one for
-    /// the strip a waiting queue leaves, or the whole bar when it is open.
-    fn bar_rows(&self, id: PaneId) -> usize {
-        let Some(p) = self.panes.get(&id) else { return 0 };
+    /// The rows the bar takes at the bottom of a pane: its own rows (the
+    /// strip a waiting queue leaves, or the open bar's), and the lines of
+    /// output it shows, which are set closer, as a terminal's.
+    fn bar_rows(&self, id: PaneId) -> (usize, usize) {
+        let Some(p) = self.panes.get(&id) else { return (0, 0) };
         let s = &p.shell;
         if self.bar.as_ref().is_some_and(|b| b.pane == id) {
-            let out = s.ran.as_ref().map_or(0, |(_, text, _)| 1 + text.lines().count().clamp(1, OUTPUT_SHOWN));
-            1 + s.queue.len().min(QUEUE_SHOWN) + out
+            let (head, out) = s.ran.as_ref().map_or((0, 0), |(_, text, _)| (1, text.lines().count().clamp(1, OUTPUT_SHOWN)));
+            (1 + s.queue.len().min(QUEUE_SHOWN) + head, out)
         } else {
-            usize::from(!s.queue.is_empty())
+            (usize::from(!s.queue.is_empty()), 0)
         }
+    }
+
+    /// The height of a line of output in the bar.
+    fn bar_line_h(&self) -> i32 {
+        self.fonts.mono.height + self.px(4.0)
     }
 
     /// The height the bar takes from a pane.
     pub(super) fn bar_height(&self, id: PaneId) -> i32 {
         match self.bar_rows(id) {
-            0 => 0,
-            n => n as i32 * self.bar_row_h() + self.px(6.0),
+            (0, 0) => 0,
+            (rows, out) => rows as i32 * self.bar_row_h() + out as i32 * self.bar_line_h() + self.px(if out > 0 { 12.0 } else { 6.0 }),
         }
     }
 
@@ -256,6 +262,14 @@ impl App {
                 self.stop_job(id);
                 self.close_bar();
             }
+            Does::Info => {
+                self.bar_info(id);
+                if let Some(b) = &mut self.bar {
+                    b.field = TextField::default();
+                    b.selected = 0;
+                }
+                self.bar_changed();
+            }
             Does::Kill => {
                 self.kill_job(id);
                 self.close_bar();
@@ -418,6 +432,7 @@ impl App {
         let px = |v: f32| (v * scale).round() as i32;
         let (uh, sh) = (self.fonts.ui.height, self.fonts.small.height);
         let row_h = self.bar_row_h();
+        let (mh, line_h) = (self.fonts.mono.height, self.bar_line_h());
         let open = self.bar.as_ref().is_some_and(|b| b.pane == id);
         self.bar_hits.retain(|(_, p, _)| *p != id);
         self.canvas.fill(area, c.side);
@@ -474,9 +489,10 @@ impl App {
             let lines: Vec<&str> = text.lines().collect();
             let shown = &lines[lines.len().saturating_sub(OUTPUT_SHOWN)..];
             for line in shown.iter().copied().chain(std::iter::once("").take(usize::from(shown.is_empty()))) {
-                self.canvas.text_fit(&mut self.fonts.ui, line, area.x + pad, y + (row_h - uh) / 2, area.w - pad * 2, c.text, area);
-                y += row_h;
+                self.canvas.text_fit(&mut self.fonts.mono, line, area.x + pad, y + (line_h - mh) / 2, area.w - pad * 2, c.text, area);
+                y += line_h;
             }
+            y += px(6.0);
         }
         // The queue, each with run now and remove.
         for (i, cmd) in queue.iter().enumerate().take(QUEUE_SHOWN) {
@@ -534,5 +550,29 @@ impl App {
             p.shell.queue_due = false;
             self.run_next(id);
         }
+    }
+}
+
+impl App {
+    /// The pointer over a bar's buttons: the one under it lit, and the
+    /// hand. True when it is on one.
+    pub(super) fn bar_hover(&mut self, x: i32, y: i32) -> bool {
+        let at = self.bar_hits.iter().position(|(r, _, _)| r.contains(x, y));
+        if at != self.bar_lit {
+            for i in [self.bar_lit, at].into_iter().flatten() {
+                if let Some(p) = self.bar_hits.get(i).and_then(|(_, id, _)| self.panes.get_mut(id)) {
+                    p.full = true;
+                }
+            }
+            self.bar_lit = at;
+            self.full = true;
+            self.redraw();
+        }
+        if at.is_some() {
+            if let Some(w) = &self.window {
+                w.set_cursor(CursorIcon::Pointer);
+            }
+        }
+        at.is_some()
     }
 }

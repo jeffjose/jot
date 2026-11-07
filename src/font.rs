@@ -81,6 +81,9 @@ pub struct Fonts {
     pub ui: UiFont,
     pub heading: UiFont,
     pub small: UiFont,
+    /// The terminal's font for jterm's own use, where a command's output
+    /// is shown outside a terminal.
+    pub mono: UiFont,
 }
 
 /// The file fontconfig has for `family` in a weight, if it has that family
@@ -228,6 +231,7 @@ impl Fonts {
         let px = choice.size * scale;
         let ui_px = choice.ui_size * scale;
         let (regular, bold) = terminal_font(&choice.family, choice.bold);
+        let mono = UiFont::new(&regular, choice.size * scale, choice.lcd);
         let m = regular.font.horizontal_line_metrics(px).expect("line metrics");
         let cell_w = regular.font.metrics('M', px).advance_width.round().max(1.0) as i32;
         let natural = m.ascent - m.descent + m.line_gap;
@@ -254,6 +258,7 @@ impl Fonts {
             heading: UiFont::new(&ui, ui_px * 1.3, choice.lcd),
             small: UiFont::new(&ui, ui_px * 0.88, choice.lcd),
             ui: UiFont::new(&ui, ui_px, choice.lcd),
+            mono,
         }
     }
 
