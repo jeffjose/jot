@@ -15,7 +15,7 @@ the rows that changed.
 
 ## Build
 
-It needs Zig 0.17 to build libghostty-vt, and libclang for its bindings.
+It needs Zig 0.17 to build libghostty-vt.
 
 ```sh
 git clone --recurse-submodules git@github.com:jeffjose/jterm.git

@@ -17,8 +17,12 @@ arboard = { version = "3", default-features = false, features = ["wayland-data-c
 
 [build-dependencies]
 vergen-gitcl = "10.0.3"
-# The C API of libghostty-vt, read from its headers as it is built.
-bindgen = "0.72"
+# Only to make src/ghostty_sys.rs again from libghostty-vt's headers,
+# which needs libclang; the build uses the file as it is.
+bindgen = { version = "0.72", optional = true }
+
+[features]
+bindgen = ["dep:bindgen"]
 
 # As jog and hotshot have it: no cross-crate LTO, Cargo's own 16 codegen
 # units, for rebuilds in seconds.

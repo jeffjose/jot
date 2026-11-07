@@ -1,7 +1,7 @@
 //! Builds libghostty-vt from the Ghostty source in vendor/ghostty (the
-//! vt-1.0.0 tag, a git submodule) with Zig, links it in statically, and
-//! reads its C API into Rust with bindgen. Also tells the build which
-//! commit it is of, for `jterm --version`.
+//! vt-1.0.0 tag, a git submodule) with Zig and links it in statically.
+//! Its C API, read into Rust, is kept in src/ghostty_sys.rs. Also tells
+//! the build which commit it is of, for `jterm --version`.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -42,6 +42,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-link-search=native={}", prefix.join("lib").display());
     println!("cargo:rustc-link-lib=static=ghostty-vt");
 
+    #[cfg(feature = "bindgen")]
+    bindings(&prefix)?;
+    Ok(())
+}
+
+/// The C API read into Rust, for src/ghostty_sys.rs: only with
+/// `--features bindgen`, which needs libclang.
+#[cfg(feature = "bindgen")]
+fn bindings(prefix: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     let bindings = bindgen::Builder::default()
         .header(prefix.join("include/ghostty/vt.h").to_string_lossy())
         .clang_arg(format!("-I{}", prefix.join("include").display()))

@@ -8,7 +8,7 @@ use std::ptr::{null, null_mut};
 
 #[allow(non_upper_case_globals, non_camel_case_types, non_snake_case, dead_code, clippy::all)]
 pub mod sys {
-    include!(concat!(env!("OUT_DIR"), "/ghostty.rs"));
+    include!("ghostty_sys.rs");
 }
 use sys::*;
 
