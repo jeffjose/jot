@@ -28,6 +28,8 @@ pub enum Output {
     TeeEnd(u64, u64, String),
     /// What its program is doing, changed.
     Proc(u64, Proc),
+    /// Another machine's session reached again, with what it holds.
+    Back(Vec<crate::mux::Held>),
     /// The session the panes were in ended.
     Gone,
 }

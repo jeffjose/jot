@@ -709,6 +709,7 @@ impl App {
     pub(super) fn set_title(&self) {
         if let (Some(w), Some(ws)) = (&self.window, self.workspaces.get(self.current)) {
             match &self.mux.host {
+                Some(host) if !self.mux.connected() => w.set_title(&format!("{} · {host}, reconnecting… · jot", ws.name)),
                 Some(host) => w.set_title(&format!("{} · {host} · jot", ws.name)),
                 None => w.set_title(&format!("{} · jot", ws.name)),
             }

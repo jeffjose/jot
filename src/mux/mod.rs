@@ -50,7 +50,9 @@ pub struct TeeState {
 
 /// What the window says to the session.
 pub enum ToServer {
-    Hello { proto: u32 },
+    /// `window` names the window for as long as it is open; `again`: it
+    /// is reconnecting, and wants back only the panes it had.
+    Hello { proto: u32, window: u64, again: bool },
     /// A new pane; the session names it, in Spawned.
     Spawn { cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32) },
     Input { pane: u64, bytes: Vec<u8> },
@@ -217,7 +219,7 @@ impl ToServer {
     fn encode(&self) -> Vec<u8> {
         let mut o = Out::default();
         match self {
-            ToServer::Hello { proto } => o.u8(0).u32(*proto),
+            ToServer::Hello { proto, window, again } => o.u8(0).u32(*proto).u64(*window).u8(*again as u8),
             ToServer::Spawn { cmd, cwd, cols, rows, px } => o.u8(1).str(cmd).str(cwd).u16(*cols).u16(*rows).u32(px.0).u32(px.1),
             ToServer::Input { pane, bytes } => o.u8(2).u64(*pane).bytes(bytes),
             ToServer::Resize { pane, cols, rows, px } => o.u8(3).u64(*pane).u16(*cols).u16(*rows).u32(px.0).u32(px.1),
@@ -235,7 +237,7 @@ impl ToServer {
     fn decode(f: &[u8]) -> io::Result<ToServer> {
         let mut i = In(f);
         Ok(match i.u8()? {
-            0 => ToServer::Hello { proto: i.u32()? },
+            0 => ToServer::Hello { proto: i.u32()?, window: i.u64().unwrap_or(0), again: i.u8().unwrap_or(0) != 0 },
             1 => ToServer::Spawn { cmd: i.str()?, cwd: i.str()?, cols: i.u16()?, rows: i.u16()?, px: (i.u32()?, i.u32()?) },
             2 => ToServer::Input { pane: i.u64()?, bytes: i.bytes()? },
             3 => ToServer::Resize { pane: i.u64()?, cols: i.u16()?, rows: i.u16()?, px: (i.u32()?, i.u32()?) },
@@ -406,6 +408,11 @@ pub enum Heard {
     TeeLines(u64, u64),
     TeeEnd(u64, u64, String),
     Proc(u64, crate::pty::Proc),
+    /// Another machine's session reached again, after the connection
+    /// dropped: the panes it holds for this window.
+    Back(Vec<Held>),
+    /// The connection to the session ended: on another machine, it is
+    /// reached again ([`Client::reconnect`]).
     /// The session ended under the window.
     Gone,
 }
@@ -424,6 +431,14 @@ pub struct Client {
     pub host: Option<String>,
     /// ssh, for a session on another machine.
     ssh: Mutex<Option<std::process::Child>>,
+    /// Whether the session can be reached now. A session on another
+    /// machine whose connection dropped is reached again, unseen; until
+    /// then, what is typed waits here.
+    connected: AtomicBool,
+    waiting: Mutex<Vec<(u64, Vec<u8>)>>,
+    /// Where what the session says goes, kept to be given again on
+    /// reconnecting.
+    hear: Arc<dyn Fn(Heard) + Send + Sync>,
 }
 
 /// The session taken up: the window's end of it, the workspaces and panes
@@ -440,7 +455,8 @@ pub struct Attached {
 impl Client {
     /// The machine's session, started if it is not running. `hear` is
     /// given what it says from then on, on a thread of its own.
-    pub fn open(hear: impl Fn(Heard) + Send + 'static) -> io::Result<Attached> {
+    pub fn open(hear: impl Fn(Heard) + Send + Sync + 'static) -> io::Result<Attached> {
+        let hear: Arc<dyn Fn(Heard) + Send + Sync> = Arc::new(hear);
         let path = socket();
         let (stream, layout, panes, fresh) = match UnixStream::connect(&path) {
             Ok(s) => {
@@ -461,14 +477,15 @@ impl Client {
         }
         let (tx, rx) = channel();
         let reader = stream.try_clone()?;
-        std::thread::Builder::new().name("mux".into()).spawn(move || listen(Box::new(reader), tx, hear))?;
-        let client = Client { writer: Mutex::new(Box::new(stream)), spawned: Mutex::new(rx), detached: AtomicBool::new(false), mute: AtomicBool::new(false), host: None, ssh: Mutex::new(None) };
+        let h = hear.clone();
+        std::thread::Builder::new().name("mux".into()).spawn(move || listen(Box::new(reader), tx, h))?;
+        let client = Client { writer: Mutex::new(Box::new(stream)), spawned: Mutex::new(rx), detached: AtomicBool::new(false), mute: AtomicBool::new(false), host: None, ssh: Mutex::new(None), connected: AtomicBool::new(true), waiting: Mutex::new(Vec::new()), hear };
         Ok(Attached { client: Arc::new(client), layout, panes, notes, fresh })
     }
 
     fn hello(mut s: UnixStream) -> io::Result<(UnixStream, String, Vec<Held>)> {
         s.set_read_timeout(Some(Duration::from_secs(5)))?;
-        s.write_all(&ToServer::Hello { proto: PROTO }.encode())?;
+        s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again: false }.encode())?;
         let f = read_frame(&mut s)?;
         s.set_read_timeout(None)?;
         match ToClient::decode(&f) {
@@ -493,6 +510,16 @@ impl Client {
     }
 
     fn send(&self, m: ToServer) {
+        if !self.connected.load(Ordering::Acquire) {
+            // Keys wait for the connection (a little of them); the rest is
+            // said again, as it is then, on reconnecting.
+            if let (ToServer::Input { pane, bytes }, Ok(mut w)) = (m, self.waiting.lock()) {
+                if w.iter().map(|(_, b)| b.len()).sum::<usize>() < 64 << 10 {
+                    w.push((pane, bytes));
+                }
+            }
+            return;
+        }
         if let Ok(mut w) = self.writer.lock() {
             let _ = w.write_all(&m.encode());
         }
@@ -550,7 +577,7 @@ impl Client {
     }
 }
 
-fn listen(mut r: Box<dyn Read + Send>, spawned: Sender<(u64, i32)>, hear: impl Fn(Heard)) {
+fn listen(mut r: Box<dyn Read + Send>, spawned: Sender<(u64, i32)>, hear: Arc<dyn Fn(Heard) + Send + Sync>) {
     loop {
         let Ok(f) = read_frame(&mut r) else { break };
         match ToClient::decode(&f) {
@@ -626,54 +653,130 @@ pub fn command(args: &[String]) -> i32 {
     }
 }
 
+/// A session on another machine reached: ssh's ends, ssh itself, and what
+/// the session holds for this window.
+type Reached = (std::process::ChildStdin, std::process::ChildStdout, std::process::Child, String, Vec<Held>);
+
+/// ssh to `host`, `jot bridge` there, and hello.
+fn reach(host: &str, again: bool) -> io::Result<Reached> {
+    use std::process::{Command, Stdio};
+    // jot where the user put it: on the PATH, ~/.local/bin, or mise's.
+    let remote = "exec env PATH=\"$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:$PATH\" jot bridge";
+    // Alive checks every 5 s, two missed: a dead connection is known in
+    // about ten seconds, and reached again.
+    let mut child = Command::new("ssh")
+        .args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", host, remote])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut w = child.stdin.take().unwrap();
+    let mut r = child.stdout.take().unwrap();
+    // What ssh or the far side says when it fails, kept for the error.
+    let said = Arc::new(Mutex::new(String::new()));
+    if let Some(mut e) = child.stderr.take() {
+        let said = said.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = e.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut s) = said.lock() {
+                    s.push_str(&String::from_utf8_lossy(&buf[..n]));
+                }
+            }
+        });
+    }
+    let failed = |e: io::Error| {
+        std::thread::sleep(Duration::from_millis(200));
+        let s = said.lock().map(|s| s.trim().to_string()).unwrap_or_default();
+        io::Error::new(e.kind(), if s.is_empty() { format!("{host}: {e}") } else { format!("{host}: {s}") })
+    };
+    let hello = w.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again }.encode()).and_then(|_| read_frame(&mut r));
+    let f = match hello {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(failed(e));
+        }
+    };
+    match ToClient::decode(&f) {
+        Ok(ToClient::Welcome { layout, panes }) => Ok((w, r, child, layout, panes)),
+        Ok(ToClient::Refused { why }) => Err(io::Error::new(io::ErrorKind::Unsupported, format!("{host} runs another version of jot ({why})"))),
+        _ => Err(io::Error::new(io::ErrorKind::Unsupported, format!("{host} runs another version of jot"))),
+    }
+}
+
 impl Client {
     /// The session on another machine, reached by ssh: `jot bridge` there
     /// passes what is said between ssh and that machine's session,
     /// starting it if it is not running.
-    pub fn open_remote(host: &str, hear: impl Fn(Heard) + Send + 'static) -> io::Result<Attached> {
-        use std::process::{Command, Stdio};
-        // jot where the user put it: on the PATH, ~/.local/bin, or mise's.
-        let remote = "exec env PATH=\"$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:$PATH\" jot bridge";
-        let mut child = Command::new("ssh")
-            .args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", host, remote])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let mut w = child.stdin.take().unwrap();
-        let mut r = child.stdout.take().unwrap();
-        // What ssh or the far side says when it fails, kept for the error.
-        let said = Arc::new(Mutex::new(String::new()));
-        if let Some(mut e) = child.stderr.take() {
-            let said = said.clone();
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 4096];
-                while let Ok(n) = e.read(&mut buf) {
-                    if n == 0 {
-                        break;
-                    }
-                    if let Ok(mut s) = said.lock() {
-                        s.push_str(&String::from_utf8_lossy(&buf[..n]));
-                    }
-                }
-            });
-        }
-        let failed = |e: io::Error| {
-            std::thread::sleep(Duration::from_millis(200));
-            let s = said.lock().map(|s| s.trim().to_string()).unwrap_or_default();
-            io::Error::new(e.kind(), if s.is_empty() { format!("{host}: {e}") } else { format!("{host}: {s}") })
-        };
-        w.write_all(&ToServer::Hello { proto: PROTO }.encode()).map_err(failed)?;
-        let f = read_frame(&mut r).map_err(failed)?;
-        let (layout, panes) = match ToClient::decode(&f) {
-            Ok(ToClient::Welcome { layout, panes }) => (layout, panes),
-            Ok(ToClient::Refused { why }) => return Err(io::Error::new(io::ErrorKind::Unsupported, format!("{host} runs another version of jot ({why})"))),
-            _ => return Err(io::Error::new(io::ErrorKind::Unsupported, format!("{host} runs another version of jot"))),
-        };
+    pub fn open_remote(host: &str, hear: impl Fn(Heard) + Send + Sync + 'static) -> io::Result<Attached> {
+        let hear: Arc<dyn Fn(Heard) + Send + Sync> = Arc::new(hear);
+        let (w, r, child, layout, panes) = reach(host, false)?;
         let (tx, rx) = channel();
-        std::thread::Builder::new().name("mux".into()).spawn(move || listen(Box::new(r), tx, hear))?;
-        let client = Client { writer: Mutex::new(Box::new(w)), spawned: Mutex::new(rx), detached: AtomicBool::new(false), mute: AtomicBool::new(false), host: Some(host.to_string()), ssh: Mutex::new(Some(child)) };
+        let h = hear.clone();
+        std::thread::Builder::new().name("mux".into()).spawn(move || listen(Box::new(r), tx, h))?;
+        let client = Client { writer: Mutex::new(Box::new(w)), spawned: Mutex::new(rx), detached: AtomicBool::new(false), mute: AtomicBool::new(false), host: Some(host.to_string()), ssh: Mutex::new(Some(child)), connected: AtomicBool::new(true), waiting: Mutex::new(Vec::new()), hear };
         Ok(Attached { client: Arc::new(client), layout, panes, notes: Vec::new(), fresh: false })
+    }
+
+    /// The connection to another machine dropped: reached again in the
+    /// background, a second after, then longer, up to ten. What it holds
+    /// then is told (Heard::Back); keys typed meanwhile follow.
+    pub fn reconnect(self: &Arc<Self>) {
+        let Some(host) = self.host.clone() else { return };
+        if !self.connected.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        if let Some(mut c) = self.ssh.lock().ok().and_then(|mut c| c.take()) {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        let me = self.clone();
+        std::thread::spawn(move || {
+            let mut wait = Duration::from_secs(1);
+            loop {
+                if me.detached.load(Ordering::Acquire) {
+                    return;
+                }
+                std::thread::sleep(wait);
+                match reach(&host, true) {
+                    Ok((w, r, child, _layout, panes)) => {
+                        let (tx, rx) = channel();
+                        if let (Ok(mut wr), Ok(mut sp), Ok(mut ssh)) = (me.writer.lock(), me.spawned.lock(), me.ssh.lock()) {
+                            *wr = Box::new(w);
+                            *sp = rx;
+                            *ssh = Some(child);
+                        }
+                        let h = me.hear.clone();
+                        let _ = std::thread::Builder::new().name("mux".into()).spawn(move || listen(Box::new(r), tx, h));
+                        // Told what it holds before keys typed meanwhile go,
+                        // so the window has its panes back first.
+                        (me.hear)(Heard::Back(panes));
+                        me.connected.store(true, Ordering::Release);
+                        let keys = me.waiting.lock().map(|mut w| std::mem::take(&mut *w)).unwrap_or_default();
+                        for (pane, bytes) in keys {
+                            me.send(ToServer::Input { pane, bytes });
+                        }
+                        return;
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+                        eprintln!("jot: {e}");
+                        (me.hear)(Heard::Gone);
+                        return;
+                    }
+                    Err(_) => wait = (wait * 2).min(Duration::from_secs(10)),
+                }
+            }
+        });
+    }
+
+    /// Whether the session can be reached now.
+    pub fn connected(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
     }
 }
 
@@ -738,4 +841,15 @@ pub fn bridge() -> i32 {
         }
     }
     0
+}
+
+/// This window's name to the session, the same while it is open: what it
+/// had is given back to it on reconnecting, even from a connection the
+/// session has not yet seen drop.
+pub fn window_id() -> u64 {
+    static ID: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *ID.get_or_init(|| {
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+        t ^ ((std::process::id() as u64) << 32) | 1
+    })
 }

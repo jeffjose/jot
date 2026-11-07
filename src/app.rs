@@ -343,6 +343,7 @@ impl App {
                     crate::mux::Heard::TeeLines(id, n) => Output::TeeLines(id, n),
                     crate::mux::Heard::TeeEnd(id, n, e) => Output::TeeEnd(id, n, e),
                     crate::mux::Heard::Proc(id, p) => Output::Proc(id, p),
+                    crate::mux::Heard::Back(held) => Output::Back(held),
                     crate::mux::Heard::Gone => Output::Gone,
                 };
                 let _ = tx.send(out);
@@ -1662,6 +1663,7 @@ impl App {
         while let Ok(req) = self.requests.try_recv() {
             self.answer(req, event_loop);
         }
+        let mut back = None;
         let mut exited = Vec::new();
         let shown: Vec<PaneId> = {
             let mut v = Vec::new();
@@ -1718,6 +1720,14 @@ impl App {
                 }
                 Output::TeeLines(id, n) => self.tee_lines(id, n),
                 Output::TeeEnd(id, n, e) => self.tee_ended(id, n, e),
+                // Another machine's connection dropped: reached again unseen,
+                // the window as it was meanwhile. Gone for good (this
+                // machine's session ended, or the other runs another jot): the
+                // window goes.
+                Output::Gone if self.mux.host.is_some() && self.mux.connected() => {
+                    self.mux.reconnect();
+                    self.set_title();
+                }
                 Output::Gone => {
                     match &self.mux.host {
                         Some(h) => eprintln!("jot: lost {h} (its panes run on there; jot ssh {h} takes them up again)"),
@@ -1727,10 +1737,14 @@ impl App {
                     event_loop.exit();
                     return;
                 }
+                Output::Back(held) => back = Some(held),
             }
         }
         if let (true, Some(id)) = (search_again, searched) {
             self.find_output(id);
+        }
+        if let Some(held) = back {
+            exited.extend(self.taken_back(held));
         }
         for id in exited {
             // Empty space's shell was ended on purpose: the space stays.
@@ -2595,5 +2609,55 @@ impl Drop for App {
     /// still ends.)
     fn drop(&mut self) {
         self.mux.detach();
+    }
+}
+
+impl App {
+    /// Another machine's session reached again: each pane's terminal made
+    /// anew from what the session kept, so it is as it is there, with what
+    /// was printed meanwhile. Panes gone meanwhile are returned, to close;
+    /// any it has that this window did not, a workspace of their own.
+    fn taken_back(&mut self, held: Vec<crate::mux::Held>) -> Vec<PaneId> {
+        let back: Vec<u64> = held.iter().map(|h| h.pane).collect();
+        let gone: Vec<PaneId> = self.panes.keys().copied().filter(|id| !back.contains(id)).collect();
+        let mut new = Vec::new();
+        for h in held {
+            let Some(p) = self.panes.get_mut(&h.pane) else {
+                new.push(h.pane);
+                self.held.insert(h.pane, h);
+                continue;
+            };
+            let mux = self.mux.clone();
+            let id = h.pane;
+            let reply: vt::Reply = Box::new(move |bytes: &[u8]| {
+                if !mux.mute.load(Ordering::Acquire) {
+                    mux.input(id, bytes);
+                }
+            });
+            p.term = Terminal::new(p.cols, p.rows, self.config.scrollback, p.theme, reply);
+            p.shell = commands::Shell::default();
+            p.shell.queue = h.queue.items.clone();
+            p.shell.paused = h.queue.paused;
+            p.shell.after = h.queue.after.clone();
+            p.shell.synced = h.queue;
+            p.tee = h.tee.map(|t| watch::Tee { path: PathBuf::from(t.path), lines: t.lines as usize, armed: t.armed });
+            p.pty.raw = false;
+            p.lines.clear();
+            p.has_images = false;
+            p.full = true;
+            self.replays.push((id, h.log));
+        }
+        if !new.is_empty() {
+            let panes: Vec<persist::Spec> = new.iter().map(|id| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*id) }).collect();
+            let layout = if panes.len() == 1 { panes.into_iter().next() } else { Some(persist::Spec::Across { v: panes, sizes: Vec::new() }) };
+            self.add_workspace(&WorkspaceSpec { name: "Kept".into(), layout, ..Default::default() });
+        }
+        self.replay_held();
+        // Its layout told again: the session kept it for the next window.
+        self.unsaved = true;
+        self.set_title();
+        self.full = true;
+        self.redraw();
+        gone
     }
 }

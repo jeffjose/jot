@@ -221,6 +221,8 @@ struct Pane {
     proc: Option<crate::pty::Proc>,
     /// The window it is in, if one has it.
     owner: Option<u64>,
+    /// The name of the window that has it, or last had it.
+    window: u64,
 }
 
 enum Ev {
@@ -239,8 +241,11 @@ struct Server {
     windows: Vec<u64>,
     /// Each window's workspaces, as it last said.
     layouts: HashMap<u64, String>,
-    /// The workspaces of windows that went, for the next to take up.
-    left: Vec<String>,
+    /// Each window's name, by its connection.
+    names: HashMap<u64, u64>,
+    /// The workspaces of windows that went, for the next to take up, with
+    /// the window's name.
+    left: Vec<(u64, String)>,
     next_pane: u64,
 }
 
@@ -348,6 +353,7 @@ impl Server {
         held.sort_by_key(|h| h.pane);
         for p in self.panes.values_mut().filter(|p| p.owner.is_none()) {
             p.owner = Some(c);
+            p.window = self.names.get(&c).copied().unwrap_or(0);
             p.raw = None;
             p.proc = None;
             if let Some(t) = &mut p.tee {
@@ -355,21 +361,54 @@ impl Server {
             }
         }
         let left = std::mem::take(&mut self.left);
-        let layout = merge(left.iter().map(String::as_str)).and_then(|s| toml::to_string(&s).ok()).unwrap_or_default();
+        let layout = merge(left.iter().map(|(_, l)| l.as_str())).and_then(|s| toml::to_string(&s).ok()).unwrap_or_default();
         self.layouts.insert(c, layout.clone());
         self.send(c, ToClient::Welcome { layout, panes: held });
+    }
+
+    /// A window come back after its connection dropped: the panes it had,
+    /// taken from the connection it had if the session has not seen that
+    /// drop yet. Its workspaces it has still; none are given.
+    fn welcome_back(&mut self, c: u64, window: u64) {
+        let stale: Vec<u64> = self.names.iter().filter(|(conn, w)| **w == window && **conn != c).map(|(conn, _)| *conn).collect();
+        for old in stale {
+            self.names.remove(&old);
+            self.windows.retain(|w| *w != old);
+            if let Some(l) = self.layouts.remove(&old) {
+                self.layouts.insert(c, l);
+            }
+            if let Some(st) = self.conns.remove(&old) {
+                let _ = st.shutdown(std::net::Shutdown::Both);
+            }
+        }
+        if let Some(i) = self.left.iter().position(|(w, _)| *w == window) {
+            let (_, l) = self.left.remove(i);
+            self.layouts.insert(c, l);
+        }
+        let mut held = Vec::new();
+        for (id, p) in self.panes.iter_mut().filter(|(_, p)| p.window == window) {
+            p.owner = Some(c);
+            p.raw = None;
+            p.proc = None;
+            if let Some(t) = &mut p.tee {
+                t.told = t.state.lines;
+            }
+            held.push(Held { pane: *id, pid: p.pty.pid, cmd: p.cmd.clone(), log: p.log.encode(), tee: p.tee.as_ref().map(|t| t.state.clone()), queue: p.queue.clone() });
+        }
+        held.sort_by_key(|h| h.pane);
+        self.send(c, ToClient::Welcome { layout: String::new(), panes: held });
     }
 
     /// Every window's workspaces, and those left, as one session: saved,
     /// to be offered back after the machine restarts.
     fn save(&self) {
-        if let Some(s) = merge(self.layouts.values().chain(self.left.iter()).map(String::as_str)) {
+        if let Some(s) = merge(self.layouts.values().map(String::as_str).chain(self.left.iter().map(|(_, l)| l.as_str()))) {
             crate::persist::save_session(&s);
         }
     }
 
     fn info(&self) -> ToClient {
-        let names = merge(self.layouts.values().chain(self.left.iter()).map(String::as_str)).map(|s| s.workspaces.iter().map(|w| w.name.clone()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+        let names = merge(self.layouts.values().map(String::as_str).chain(self.left.iter().map(|(_, l)| l.as_str()))).map(|s| s.workspaces.iter().map(|w| w.name.clone()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
         ToClient::Info { attached: !self.windows.is_empty(), panes: self.panes.len() as u32, names }
     }
 
@@ -398,7 +437,7 @@ impl Server {
                 });
                 let mut log = Log::default();
                 log.size(cols, rows);
-                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, proc: None, owner: Some(c) });
+                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, proc: None, owner: Some(c), window: self.names.get(&c).copied().unwrap_or(0) });
                 pid
             }
             Err(e) => {
@@ -453,7 +492,7 @@ pub fn run(path: &Path) {
             }
         });
     }
-    let mut s = Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), left: Vec::new(), next_pane: 1 };
+    let mut s = Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1 };
     let mut next_conn = 0u64;
     let started = Instant::now();
     while let Ok(ev) = rx.recv() {
@@ -485,7 +524,7 @@ pub fn run(path: &Path) {
                     let _ = st.shutdown(std::net::Shutdown::Both);
                 }
             }
-            Ev::Said(c, ToServer::Hello { proto }) => {
+            Ev::Said(c, ToServer::Hello { proto, window, again }) => {
                 if proto != PROTO {
                     s.send(c, ToClient::Refused { why: format!("protocol {PROTO} here, {proto} in the window") });
                     if let Some(st) = s.conns.remove(&c) {
@@ -496,7 +535,12 @@ pub fn run(path: &Path) {
                 if !s.windows.contains(&c) {
                     s.windows.push(c);
                 }
-                s.welcome(c);
+                s.names.insert(c, window);
+                if again {
+                    s.welcome_back(c, window);
+                } else {
+                    s.welcome(c);
+                }
             }
             Ev::Said(c, m) if s.windows.contains(&c) => match m {
                 ToServer::Spawn { cmd, cwd, cols, rows, px } => {
@@ -557,8 +601,9 @@ pub fn run(path: &Path) {
                         p.owner = None;
                         any = true;
                     }
+                    let name = s.names.remove(&c).unwrap_or(0);
                     if let Some(l) = s.layouts.remove(&c).filter(|_| any) {
-                        s.left.push(l);
+                        s.left.push((name, l));
                     }
                     s.save();
                     if s.panes.is_empty() && s.windows.is_empty() {
