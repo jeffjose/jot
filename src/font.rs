@@ -61,7 +61,7 @@ pub struct Fonts {
     cache: HashMap<(char, u8), Glyph>,
     by_id: HashMap<(u16, u8), Glyph>,
     /// Runs of text shaped, by text and boldness: a glyph a character.
-    shaped: HashMap<(String, bool), Option<Vec<u16>>>,
+    shaped: [HashMap<String, Option<Vec<u16>>>; 2],
     pub ligatures: bool,
     /// The interface: its text, headings, and the smaller words under
     /// a setting.
@@ -164,7 +164,7 @@ impl Fonts {
             which: HashMap::new(),
             cache: HashMap::new(),
             by_id: HashMap::new(),
-            shaped: HashMap::new(),
+            shaped: [HashMap::new(), HashMap::new()],
             ligatures: choice.ligatures,
             heading: UiFont::new(ui.clone(), ui_px * 1.3),
             small: UiFont::new(ui.clone(), ui_px * 0.88),
@@ -281,7 +281,7 @@ impl Fonts {
         if !self.ligatures {
             return None;
         }
-        if let Some(r) = self.shaped.get(&(text.to_string(), bold)) {
+        if let Some(r) = self.shaped[bold as usize].get(text) {
             return r.clone();
         }
         let face = if bold { &self.bold } else { &self.regular };
@@ -294,10 +294,10 @@ impl Fonts {
             let plain: Vec<u16> = text.chars().map(|c| face.font.lookup_glyph_index(c)).collect();
             (ids.len() == plain.len() && ids != plain).then_some(ids)
         })();
-        if self.shaped.len() > 4096 {
-            self.shaped.clear();
+        if self.shaped[bold as usize].len() > 4096 {
+            self.shaped[bold as usize].clear();
         }
-        self.shaped.insert((text.to_string(), bold), result.clone());
+        self.shaped[bold as usize].insert(text.to_string(), result.clone());
         result
     }
 

@@ -76,6 +76,9 @@ pub struct Pane {
     lines: Vec<Vec<char>>,
     /// What the shell's marks have told of its commands.
     shell: commands::Shell,
+    /// A picture has been sent to it (kitty graphics): only then are its
+    /// pictures looked for, each frame.
+    has_images: bool,
 }
 
 /// A pane closed, to bring back.
@@ -164,6 +167,9 @@ pub struct App {
     scrollback_at: Instant,
     /// Panes to put in windows of their own once the main one is up.
     pending_popouts: Vec<persist::Spec>,
+    /// When the wheel last turned, and how many quick turns in a row.
+    wheel_at: Instant,
+    wheel_streak: u32,
     /// Pictures' pixels, by pane and picture, with the generation read.
     pictures: HashMap<(PaneId, u32), (u64, std::rc::Rc<vt::Picture>)>,
     triggers: Vec<automate::Trigger>,
@@ -274,6 +280,8 @@ impl App {
             copy_mode: None,
             scrollback_at: Instant::now(),
             pending_popouts: Vec::new(),
+            wheel_at: Instant::now(),
+            wheel_streak: 0,
             pictures: HashMap::new(),
             triggers: Vec::new(),
             fired: HashMap::new(),
@@ -342,7 +350,7 @@ impl App {
         let caption = folder_name(&start.cwd);
         self.panes.insert(
             id,
-            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default() },
+            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false },
         );
         id
     }
@@ -443,7 +451,9 @@ impl App {
             let content = Rect { x: rect.x + pad, y: rect.y + top, w: (rect.w - 2 * pad).max(0), h: (rect.h - cap - top).max(0) };
             let cols = (content.w / cw).clamp(1, u16::MAX as i32) as u16;
             let rows = (content.h / ch).clamp(1, u16::MAX as i32) as u16;
-            if (cols, rows) != (p.cols, p.rows) || p.rect != rect {
+            // Only a change of rows or columns is told to the program: a
+            // shell such as tcsh draws its prompt again on each telling.
+            if (cols, rows) != (p.cols, p.rows) {
                 p.term.resize(cols, rows, cw as u32, ch as u32);
                 p.pty.resize(cols, rows, ((cols as i32 * cw) as u32, (rows as i32 * ch) as u32));
                 p.cols = cols;
@@ -1194,6 +1204,9 @@ impl App {
                     if let Some(p) = self.panes.get_mut(&id) {
                         p.term.write(&bytes);
                         search_again |= searched == Some(id);
+                        if !p.has_images && bytes.windows(3).any(|w| w == b"\x1b_G") {
+                            p.has_images = true;
+                        }
                         if !shown.contains(&id) && !p.activity && p.started.elapsed() > Duration::from_secs(3) {
                             p.activity = true;
                             self.full = true;
@@ -1283,6 +1296,7 @@ impl App {
     }
 
     fn draw(&mut self) {
+        let t0 = Instant::now();
         self.retint();
         self.refresh_captions();
         let full = std::mem::take(&mut self.full);
@@ -1334,7 +1348,11 @@ impl App {
             self.draw_settings();
             self.draw_editor();
         }
+        let drawn = t0.elapsed();
         self.present();
+        if crate::debug() {
+            eprintln!("frame: drawn {:.2} ms, shown {:.2} ms", drawn.as_secs_f64() * 1000.0, (t0.elapsed() - drawn).as_secs_f64() * 1000.0);
+        }
     }
 
     fn draw_pane(&mut self, id: PaneId, n: usize, full: bool, focused: bool) {
@@ -1371,7 +1389,7 @@ impl App {
         p.cursor_was = cursor_now;
         let mut row = Vec::new();
         // With pictures in it, the pane is drawn whole, pictures over text.
-        let mut placements = p.term.placements();
+        let mut placements = if p.has_images { p.term.placements() } else { Vec::new() };
         placements.sort_by_key(|pl| pl.z);
         let canvas = &mut self.canvas;
         let fonts = &mut self.fonts;
@@ -1385,7 +1403,7 @@ impl App {
             // The row's characters, one a column, for finding links in.
             if let Some(l) = lines.get_mut(y as usize) {
                 l.clear();
-                l.extend(cells.iter().take(cols_n).map(|c| c.text.chars().next().unwrap_or(' ')));
+                l.extend(cells.iter().take(cols_n).map(|c| if c.ch == '\0' { ' ' } else { c.ch }));
             }
             let top = content.y + y as i32 * ch;
             if top + ch > content.y + content.h + ch {
@@ -1421,7 +1439,7 @@ impl App {
             if fonts.ligatures {
                 let mut i = 0;
                 while i < cells.len() {
-                    let one = |c: &Cell| c.text.chars().count() == 1 && !c.text.starts_with(' ') && c.text.is_ascii();
+                    let one = |c: &Cell| c.ch.is_ascii_graphic();
                     if !one(&cells[i]) {
                         i += 1;
                         continue;
@@ -1431,8 +1449,10 @@ impl App {
                     while j < cells.len() && one(&cells[j]) && (cells[j].flags & vt::BOLD != 0) == bold {
                         j += 1;
                     }
-                    let run: String = cells[i..j].iter().map(|c| c.text.as_str()).collect();
-                    if j - i >= 2 && run.chars().any(|ch| "=<>!-|&*/:.+~#_%^?;\\\\[]{}()w".contains(ch)) {
+                    // Shaped only when there are symbols in it to join.
+                    let symbols = cells[i..j].iter().any(|c| "=<>!-|&*/:.+~#_%^?;\\[]{}()w".contains(c.ch));
+                    let run: String = if j - i >= 2 && symbols { cells[i..j].iter().map(|c| c.ch).collect() } else { String::new() };
+                    if !run.is_empty() {
                         if let Some(ids) = fonts.shape(&run, bold) {
                             for (k, (id, ch)) in ids.iter().zip(run.chars()).enumerate() {
                                 if *id != fonts.plain_id(ch, bold) {
@@ -1453,10 +1473,10 @@ impl App {
                     fg = bg;
                 }
                 if c.flags & vt::INVISIBLE == 0 {
-                    if let Some(chr) = c.text.chars().next() {
+                    if let Some(chr) = Some(c.ch).filter(|&ch| ch != '\0') {
                         if chr != ' ' {
                             // An emoji is two cells wide unless the next has text in it.
-                            let narrow = cells.get(x + 1).is_some_and(|n| !n.text.is_empty()) || x + 1 == cells.len();
+                            let narrow = cells.get(x + 1).is_some_and(|n| n.ch != '\0') || x + 1 == cells.len();
                             let style = (c.flags & vt::BOLD != 0) as u8 | (((c.flags & vt::ITALIC != 0) as u8) << 1) | ((narrow as u8) << 2);
                             let g = match ligs.get(x).copied().flatten() {
                                 Some(id) => fonts.glyph_id(id, style),
@@ -1623,13 +1643,13 @@ impl App {
             let mut ids = Vec::new();
             ws.root.panes(&mut ids);
             for (pi, id) in ids.iter().enumerate() {
-                if let Some(text) = self.panes.get(id).and_then(|p| p.term.dump(5000)) {
+                if let Some(text) = self.panes.get(id).and_then(|p| p.term.dump(5000, p.shell.at_prompt.then_some(p.shell.prompt_row))) {
                     dumps.push((format!("{}-{}", wi + 1, pi + 1), text));
                 }
             }
         }
         for (i, po) in self.popouts.iter().enumerate() {
-            if let Some(text) = self.panes.get(&po.pane).and_then(|p| p.term.dump(5000)) {
+            if let Some(text) = self.panes.get(&po.pane).and_then(|p| p.term.dump(5000, p.shell.at_prompt.then_some(p.shell.prompt_row))) {
                 dumps.push((format!("p{}", i + 1), text));
             }
         }
@@ -1748,7 +1768,14 @@ impl ApplicationHandler<()> for App {
             WindowEvent::MouseInput { state: ElementState::Released, .. } => self.mouse_release(),
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => -(y * 3.0) as isize,
+                    // Three lines a notch, more the faster the wheel turns: a
+                    // flick goes a long way, a slow turn line by line.
+                    MouseScrollDelta::LineDelta(_, y) => {
+                        let quick = self.wheel_at.elapsed() < Duration::from_millis(60);
+                        self.wheel_streak = if quick { (self.wheel_streak + 1).min(8) } else { 0 };
+                        self.wheel_at = Instant::now();
+                        -(y * 3.0 * (1.0 + self.wheel_streak as f32 / 2.0)) as isize
+                    }
                     MouseScrollDelta::PixelDelta(p) => -(p.y / self.fonts.cell_h as f64) as isize,
                 };
                 if lines != 0 && !self.settings_scroll(lines) {

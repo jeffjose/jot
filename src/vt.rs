@@ -42,7 +42,10 @@ fn to_ghostty(c: Rgb) -> GhosttyColorRgb {
 /// second half of a wide character), colours resolved, and its attributes.
 #[derive(Clone, Default)]
 pub struct Cell {
-    pub text: String,
+    /// Its character, or NUL for none: a blank, or the second half of a
+    /// wide one. Held as it is, not allocated, as it is read for every cell
+    /// of every frame.
+    pub ch: char,
     pub fg: Option<Rgb>,
     pub bg: Option<Rgb>,
     pub flags: u16,
@@ -336,7 +339,7 @@ impl Terminal {
                         if len > 0 {
                             let mut buf = GhosttyCodepointBuffer { ptr: codepoints.as_mut_ptr(), cap: codepoints.len(), len: 0 };
                             ghostty_render_state_row_cells_get(self.cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF, &mut buf as *mut _ as *mut c_void);
-                            cell.text = codepoints[..buf.len.min(buf.cap)].iter().filter_map(|&c| char::from_u32(c)).collect();
+                            cell.ch = codepoints[..buf.len.min(buf.cap)].first().and_then(|&c| char::from_u32(c)).unwrap_or('\0');
                         }
                         let mut styled = false;
                         ghostty_render_state_row_cells_get(self.cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_HAS_STYLING, &mut styled as *mut bool as *mut c_void);
@@ -802,11 +805,29 @@ impl Terminal {
     /// All the terminal holds, scrollback and screen, as text with its
     /// colours (VT), its last `max` lines; to be shown again after a
     /// restart.
-    pub fn dump(&self, max: usize) -> Option<String> {
+    pub fn dump(&self, max: usize, upto: Option<u64>) -> Option<String> {
         unsafe {
             let mut sel: GhosttySelection = std::mem::zeroed();
-            if ghostty_terminal_select_all(self.raw, &mut sel) != GHOSTTY_SUCCESS {
-                return None;
+            match upto {
+                // Up to the row before `upto`: the prompt the shell sits at is
+                // not kept, or every run would leave one more.
+                Some(row) => {
+                    let last = row.checked_sub(1)?;
+                    let mut cols: u16 = 0;
+                    ghostty_terminal_get(self.raw, GHOSTTY_TERMINAL_DATA_COLS, &mut cols as *mut u16 as *mut c_void);
+                    let at = |x: u16, y: u64| {
+                        let point = GhosttyPoint { tag: GHOSTTY_POINT_TAG_SCREEN, value: GhosttyPointValue { coordinate: GhosttyPointCoordinate { x, y: y as u32 } } };
+                        let mut r: GhosttyGridRef = std::mem::zeroed();
+                        (ghostty_terminal_grid_ref(self.raw, point, &mut r) == GHOSTTY_SUCCESS).then_some(r)
+                    };
+                    sel.start = at(0, 0)?;
+                    sel.end = at(cols.saturating_sub(1), last)?;
+                }
+                None => {
+                    if ghostty_terminal_select_all(self.raw, &mut sel) != GHOSTTY_SUCCESS {
+                        return None;
+                    }
+                }
             }
             let mut f = null_mut();
             ghostty_formatter_terminal_new(null(), &mut f, self.raw);
