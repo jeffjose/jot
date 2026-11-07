@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=jterm
+Name=jot
 GenericName=Terminal
 Comment=A terminal of splits and workspaces
-Exec=jterm
-Icon=jterm
+Exec=jot
+Icon=jot
 Terminal=false
 Categories=System;TerminalEmulator;
 Keywords=terminal;shell;console;splits;workspaces;
-StartupWMClass=jterm
+StartupWMClass=jot

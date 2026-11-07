@@ -1,4 +1,4 @@
-//! What scripts and the `jterm` command ask of jterm, triggers on what
+//! What scripts and the `jot` command ask of jot, triggers on what
 //! panes print, and the commands a workspace runs when it opens or is
 //! gone to.
 
@@ -24,7 +24,7 @@ pub fn run_detached(command: &str, cwd: &std::path::Path, env: &[(&str, &str)]) 
 
 /// A desktop notice.
 pub fn notify(title: &str, body: &str) {
-    let _ = std::process::Command::new("notify-send").args(["-a", "jterm", title, body]).stdin(std::process::Stdio::null()).spawn();
+    let _ = std::process::Command::new("notify-send").args(["-a", "jot", title, body]).stdin(std::process::Stdio::null()).spawn();
 }
 
 /// What a pane printed as plain lines: escape sequences taken out.
@@ -75,7 +75,7 @@ impl App {
             .filter_map(|t| match regex::Regex::new(&t.pattern) {
                 Ok(pattern) => Some(Trigger { pattern, action: t.action.clone(), command: t.command.clone() }),
                 Err(e) => {
-                    eprintln!("jterm: trigger {:?} not used: {e}", t.pattern);
+                    eprintln!("jot: trigger {:?} not used: {e}", t.pattern);
                     None
                 }
             })
@@ -110,7 +110,7 @@ impl App {
                 }
                 "run" => {
                     if let Some(cmd) = &t.command {
-                        run_detached(cmd, &cwd, &[("JTERM_MATCH", &line), ("JTERM_PANE", &place)]);
+                        run_detached(cmd, &cwd, &[("JOT_MATCH", &line), ("JOT_PANE", &place)]);
                     }
                 }
                 _ => toasts.push((place.clone(), line.clone())),
@@ -151,10 +151,10 @@ impl App {
         let mut ids = Vec::new();
         ws.root.panes(&mut ids);
         let cwd = ids.first().and_then(|id| self.panes.get(id)).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
-        run_detached(cmd, &cwd, &[("JTERM_WORKSPACE", &ws.name)]);
+        run_detached(cmd, &cwd, &[("JOT_WORKSPACE", &ws.name)]);
     }
 
-    /// Answers what the `jterm` command asked.
+    /// Answers what the `jot` command asked.
     pub(super) fn answer(&mut self, req: Request, event_loop: &ActiveEventLoop) {
         let args = &req.args;
         let reply = match args.first().map(String::as_str) {
@@ -186,7 +186,7 @@ impl App {
                     }
                     format!("{}\n", self.current + 1)
                 }
-                _ => "jterm: open needs a folder that is there\n".into(),
+                _ => "jot: open needs a folder that is there\n".into(),
             },
             Some("split") | Some("run") => {
                 let down = args.iter().any(|a| a == "--down");
@@ -206,7 +206,7 @@ impl App {
                     }
                     String::new()
                 }
-                _ => "jterm: send needs a pane (1.2) and text\n".into(),
+                _ => "jot: send needs a pane (1.2) and text\n".into(),
             },
             Some("focus") => match args.get(1).and_then(|n| self.pane_named(n)) {
                 Some((wi, id)) => {
@@ -215,13 +215,13 @@ impl App {
                     self.relayout();
                     String::new()
                 }
-                None => "jterm: no pane by that name\n".into(),
+                None => "jot: no pane by that name\n".into(),
             },
             Some("notify") => {
-                self.toast("jterm", &args[1..].join(" "), None, None);
+                self.toast("jot", &args[1..].join(" "), None, None);
                 String::new()
             }
-            _ => format!("jterm: one of {} is needed\n", crate::remote::COMMANDS.join(", ")),
+            _ => format!("jot: one of {} is needed\n", crate::remote::COMMANDS.join(", ")),
         };
         let _ = event_loop;
         let _ = req.reply.send(reply);

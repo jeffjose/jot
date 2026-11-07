@@ -61,7 +61,7 @@ pub struct Layout {
 
 impl App {
     fn recent_path() -> PathBuf {
-        std::env::var_os("XDG_STATE_HOME").map(PathBuf::from).unwrap_or_else(|| pty::home().join(".local/state")).join("jterm/palette-recent")
+        std::env::var_os("XDG_STATE_HOME").map(PathBuf::from).unwrap_or_else(|| pty::home().join(".local/state")).join("jot/palette-recent")
     }
 
     pub(super) fn load_recent(&mut self) {
@@ -698,7 +698,7 @@ impl App {
 
     pub(super) fn set_title(&self) {
         if let (Some(w), Some(ws)) = (&self.window, self.workspaces.get(self.current)) {
-            w.set_title(&format!("{} · jterm", ws.name));
+            w.set_title(&format!("{} · jot", ws.name));
         }
     }
 }

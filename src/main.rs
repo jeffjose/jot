@@ -1,4 +1,4 @@
-//! jterm: a small, fast terminal for Linux, on X11 and Wayland, with
+//! jot: a small, fast terminal for Linux, on X11 and Wayland, with
 //! splits and workspaces and screen's keys.
 
 mod app;
@@ -26,16 +26,16 @@ pub fn debug() -> bool {
 }
 
 const HELP: &str = "\
-jterm: a terminal with splits and workspaces
+jot: a terminal with splits and workspaces
 
-  jterm            start, offering to restore the last session
-  jterm --fresh    start from the workspaces in the config
-  jterm --debug    print each key as it is sent to the program
-  jterm list | open DIR | split [--down] [-- CMD] | run CMD
+  jot            start, offering to restore the last session
+  jot --fresh    start from the workspaces in the config
+  jot --debug    print each key as it is sent to the program
+  jot list | open DIR | split [--down] [-- CMD] | run CMD
         | send PANE TEXT | focus PANE | notify TEXT
-                   control the running jterm
-  jterm setup      add jterm and its icon to the desktop's programs
-  jterm --version
+                   control the running jot
+  jot setup      add jot and its icon to the desktop's programs
+  jot --version
 
 Keys:
   Alt v / Alt s        split right / split down
@@ -61,18 +61,18 @@ Keys:
   Shift PageUp/Down    scroll up / down a page
   Ctrl = - 0           zoom in, out, reset
 
-Settings and workspaces: ~/.config/jterm/config.toml";
+Settings and workspaces: ~/.config/jot/config.toml";
 
 pub fn version() -> String {
     let sha = option_env!("VERGEN_GIT_SHA").filter(|s| !s.is_empty() && !s.starts_with("VERGEN"));
     match sha {
-        Some(sha) => format!("jterm {} ({sha})", env!("CARGO_PKG_VERSION")),
-        None => format!("jterm {}", env!("CARGO_PKG_VERSION")),
+        Some(sha) => format!("jot {} ({sha})", env!("CARGO_PKG_VERSION")),
+        None => format!("jot {}", env!("CARGO_PKG_VERSION")),
     }
 }
 
 fn main() {
-    // The `jterm` command: a request to the jterm running.
+    // The `jot` command: a request to the jot running.
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| remote::COMMANDS.contains(&a.as_str())) {
         std::process::exit(remote::client(&args));
@@ -88,7 +88,7 @@ fn main() {
             "-V" | "--version" => return println!("{}", version()),
             "-h" | "--help" => return println!("{HELP}"),
             other => {
-                eprintln!("jterm: unknown option {other}\n\n{HELP}");
+                eprintln!("jot: unknown option {other}\n\n{HELP}");
                 std::process::exit(2);
             }
         }
@@ -102,23 +102,23 @@ fn main() {
     event_loop.run_app(&mut app).expect("event loop");
 }
 
-/// `jterm setup`: jterm in the desktop's list of programs, with its icon,
+/// `jot setup`: jot in the desktop's list of programs, with its icon,
 /// for the user who runs it.
 fn setup() {
     let data = std::env::var_os("XDG_DATA_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| pty::home().join(".local/share"));
-    let exe = std::env::current_exe().map(|e| e.display().to_string()).unwrap_or_else(|_| "jterm".into());
-    let desktop = include_str!("../assets/jterm.desktop").replace("Exec=jterm", &format!("Exec={exe}"));
+    let exe = std::env::current_exe().map(|e| e.display().to_string()).unwrap_or_else(|_| "jot".into());
+    let desktop = include_str!("../assets/jot.desktop").replace("Exec=jot", &format!("Exec={exe}"));
     let files: [(std::path::PathBuf, &[u8]); 3] = [
-        (data.join("applications/jterm.desktop"), desktop.as_bytes()),
-        (data.join("icons/hicolor/scalable/apps/jterm.svg"), include_bytes!("../assets/jterm.svg")),
-        (data.join("icons/hicolor/256x256/apps/jterm.png"), include_bytes!("../assets/jterm.png")),
+        (data.join("applications/jot.desktop"), desktop.as_bytes()),
+        (data.join("icons/hicolor/scalable/apps/jot.svg"), include_bytes!("../assets/jot.svg")),
+        (data.join("icons/hicolor/256x256/apps/jot.png"), include_bytes!("../assets/jot.png")),
     ];
     for (path, bytes) in files {
         let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, bytes));
         match written {
             Ok(()) => println!("wrote {}", path.display()),
             Err(e) => {
-                eprintln!("jterm: could not write {}: {e}", path.display());
+                eprintln!("jot: could not write {}: {e}", path.display());
                 std::process::exit(1);
             }
         }

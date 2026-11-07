@@ -13,7 +13,7 @@ use crate::theme::THEMES;
 /// What a slash command does.
 #[derive(Clone, Debug)]
 pub enum Does {
-    /// One of jterm's own, as the palette and the menu run them.
+    /// One of jot's own, as the palette and the menu run them.
     Act(Action),
     /// A theme, chosen from a list after a space.
     Theme,
@@ -87,7 +87,7 @@ pub struct Slash {
 const SHOWN: usize = 8;
 
 impl App {
-    /// The commands there are: jterm's, then the config's own.
+    /// The commands there are: jot's, then the config's own.
     pub(super) fn slash_commands(&self) -> Vec<Command> {
         let mut all = vec![
             Command::new("settings", "Open settings", Does::Act(Action::Settings)),
@@ -596,13 +596,13 @@ impl App {
 
 fn kind_of(d: &Does) -> &'static str {
     match d {
-        Does::Act(_) => "jterm",
+        Does::Act(_) => "jot",
         Does::Theme => "setting",
         Does::Insert(_) => "insert",
         Does::Edit => "edit",
         Does::Tee | Does::Filter => "watch",
         Does::Grep => "find",
-        Does::Rename | Does::Pin => "jterm",
+        Does::Rename | Does::Pin => "jot",
         Does::Run(_) => "run",
         Does::Stop | Does::Kill | Does::Restart | Does::Info | Does::Notify | Does::Tree | Does::Ports | Does::Files => "job",
     }

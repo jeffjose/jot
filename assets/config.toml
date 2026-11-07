@@ -1,4 +1,4 @@
-# jterm: settings.
+# jot: settings.
 #
 # Nothing here is set until you take the # off the front of a line. Each
 # setting is shown with its usual value. Settings (Ctrl ,) writes the
@@ -24,7 +24,7 @@
 #   tomato  orange  amber  gold  brown  grass  green  jade  teal  cyan
 # accent = "indigo"
 
-# The terminal's font, by family, and the font of jterm's own words.
+# The terminal's font, by family, and the font of jot's own words.
 # font-family = "Fira Code"
 # ui-font-family = "Geist"
 # ui-font-size = 13
@@ -62,14 +62,14 @@
 # A status line along the bottom of the window: host, workspaces, clock.
 # status-line = false
 
-# The last session, when jterm starts: "ask" opens fresh with a card at
+# The last session, when jot starts: "ask" opens fresh with a card at
 # the top right to bring it back (typing begins fresh); "always" brings
 # it back; "never" does not.
 # restore = "ask"
 
 # What puts frames on the screen: "gpu", through Vulkan or OpenGL on
 # NVIDIA, AMD or Intel alike, with the CPU when there is no GPU to use;
-# or "cpu". jterm --debug says which it is using.
+# or "cpu". jot --debug says which it is using.
 # renderer = "gpu"
 
 # Lines kept above the screen, in each pane.
@@ -80,17 +80,17 @@
 
 # ---- Workspaces -----------------------------------------------------
 #
-# The workspaces jterm starts with when it has none saved. After that it
+# The workspaces jot starts with when it has none saved. After that it
 # brings back the workspaces as you left them (in
-# ~/.local/state/jterm/session.toml); start it with --fresh to begin
+# ~/.local/state/jot/session.toml); start it with --fresh to begin
 # from these again.
 #
 # A workspace has a folder its panes start in, and its panes: each the
 # command it runs, "" for your shell. Laid out side by side:
 #
 # [[workspace]]
-# name = "jterm"
-# cwd = "~/scripts/jterm"
+# name = "jot"
+# cwd = "~/scripts/jot"
 # panes = ["claude", "claude", ""]
 #
 # or one above another, with split = "h":
@@ -122,8 +122,8 @@
 #
 # A pattern looked for in what every pane prints, and what to do when a
 # line has it: notify (a desktop notice, the default), open (the link on
-# the line), or run (a command, with the line in $JTERM_MATCH and the
-# pane, as 1.2, in $JTERM_PANE).
+# the line), or run (a command, with the line in $JOT_MATCH and the
+# pane, as 1.2, in $JOT_PANE).
 #
 # [[trigger]]
 # match = "error\\[E[0-9]+\\]|panicked at"

@@ -1,5 +1,5 @@
 //! Color themes: the terminal's sixteen colors, its ground, text,
-//! cursor and selection, and jterm's own chrome made from them. The
+//! cursor and selection, and jot's own chrome made from them. The
 //! default is VS Code's 2026 Dark, as its terminal shows it.
 
 #[derive(Clone, Copy, Debug)]
@@ -155,7 +155,7 @@ pub fn accent(name: &str) -> u32 {
         .unwrap_or(ACCENTS[0].1)
 }
 
-/// The colors of jterm's own windows (settings, the palette, menus),
+/// The colors of jot's own windows (settings, the palette, menus),
 /// made from a theme so they sit with it: light on a light theme.
 #[derive(Clone, Copy)]
 pub struct Chrome {

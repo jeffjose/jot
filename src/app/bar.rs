@@ -1023,7 +1023,7 @@ impl App {
 }
 
 impl App {
-    /// Ctrl R and Ctrl Shift R: true when they were jterm's, not the
+    /// Ctrl R and Ctrl Shift R: true when they were jot's, not the
     /// program's.
     pub(super) fn reload_key(&mut self, hard: bool) -> bool {
         let Some(id) = self.focused() else { return false };

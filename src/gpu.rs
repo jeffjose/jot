@@ -2,7 +2,7 @@
 //! there is a driver for it (NVIDIA, AMD and Intel alike), OpenGL where
 //! not. What is drawn is kept in a texture on the card; each frame only
 //! the parts that changed are sent to it, and it is drawn to the window
-//! at the screen's pace. Without a GPU to use, jterm puts its frames up
+//! at the screen's pace. Without a GPU to use, jot puts its frames up
 //! with the CPU as before.
 
 use winit::window::Window;
@@ -69,8 +69,8 @@ impl Gpu {
         .map_err(|e| fail(&format!("adapter: {e}")))
         .ok()?;
         let info = adapter.get_info();
-        // A GPU done in software is slower than jterm's own drawing.
-        if info.device_type == wgpu::DeviceType::Cpu && std::env::var_os("JTERM_GPU_ANY").is_none() {
+        // A GPU done in software is slower than jot's own drawing.
+        if info.device_type == wgpu::DeviceType::Cpu && std::env::var_os("JOT_GPU_ANY").is_none() {
             fail(&format!("{} is the CPU", info.name));
             return None;
         }

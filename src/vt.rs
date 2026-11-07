@@ -1,7 +1,7 @@
 //! libghostty-vt, the terminal itself: what the program in a pane has
 //! written, kept as a grid of cells with its scrollback, and keys turned
 //! into what the program expects to read. A thin, safe face on its C API,
-//! with only what jterm uses.
+//! with only what jot uses.
 
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};

@@ -16,7 +16,7 @@ const FIRA: &[u8] = include_bytes!("../assets/FiraCode-Medium.ttf");
 const FIRA_BOLD: &[u8] = include_bytes!("../assets/FiraCode-Bold.ttf");
 const GEIST: &[u8] = include_bytes!("../assets/Geist-Medium.ttf");
 
-/// The fonts jterm has with it, used by these names whatever is installed.
+/// The fonts jot has with it, used by these names whatever is installed.
 pub const TERMINAL_DEFAULT: &str = "Fira Code";
 pub const INTERFACE_DEFAULT: &str = "Geist";
 
@@ -81,7 +81,7 @@ pub struct Fonts {
     pub ui: UiFont,
     pub heading: UiFont,
     pub small: UiFont,
-    /// The terminal's font for jterm's own use, where a command's output
+    /// The terminal's font for jot's own use, where a command's output
     /// is shown outside a terminal.
     pub mono: UiFont,
 }
@@ -211,7 +211,7 @@ fn interface_font(family: &str) -> Face {
 }
 
 /// The font families installed, by name, each once, A to Z: only those
-/// whose letters are all one width with `mono`. The fonts jterm has
+/// whose letters are all one width with `mono`. The fonts jot has
 /// with it are among them.
 pub fn families(mono: bool) -> Vec<String> {
     let mut args = vec!["-f", "%{family[0]}\n"];
@@ -401,7 +401,7 @@ impl Fonts {
     }
 }
 
-/// An interface font at one size, for jterm's own words.
+/// An interface font at one size, for jot's own words.
 pub struct UiFont {
     face: Face,
     scaler: ScaleContext,

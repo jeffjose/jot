@@ -1,7 +1,7 @@
 //! Builds libghostty-vt from the Ghostty source in vendor/ghostty (the
 //! vt-1.0.0 tag, a git submodule) with Zig and links it in statically.
 //! Its C API, read into Rust, is kept in src/ghostty_sys.rs. Also tells
-//! the build which commit it is of, for `jterm --version`.
+//! the build which commit it is of, for `jot --version`.
 
 use std::path::PathBuf;
 use std::process::Command;

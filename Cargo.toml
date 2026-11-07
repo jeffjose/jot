@@ -1,5 +1,5 @@
 [package]
-name = "jterm"
+name = "jot"
 version = "0.1.0"
 edition = "2021"
 description = "A small, fast terminal for Linux, with splits and workspaces"
@@ -42,7 +42,7 @@ strip = "debuginfo"
 [profile.dev.package."*"]
 opt-level = 3
 
-# jterm's own code optimized in `cargo run` too: drawing it pixel by pixel
+# jot's own code optimized in `cargo run` too: drawing it pixel by pixel
 # unoptimized is four times slower and scrolls in visible steps.
 [profile.dev]
 opt-level = 2

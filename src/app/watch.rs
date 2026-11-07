@@ -153,7 +153,7 @@ impl App {
     /// /tee FILE: the running command's output written to the file as
     /// well, until it ends; at a prompt, the next command's. With --all,
     /// everything the pane prints, until stopped. With no file, a new one
-    /// in /tmp/jterm named for the command; with one going, it stops.
+    /// in /tmp/jot named for the command; with one going, it stops.
     pub(super) fn tee(&mut self, id: PaneId, arg: &str) {
         let mut words: Vec<&str> = arg.split_whitespace().collect();
         let all = words.iter().any(|w| *w == "--all");
@@ -186,7 +186,7 @@ impl App {
         self.redraw();
     }
 
-    /// A new file for a tee with none named: /tmp/jterm/COMMAND-TIME.log,
+    /// A new file for a tee with none named: /tmp/jot/COMMAND-TIME.log,
     /// the command as the line has it, its first word.
     fn tee_file(&self, id: PaneId) -> PathBuf {
         let word = self
@@ -198,7 +198,7 @@ impl App {
             .filter(|w| !w.is_empty())
             .unwrap_or_else(|| "output".into());
         let stamp = std::process::Command::new("date").arg("+%Y%m%d-%H%M%S").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-        std::env::temp_dir().join("jterm").join(format!("{word}-{stamp}.log"))
+        std::env::temp_dir().join("jot").join(format!("{word}-{stamp}.log"))
     }
 
     pub(super) fn stop_tee(&mut self, id: PaneId) {

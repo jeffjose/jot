@@ -48,7 +48,7 @@ impl Pty {
         argv_ptrs.push(std::ptr::null());
         let dir = if cwd.is_dir() { cwd.to_path_buf() } else { home() };
         let dir = CString::new(dir.as_os_str().as_encoded_bytes()).unwrap_or_else(|_| CString::new("/").unwrap());
-        let env: Vec<(CString, CString)> = [("TERM", "xterm-256color"), ("COLORTERM", "truecolor"), ("TERM_PROGRAM", "jterm")]
+        let env: Vec<(CString, CString)> = [("TERM", "xterm-256color"), ("COLORTERM", "truecolor"), ("TERM_PROGRAM", "jot")]
             .iter()
             .map(|(k, v)| (CString::new(*k).unwrap(), CString::new(*v).unwrap()))
             .collect();
@@ -165,7 +165,7 @@ impl Drop for Pty {
             libc::kill(self.pid, libc::SIGHUP);
             libc::close(self.fd);
             // Reaped without waiting; one not yet gone is reaped by the
-            // next pane's, or when jterm ends.
+            // next pane's, or when jot ends.
             libc::waitpid(self.pid, std::ptr::null_mut(), libc::WNOHANG);
         }
     }

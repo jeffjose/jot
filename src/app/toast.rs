@@ -1,5 +1,5 @@
-//! jterm's own notices: a card at the bottom right of the window, for a
-//! long command that ended out of sight, a trigger, `jterm notify`. A
+//! jot's own notices: a card at the bottom right of the window, for a
+//! long command that ended out of sight, a trigger, `jot notify`. A
 //! click goes to the pane it is about; it goes by itself after a while.
 //! When the window is not in front, the desktop is told as well.
 
@@ -22,7 +22,7 @@ impl App {
     /// in front.
     pub(super) fn toast(&mut self, title: &str, body: &str, color: Option<u32>, pane: Option<PaneId>) {
         if !self.focused_window {
-            automate::notify(&format!("jterm · {title}"), body);
+            automate::notify(&format!("jot · {title}"), body);
         }
         self.toasts.push(Toast { title: title.into(), body: body.into(), color: color.unwrap_or(self.cur_accent), pane, at: Instant::now(), rect: Rect::default() });
         if self.toasts.len() > 4 {

@@ -91,7 +91,7 @@ pub struct Pane {
     /// A picture has been sent to it (kitty graphics): only then are its
     /// pictures looked for, each frame.
     has_images: bool,
-    /// Text to be printed into its terminal, by jterm, as /info is.
+    /// Text to be printed into its terminal, by jot, as /info is.
     print: Option<info::Print>,
     /// Its output written to a file too (/tee), and its command's lines
     /// filtered (/filter).
@@ -249,7 +249,7 @@ pub struct App {
     triggers: Vec<automate::Trigger>,
     /// When each trigger last went off, in each pane.
     fired: HashMap<(usize, PaneId), Instant>,
-    /// What the `jterm` command asks.
+    /// What the `jot` command asks.
     requests: Receiver<crate::remote::Request>,
     /// Panes in windows of their own, and the one with the keyboard.
     popouts: Vec<popout::Popout>,
@@ -263,7 +263,7 @@ pub struct App {
     recent: Vec<String>,
     /// Panes closed, the last last, for Ctrl Shift T.
     closed: Vec<Closed>,
-    /// What jterm last put on the clipboard and the selection.
+    /// What jot last put on the clipboard and the selection.
     copied: (Option<String>, Option<String>),
     saved_at: Instant,
     unsaved: bool,
@@ -300,7 +300,7 @@ fn folder_name(p: &std::path::Path) -> String {
 impl App {
     pub fn new(proxy: EventLoopProxy<()>, config: Config, session: Option<Session>) -> App {
         let (tx, rx) = channel();
-        // The `jterm` command's requests, each waking the window.
+        // The `jot` command's requests, each waking the window.
         let (req_tx, requests) = channel();
         let (wake, woke) = (proxy.clone(), Arc::new(AtomicBool::new(false)));
         let _ = woke;
@@ -427,7 +427,7 @@ impl App {
         let pty = match Pty::spawn(&start.cmd, &start.cwd, cols, rows, (0, 0)) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("jterm: could not start a shell: {e}");
+                eprintln!("jot: could not start a shell: {e}");
                 std::process::exit(1);
             }
         };
@@ -485,7 +485,7 @@ impl App {
     }
 
     /// The workspaces to begin with: those saved, else those in the
-    /// config, else one shell where jterm was started.
+    /// config, else one shell where jot was started.
     fn start(&mut self) {
         // Opening fresh, the last session offered on a card, unless the
         // settings say to bring it back always, or never.
@@ -712,7 +712,7 @@ impl App {
         self.changed();
     }
 
-    /// Closes a pane, its workspace with it when it was the last; jterm
+    /// Closes a pane, its workspace with it when it was the last; jot
     /// with the last workspace.
     fn close(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
         self.forget_minimized(id);
@@ -872,7 +872,7 @@ impl App {
     }
 
     /// Puts text on the clipboard, or on the selection (what a middle
-    /// click pastes), and keeps it: reading back what jterm itself put
+    /// click pastes), and keeps it: reading back what jot itself put
     /// there can come back empty on X11.
     pub(super) fn clip_set(&mut self, text: String, primary: bool) {
         let cb = self.clipboard.get_or_insert_with(|| arboard::Clipboard::new().expect("clipboard"));
@@ -887,7 +887,7 @@ impl App {
     }
 
     /// What is on the clipboard or the selection: another program's, or
-    /// else what jterm put there last.
+    /// else what jot put there last.
     pub(super) fn clip_get(&mut self, primary: bool) -> Option<String> {
         let cb = self.clipboard.get_or_insert_with(|| arboard::Clipboard::new().expect("clipboard"));
         let got = if primary {
@@ -980,7 +980,7 @@ impl App {
         }
     }
 
-    /// The keys jterm keeps for itself, screen's among them. True when
+    /// The keys jot keeps for itself, screen's among them. True when
     /// the key was one.
     fn binding(&mut self, code: KeyCode, event_loop: &ActiveEventLoop) -> bool {
         let m = self.mods;
@@ -2134,7 +2134,7 @@ impl ApplicationHandler<()> for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = window_attributes("jterm", LogicalSize::new(1400.0, 900.0));
+        let attrs = window_attributes("jot", LogicalSize::new(1400.0, 900.0));
         let window = Rc::new(event_loop.create_window(attrs).expect("failed to create window"));
         let context = Context::new(window.clone()).expect("failed to connect to display");
         self.surface = Some(Surface::new(&context, window.clone()).expect("failed to create surface"));
@@ -2317,7 +2317,7 @@ pub(super) fn present_frame(surface: &mut Surface<Rc<Window>, Rc<Window>>, windo
     let _ = if whole || rects.is_empty() { buffer.present() } else { buffer.present_with_damage(&rects) };
 }
 
-/// What a pane held when jterm last ended, shown above its new prompt,
+/// What a pane held when jot last ended, shown above its new prompt,
 /// with a line saying when it was kept.
 fn restore_scrollback(pane: Option<&mut Pane>, name: &str) {
     let (Some(p), Some((text, when))) = (pane, persist::load_scrollback(name)) else { return };
@@ -2327,7 +2327,7 @@ fn restore_scrollback(pane: Option<&mut Pane>, name: &str) {
     p.term.write(line.as_bytes());
 }
 
-/// Set when jterm is asked to end (SIGTERM, SIGHUP, as at a logout): the
+/// Set when jot is asked to end (SIGTERM, SIGHUP, as at a logout): the
 /// next turn of the loop keeps everything and ends.
 static ENDING: AtomicBool = AtomicBool::new(false);
 
@@ -2358,21 +2358,21 @@ impl App {
     }
 }
 
-/// jterm's own window settings: its icon, and its name for the desktop
+/// jot's own window settings: its icon, and its name for the desktop
 /// (the X11 class and the Wayland app id), so that a dock or a list of
-/// windows shows it as jterm, with jterm.desktop's icon.
+/// windows shows it as jot, with jot.desktop's icon.
 pub(super) fn window_attributes(title: &str, size: impl Into<winit::dpi::Size>) -> winit::window::WindowAttributes {
     use winit::platform::wayland::WindowAttributesExtWayland;
     use winit::platform::x11::WindowAttributesExtX11;
     let attrs = Window::default_attributes().with_title(title).with_inner_size(size).with_window_icon(app_icon());
-    let attrs = WindowAttributesExtX11::with_name(attrs, "jterm", "jterm");
-    WindowAttributesExtWayland::with_name(attrs, "jterm", "jterm")
+    let attrs = WindowAttributesExtX11::with_name(attrs, "jot", "jot");
+    WindowAttributesExtWayland::with_name(attrs, "jot", "jot")
 }
 
 /// The icon built in: a prompt on tomato, at 64 pixels, as a window's is
 /// shown; X11 takes no more in one request than a 256 one would need.
 fn app_icon() -> Option<winit::window::Icon> {
-    static PNG: &[u8] = include_bytes!("../assets/jterm.png");
+    static PNG: &[u8] = include_bytes!("../assets/jot.png");
     let mut reader = png::Decoder::new(std::io::Cursor::new(PNG)).read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;

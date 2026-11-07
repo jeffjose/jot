@@ -1,4 +1,4 @@
-//! What jterm makes of the shell's marks (OSC 133): each command as a
+//! What jot makes of the shell's marks (OSC 133): each command as a
 //! block, with a bar beside it in green, red, or amber while it runs, and
 //! its exit status and time when that is worth saying; Ctrl Shift Up and
 //! Down from prompt to prompt; a notice when a long command ends where you

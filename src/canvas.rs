@@ -347,14 +347,14 @@ pub fn readable(fg: u32, bg: u32, min: f32) -> u32 {
 fn text_lift() -> &'static [u8; 256] {
     static T: std::sync::OnceLock<[u8; 256]> = std::sync::OnceLock::new();
     T.get_or_init(|| {
-        let g = std::env::var("JTERM_TEXT_LIFT").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(TEXT_LIFT);
+        let g = std::env::var("JOT_TEXT_LIFT").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(TEXT_LIFT);
         std::array::from_fn(|i| ((i as f64 / 255.0).powf(1.0 / g) * 255.0).round() as u8)
     })
 }
 
 const TEXT_LIFT: f64 = 1.3;
 
-/// Icons jterm carries: 64-pixel masks, white on clear.
+/// Icons jot carries: 64-pixel masks, white on clear.
 pub mod icons {
     pub static KEYBOARD: &[u8] = include_bytes!("../assets/icons/keyboard.png");
     pub static TEE: &[u8] = include_bytes!("../assets/icons/tee.png");
@@ -403,7 +403,7 @@ fn icon_mask(png: &'static [u8], size: usize) -> std::rc::Rc<Vec<u8>> {
 }
 
 impl Canvas {
-    /// One of jterm's icons, `size` pixels square, its top left at x, y,
+    /// One of jot's icons, `size` pixels square, its top left at x, y,
     /// in `color`.
     #[allow(clippy::too_many_arguments)]
     pub fn icon(&mut self, png: &'static [u8], size: i32, x: i32, y: i32, color: u32, clip: crate::layout::Rect) {

@@ -1,7 +1,7 @@
 //! What is kept between runs. Settings and workspaces you write yourself
-//! live in ~/.config/jterm/config.toml; the workspaces as you left them
-//! are saved as you go to ~/.local/state/jterm/session.toml, and brought
-//! back when jterm starts: each pane's command, started afresh in the
+//! live in ~/.config/jot/config.toml; the workspaces as you left them
+//! are saved as you go to ~/.local/state/jot/session.toml, and brought
+//! back when jot starts: each pane's command, started afresh in the
 //! folder it was in.
 
 use std::path::{Path, PathBuf};
@@ -203,7 +203,7 @@ pub struct Config {
     /// The terminal's font, by family.
     #[serde(default = "default_font_family")]
     pub font_family: String,
-    /// The font of jterm's own words: captions, menus, settings.
+    /// The font of jot's own words: captions, menus, settings.
     #[serde(default = "default_ui_font_family")]
     pub ui_font_family: String,
     /// The height of a line, as a share of the font's own: 1.1 is VS Code's.
@@ -300,11 +300,22 @@ pub struct Session {
 }
 
 fn config_dir() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join("jterm")
+    renamed(std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")))
 }
 
 pub fn state_dir() -> PathBuf {
-    std::env::var_os("XDG_STATE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".local/state")).join("jterm")
+    renamed(std::env::var_os("XDG_STATE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".local/state")))
+}
+
+/// jot's folder in `base`; one left from when it was called jterm is
+/// moved to it, the first time.
+fn renamed(base: PathBuf) -> PathBuf {
+    let dir = base.join("jot");
+    let old = base.join("jterm");
+    if !dir.exists() && old.is_dir() {
+        let _ = std::fs::rename(&old, &dir);
+    }
+    dir
 }
 
 const CONFIG: &str = include_str!("../assets/config.toml");
@@ -322,7 +333,7 @@ pub fn load_config() -> Config {
         }
     };
     toml::from_str(&text).unwrap_or_else(|e| {
-        eprintln!("jterm: {} not read: {e}", path.display());
+        eprintln!("jot: {} not read: {e}", path.display());
         Config::default()
     })
 }
@@ -337,7 +348,7 @@ pub fn save_session(session: &Session) {
     let dir = state_dir();
     let _ = std::fs::create_dir_all(&dir);
     let tmp = dir.join("session.toml.tmp");
-    if std::fs::write(&tmp, format!("# Saved by jterm as you work: the workspaces as you left them.\n\n{text}")).is_ok() {
+    if std::fs::write(&tmp, format!("# Saved by jot as you work: the workspaces as you left them.\n\n{text}")).is_ok() {
         let _ = std::fs::rename(tmp, dir.join("session.toml"));
     }
 }
@@ -351,8 +362,8 @@ mod tests {
         let s: Config = toml::from_str(
             r#"
             [[workspace]]
-            name = "jterm"
-            cwd = "~/scripts/jterm"
+            name = "jot"
+            cwd = "~/scripts/jot"
             layout = { v = [ { h = ["claude", "claude"] }, "", { cmd = "htop", cwd = "/tmp" } ], sizes = [2, 1, 1] }
 
             [[workspace]]
@@ -438,7 +449,7 @@ pub fn unset_config_value(key: &str) {
 
 /// A trigger in the config: a pattern, and notify (a desktop notice),
 /// open (the link on the line), or run (`command`, with the line in
-/// $JTERM_MATCH).
+/// $JOT_MATCH).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TriggerSpec {
     #[serde(rename = "match")]

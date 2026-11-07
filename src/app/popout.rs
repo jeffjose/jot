@@ -41,7 +41,7 @@ impl App {
         let (cols, rows) = self.panes.get(&id).map_or((80, 24), |p| (p.cols, p.rows));
         let size = winit::dpi::PhysicalSize::new((cols as i32 * self.fonts.cell_w + self.px(24.0)) as u32, (rows as i32 * self.fonts.cell_h + self.px(16.0) + self.caption_h()) as u32);
         let title = self.panes.get(&id).map(|p| p.caption.clone()).unwrap_or_default();
-        let attrs = window_attributes(&format!("{title} · jterm"), size);
+        let attrs = window_attributes(&format!("{title} · jot"), size);
         let Ok(window) = event_loop.create_window(attrs) else { return };
         let window = Rc::new(window);
         let Ok(context) = Context::new(window.clone()) else { return };

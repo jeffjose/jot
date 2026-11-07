@@ -1,23 +1,23 @@
-"""Makes jterm's icon: Solar's prompt in a square (`>_`), from its bold
+"""Makes jot's icon: Solar's prompt in a square (`>_`), from its bold
 duotone set, the square in tomato and the prompt in white, as clutch's
 and hotshot's are made, so that it reads on a dark panel and a light one.
 
-    python3 tools/app_icon.py ICONS_JSON assets/jterm.svg
-    convert -background none -density 1024 assets/jterm.svg \
-        -resize 256x256 assets/jterm.png
+    python3 tools/app_icon.py ICONS_JSON assets/jot.svg
+    convert -background none -density 1024 assets/jot.svg \
+        -resize 256x256 assets/jot.png
 
 ICONS_JSON is the set as Iconify publishes it:
 https://cdn.jsdelivr.net/npm/@iconify-json/solar/icons.json
 
-The PNG is built into jterm, for its windows; the SVG is what
-`jterm setup` puts in ~/.local/share/icons/hicolor/scalable/apps/.
+The PNG is built into jot, for its windows; the SVG is what
+`jot setup` puts in ~/.local/share/icons/hicolor/scalable/apps/.
 """
 
 import json
 import re
 import sys
 
-# Radix's tomato: jterm's own color.
+# Radix's tomato: jot's own color.
 BODY = "#E54D2E"
 MARKS = "#FFFFFF"
 
