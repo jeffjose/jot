@@ -222,8 +222,6 @@ impl App {
         let line = self.fonts.ui.height;
         let row_h = line * 2 + px(2.0);
         let mut hits = Vec::new();
-        // The panes behind are dimmed.
-        self.canvas.round_fill(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height }, 0, 0x000000, 110);
         self.canvas.panel(r, px(12.0), PANEL, EDGE);
 
         // Down the left: the sections.
