@@ -551,12 +551,10 @@ impl App {
         field.draw(&mut self.canvas, &mut self.fonts.ui, gx, ty, c.text, mix(accent, c.side, 140), true, field_clip);
         self.canvas.text(&mut self.fonts.small, hint, (area.x + area.w - pad - hw) as f32, y + (row_h - sh) / 2, c.faint, area);
         self.damage.push(area);
-        // Slash commands, rising from the line.
-        let rows = self.bar_rows_for(&field.string());
-        if !rows.is_empty() {
-            let first = selected.saturating_sub(7);
-            self.draw_command_list(&rows, selected, first, gx - px(12.0), area.y + area.h, area.y - px(4.0), true);
-        }
+        // Where the slash commands rise from: drawn over everything, after
+        // the panes, so that what the pane prints does not cover them.
+        self.bar_list_at = Some((gx - px(12.0), area.y - px(4.0)));
+        let _ = selected;
     }
 }
 
@@ -662,5 +660,25 @@ mod tests {
         assert_eq!(expand_bang("!?stat", &h).as_deref(), Some("git status"));
         assert_eq!(expand_bang("!nope", &h), None);
         assert_eq!(expand_bang("hello", &h), None);
+    }
+}
+
+impl App {
+    /// Whether the bar's slash commands are showing, so frames are drawn
+    /// whole while they are.
+    pub(super) fn bar_list_open(&self) -> bool {
+        self.bar.as_ref().is_some_and(|b| b.field.text.first() == Some(&'/'))
+    }
+
+    /// The bar's slash commands, rising from its line, over everything.
+    pub(super) fn draw_bar_list(&mut self) {
+        let Some(b) = &self.bar else { return };
+        let (text, selected) = (b.field.string(), b.selected);
+        let Some((x, y)) = self.bar_list_at else { return };
+        let rows = self.bar_rows_for(&text);
+        if !rows.is_empty() {
+            let first = selected.saturating_sub(7);
+            self.draw_command_list(&rows, selected, first, x, y, y, true);
+        }
     }
 }

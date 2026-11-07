@@ -28,7 +28,7 @@ pub fn notify(title: &str, body: &str) {
 }
 
 /// What a pane printed as plain lines: escape sequences taken out.
-fn plain(bytes: &[u8]) -> String {
+pub(super) fn plain(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -51,6 +51,11 @@ fn plain(bytes: &[u8]) -> String {
                     }
                 }
                 _ => {}
+            }
+        } else if c == '\x08' {
+            // A backspace, as a line editor rubs out: the character before goes.
+            if !out.ends_with('\n') {
+                out.pop();
             }
         } else if c == '\r' {
             continue;

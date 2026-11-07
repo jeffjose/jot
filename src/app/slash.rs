@@ -35,6 +35,13 @@ pub enum Does {
     Info,
     /// The command line in the long-command editor.
     Edit,
+    /// Output to a file too; only lines with some text shown; matches
+    /// found and lit, as Ctrl F does. Each takes what follows it.
+    Tee,
+    Filter,
+    Grep,
+    /// The workspace given the name that follows.
+    Rename,
     Kill,
 }
 
@@ -52,7 +59,7 @@ impl Command {
 
     /// Whether it takes a word after it, picked from a list.
     fn takes_arg(&self) -> bool {
-        matches!(self.does, Does::Theme | Does::Accent | Does::Cd)
+        matches!(self.does, Does::Theme | Does::Accent | Does::Cd | Does::Tee | Does::Filter | Does::Grep | Does::Rename)
     }
 }
 
@@ -97,7 +104,7 @@ impl App {
                 Command::new("multi", "Type into multiple panes", Does::Act(Action::Broadcast))
             },
             Command::new("new-workspace", "New workspace in this folder", Does::Act(Action::NewWorkspace)),
-            Command::new("rename", "Rename workspace", Does::Act(Action::Rename)),
+            Command::new("rename", "Rename this workspace", Does::Rename),
             Command::new("clear", "Clear terminal", Does::Act(Action::Clear)),
             Command::new("theme", "Set the color theme", Does::Theme),
             Command::new("accent", "Set the accent color", Does::Accent),
@@ -106,6 +113,9 @@ impl App {
             Command::new("captions", "Turn pane captions on or off", Does::Toggle(Key::Captions)),
             Command::new("cd", "Go to a project folder", Does::Cd),
             Command::new("edit", "Edit this command in a larger editor", Does::Edit),
+            Command::new("tee", "Write this pane's output to a file as well", Does::Tee),
+            Command::new("filter", "Show only the running command's lines with some text", Does::Filter),
+            Command::new("grep", "Find and light matches, as Ctrl F", Does::Grep),
             Command::new("date", "Insert today's date", Does::Date),
             Command::new("cwd", "Insert this folder's path", Does::Cwd),
         ];
@@ -165,6 +175,22 @@ impl App {
             return Vec::new();
         }
         if let Some((c, arg)) = self.slash_arg_command(typed).filter(|_| !mid) {
+            // Free text after it: one row, saying what it will do.
+            if matches!(c.does, Does::Tee | Does::Filter | Does::Grep | Does::Rename) {
+                let arg = arg.trim();
+                let what = match (&c.does, arg.is_empty()) {
+                    (Does::Tee, true) => "Stop writing to the file".to_string(),
+                    (Does::Tee, false) => "Write this pane's output here too".to_string(),
+                    (Does::Filter, true) => "Stop filtering".to_string(),
+                    (Does::Filter, false) => "Show only lines with this".to_string(),
+                    (Does::Rename, true) => "Type the new name, or Enter for the rename box".to_string(),
+                    (Does::Rename, false) => "The new name for this workspace".to_string(),
+                    (_, true) => "Type what to find".to_string(),
+                    _ => "Find and light it".to_string(),
+                };
+                let label = if arg.is_empty() { c.name.clone() } else { format!("{} {arg}", c.name) };
+                return vec![Row { label, what, kind: kind_of(&c.does) }];
+            }
             let mut rows: Vec<(u8, Row)> = self
                 .slash_values(&c.does)
                 .into_iter()
@@ -250,7 +276,8 @@ impl App {
                 // A second slash, or a space mid-line: a path, or words,
                 // after all.
                 let mid = self.slash.as_ref().is_some_and(|s| s.mid);
-                if text.contains('/') || (mid && text.contains(char::is_whitespace)) {
+                let has_word = self.slash.as_ref().is_some_and(|s| s.typed.contains(' '));
+                if (text.contains('/') && !has_word) || (mid && text.contains(char::is_whitespace)) {
                     self.close_slash();
                     return false;
                 }
@@ -431,6 +458,20 @@ impl App {
             Does::Run(cmd) => write(self, format!("{cmd}\r").as_bytes()),
             Does::Stop => self.stop_job(id),
             Does::Info => self.print_info(id),
+            Does::Tee => self.tee(id, arg),
+            Does::Filter => self.filter(id, arg),
+            Does::Grep => self.find_text(id, arg),
+            Does::Rename => match arg.trim() {
+                "" => self.run(Action::Rename, event_loop),
+                name => {
+                    if let Some(ws) = self.workspaces.iter_mut().find(|w| w.root.contains(id)) {
+                        ws.name = name.to_string();
+                    }
+                    self.unsaved = true;
+                    self.set_title();
+                    self.full = true;
+                }
+            },
             Does::Edit => {
                 let text = self.prompt_line(id);
                 self.open_editor_with(id, &text, false);
@@ -528,6 +569,9 @@ fn kind_of(d: &Does) -> &'static str {
         Does::Cd => "go",
         Does::Insert(_) | Does::Date | Does::Cwd => "insert",
         Does::Edit => "edit",
+        Does::Tee | Does::Filter => "watch",
+        Does::Grep => "find",
+        Does::Rename => "jterm",
         Does::Run(_) => "run",
         Does::Stop | Does::Kill | Does::Info => "job",
     }

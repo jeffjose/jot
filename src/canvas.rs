@@ -357,6 +357,8 @@ const TEXT_LIFT: f64 = 1.3;
 /// Icons jterm carries: 64-pixel masks, white on clear.
 pub mod icons {
     pub static KEYBOARD: &[u8] = include_bytes!("../assets/icons/keyboard.png");
+    pub static TEE: &[u8] = include_bytes!("../assets/icons/tee.png");
+    pub static FILTER: &[u8] = include_bytes!("../assets/icons/filter.png");
 }
 
 /// An icon's mask at `size` pixels square: its coverage, scaled down from

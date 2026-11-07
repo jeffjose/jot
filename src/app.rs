@@ -42,6 +42,7 @@ mod restore;
 mod settings;
 mod slash;
 mod toast;
+mod watch;
 
 // Colors from Radix, as the screen setup has them.
 const STATUS_BG: u32 = 0x111111;
@@ -86,6 +87,10 @@ pub struct Pane {
     has_images: bool,
     /// Text to be printed into its terminal, by jterm, as /info is.
     print: Option<info::Print>,
+    /// Its output written to a file too (/tee), and its command's lines
+    /// filtered (/filter).
+    tee: Option<watch::Tee>,
+    filter: Option<watch::Filter>,
 }
 
 /// A pane closed, to bring back.
@@ -166,9 +171,11 @@ pub struct App {
     bar_hits: Vec<(Rect, PaneId, bar::BarHit)>,
     /// Which of them the pointer is on, to light it.
     bar_lit: Option<usize>,
+    /// Where an open bar's slash commands rise from.
+    bar_list_at: Option<(i32, i32)>,
     /// The MULTI tags on captions, to click, and the one the pointer is on.
-    multi_tags: Vec<(Rect, PaneId)>,
-    multi_lit: Option<PaneId>,
+    multi_tags: Vec<(Rect, PaneId, watch::Tag)>,
+    multi_lit: Option<(PaneId, watch::Tag)>,
     /// Commands run now from a bar, as they end: pane, output, status.
     ran: Arc<std::sync::Mutex<Vec<(PaneId, String, i32)>>>,
     last_click: Option<(Instant, (u16, u16), u8)>,
@@ -300,6 +307,7 @@ impl App {
             bar: None,
             bar_hits: Vec::new(),
             bar_lit: None,
+            bar_list_at: None,
             multi_tags: Vec::new(),
             multi_lit: None,
             ran: Default::default(),
@@ -389,7 +397,7 @@ impl App {
         let caption = folder_name(&start.cwd);
         self.panes.insert(
             id,
-            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None },
+            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None },
         );
         id
     }
@@ -830,9 +838,9 @@ impl App {
 
     /// The pointer over a MULTI tag: lit, and the hand. True when on one.
     fn multi_hover(&mut self, x: i32, y: i32) -> bool {
-        let at = self.multi_tags.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| *id);
+        let at = self.multi_tags.iter().find(|(r, _, _)| r.contains(x, y)).map(|(_, id, kind)| (*id, *kind));
         if at != self.multi_lit {
-            for id in [self.multi_lit, at].into_iter().flatten() {
+            for id in [self.multi_lit.map(|l| l.0), at.map(|a| a.0)].into_iter().flatten() {
                 if let Some(p) = self.panes.get_mut(&id) {
                     p.full = true;
                 }
@@ -1140,14 +1148,18 @@ impl App {
                 return;
             }
         }
-        // Typing into several: a click on a pane's MULTI tag leaves it out,
-        // or takes it back. Without captions, there being no tag, a click
-        // anywhere on the pane does.
+        // A tag on a caption: MULTI takes the pane in or out of typing into
+        // several; TEE and FILTER stop. Without captions, there being no
+        // tags, a click anywhere on a pane takes it in or out.
         if button == MouseButton::Left && !self.roam_shown {
-            let tag = self.multi_tags.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| *id);
-            let bare = if self.config.captions { None } else { self.pane_at(x, y).map(|(id, _)| id).filter(|id| self.typed_into(*id).is_some()) };
-            if let Some(id) = tag.or(bare) {
-                self.toggle_multi_pane(id);
+            let tag = self.multi_tags.iter().find(|(r, _, _)| r.contains(x, y)).map(|(_, id, kind)| (*id, *kind));
+            let bare = if self.config.captions { None } else { self.pane_at(x, y).map(|(id, _)| id).filter(|id| self.typed_into(*id).is_some()).map(|id| (id, watch::Tag::Multi)) };
+            if let Some((id, kind)) = tag.or(bare) {
+                match kind {
+                    watch::Tag::Multi => self.toggle_multi_pane(id),
+                    watch::Tag::Tee => self.stop_tee(id),
+                    watch::Tag::Filter => self.stop_filter(id),
+                }
                 return;
             }
         }
@@ -1352,6 +1364,8 @@ impl App {
         while let Ok(out) = self.rx.try_recv() {
             match out {
                 Output::Bytes(id, bytes) => {
+                    let watched = self.panes.get(&id).is_some_and(|p| p.tee.is_some() || p.filter.is_some());
+                    let bytes = if watched { self.watch_output(id, bytes) } else { bytes };
                     if let Some(p) = self.panes.get_mut(&id) {
                         p.term.write(&bytes);
                         search_again |= searched == Some(id);
@@ -1460,7 +1474,7 @@ impl App {
         self.refresh_captions();
         // With notices up, the frame is drawn whole, so panes do not draw
         // over them.
-        let full = std::mem::take(&mut self.full) || !self.toasts.is_empty() || self.offered.is_some() || self.slash.is_some();
+        let full = std::mem::take(&mut self.full) || !self.toasts.is_empty() || self.offered.is_some() || self.slash.is_some() || self.bar_list_open();
         if full {
             self.canvas.fill(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height }, self.cur_theme.divider());
             self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
@@ -1511,6 +1525,7 @@ impl App {
             self.draw_toasts();
             self.draw_offer();
             self.draw_slash();
+            self.draw_bar_list();
         }
         let drawn = t0.elapsed();
         self.present();
@@ -1734,22 +1749,32 @@ impl App {
         // several panes, the last a button that takes this pane in or out.
         let mut right = bar.x + bar.w - pad as i32;
         let copying = self.copy_mode.as_ref().is_some_and(|c| self.panes.get(&c.pane).is_some_and(|p| p.rect == rect));
-        self.multi_tags.retain(|(_, p)| *p != id);
+        self.multi_tags.retain(|(_, p, _)| *p != id);
+        // The pane's watchers and its typing into several, each a pill
+        // with its icon, that a click stops or toggles.
+        let (tee, filter) = self.panes.get(&id).map_or((None, None), |p| (p.tee.as_ref().map(|t| t.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), p.filter.as_ref().map(|f| (f.text.clone(), f.armed))));
+        let mut tags: Vec<(watch::Tag, String, u32, &'static [u8])> = Vec::new();
         if let Some(included) = into {
-            let lit = self.multi_lit == Some(id);
-            let base = if included { 0xE5484D } else { 0x6F6F6F };
+            tags.push((watch::Tag::Multi, if included { "MULTI" } else { "SKIPPED" }.into(), if included { 0xE5484D } else { 0x6F6F6F }, crate::canvas::icons::KEYBOARD));
+        }
+        if let Some(name) = tee {
+            tags.push((watch::Tag::Tee, format!("TEE {name}"), 0x12A594, crate::canvas::icons::TEE));
+        }
+        if let Some((text, armed)) = filter {
+            let label = if armed { format!("NEXT: {text}") } else { text };
+            tags.push((watch::Tag::Filter, label, 0x8E4EC6, crate::canvas::icons::FILTER));
+        }
+        for (kind, label, base, icon) in tags {
+            let lit = self.multi_lit == Some((id, kind));
             let color = if lit { mix(base, 0xFFFFFF, 40) } else { base };
-            let label = if included { "MULTI" } else { "SKIPPED" };
-            let (gap, icon_w) = (self.px(6.0), self.px(15.0).min(h - self.px(4.0)));
-            let w = gap + icon_w + gap + self.fonts.ui.width(label) + gap;
+            let (gap, size) = (self.px(6.0), self.px(15.0).min(h - self.px(4.0)));
+            let w = (gap + size + gap + self.fonts.ui.width(&label) + gap).min(bar.w / 2);
             let r = Rect { x: right - w, y: bar.y, w, h };
             self.canvas.fill(r, color);
-            // A keyboard: typing, into more than one pane, as the label says.
             let fg = crate::canvas::on(color);
-            let size = self.px(15.0).min(h - self.px(4.0));
-            self.canvas.icon(crate::canvas::icons::KEYBOARD, size, r.x + gap, bar.y + (h - size) / 2, fg, r);
-            self.canvas.text(&mut self.fonts.ui, label, (r.x + gap + icon_w + gap) as f32, ty, fg, r);
-            self.multi_tags.push((r, id));
+            self.canvas.icon(icon, size, r.x + gap, bar.y + (h - size) / 2, fg, r);
+            self.canvas.text_fit(&mut self.fonts.ui, &label, r.x + gap + size + gap, ty, r.w - size - gap * 3, fg, r);
+            self.multi_tags.push((r, id, kind));
             right = r.x - pad as i32 / 2;
         }
         for (on, tag, color) in [(copying, " COPY ", 0xFFC53D), (scrolled && !copying, " SCROLLED ", SCROLLED)] {

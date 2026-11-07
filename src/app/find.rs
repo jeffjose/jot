@@ -226,3 +226,23 @@ impl App {
         self.damage.push(Rect { x: r.x - px(16.0), y: r.y - px(16.0), w: r.w + px(32.0), h: r.h + px(32.0) });
     }
 }
+
+impl App {
+    /// /grep TEXT: find open on a pane with the text in it, its matches
+    /// lit, the latest picked, as Ctrl F and typing it would.
+    pub(super) fn find_text(&mut self, id: PaneId, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        self.close_find();
+        let Some(p) = self.panes.get(&id) else { return };
+        let mut field = TextField::new(text);
+        field.anchor = None;
+        let mut search = p.term.search();
+        search.set(text);
+        search.step(true);
+        self.find = Some(Find { pane: id, field, search, hover: None, hits: Vec::new() });
+        self.refresh_find();
+    }
+}
