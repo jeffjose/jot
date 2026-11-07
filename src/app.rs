@@ -63,7 +63,8 @@ pub struct Pane {
     rows: u16,
     /// Every row to be drawn, not only the ones that changed.
     full: bool,
-    cursor_was: Option<u16>,
+    /// Where the cursor was drawn, column and row, if it was.
+    cursor_was: Option<(u16, u16)>,
     /// The theme its terminal has: its workspace's, or the settings'.
     theme: &'static Theme,
     caption: String,
@@ -1349,22 +1350,25 @@ impl App {
         let full = full || p.full;
         p.full = false;
         let dirty = p.term.update();
-        if dirty == 0 && !full {
+        // The cursor moved with nothing written, as a shell moves it back
+        // a word with backspaces: its old row and its new are drawn again.
+        let cursor = p.term.cursor();
+        let cursor_now = cursor.visible.then_some((cursor.x, cursor.y));
+        if dirty == 0 && !full && cursor_now == p.cursor_was {
             return;
         }
         let (dfg, dbg) = p.term.colors();
-        let cursor = p.term.cursor();
         let rect = p.rect;
         let content = p.content;
         if full {
             self.canvas.fill(Rect { x: rect.x, y: rect.y, w: rect.w, h: rect.h - cap_h }, dbg);
         }
         let mut extra = Vec::new();
-        extra.extend(p.cursor_was);
+        extra.extend(p.cursor_was.map(|(_, y)| y));
         if cursor.visible {
             extra.push(cursor.y);
         }
-        p.cursor_was = cursor.visible.then_some(cursor.y);
+        p.cursor_was = cursor_now;
         let mut row = Vec::new();
         // With pictures in it, the pane is drawn whole, pictures over text.
         let mut placements = p.term.placements();
