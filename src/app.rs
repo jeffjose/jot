@@ -37,6 +37,7 @@ mod info;
 mod dnd;
 mod find;
 mod links;
+mod float;
 mod minimize;
 mod pin;
 mod mouse;
@@ -207,6 +208,8 @@ pub struct App {
     /// The MULTI tags on captions, to click, and the one the pointer is on.
     multi_tags: Vec<(Rect, PaneId, watch::Tag)>,
     multi_lit: Option<(PaneId, watch::Tag)>,
+    /// The pane the pointer is over, which shows its floating buttons.
+    float_pane: Option<PaneId>,
     /// Minimized panes' rows, to click, and the one the pointer is on.
     mini_hits: Vec<(Rect, PaneId)>,
     mini_lit: Option<PaneId>,
@@ -354,6 +357,7 @@ impl App {
             bar_clicks: None,
             multi_tags: Vec::new(),
             multi_lit: None,
+            float_pane: None,
             mini_hits: Vec::new(),
             mini_lit: None,
             mini_rows: Vec::new(),
@@ -1394,6 +1398,7 @@ impl App {
 
     fn mouse_move(&mut self, x: i32, y: i32) {
         self.pointer = (x, y);
+        self.float_track(x, y);
         if self.offer_hover(x, y) || self.find_hover(x, y) || self.settings_hover(x, y) || self.overlay_hover(x, y) {
             if let Some(w) = &self.window {
                 w.set_cursor(CursorIcon::Default);
@@ -1911,6 +1916,7 @@ impl App {
             self.draw_bar(id);
         }
         self.draw_blocks(id);
+        self.draw_float(id);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1933,40 +1939,11 @@ impl App {
         let mut right = bar.x + bar.w - pad as i32;
         let copying = self.copy_mode.as_ref().is_some_and(|c| self.panes.get(&c.pane).is_some_and(|p| p.rect == rect));
         self.multi_tags.retain(|(_, p, _)| *p != id);
-        // At the far right, the focus button: this pane alone, and back;
-        // before it, while a command runs, the restart button.
-        // Only where there are panes to hide, or one is alone already.
-        let zoomed = self.ws().zoom.is_some();
-        let many = {
-            let mut ids = Vec::new();
-            self.ws().root.panes(&mut ids);
-            ids.len() > 1
-        };
-        if n > 0 && (many || zoomed) && self.ws().root.contains(id) {
-            let r = Rect { x: right - h + pad as i32, y: bar.y, w: h, h };
-            if self.multi_lit == Some((id, watch::Tag::Focus)) {
-                self.canvas.fill(r, mix(bg, fg, 50));
-            }
-            let size = h * 6 / 10;
-            let icon = if zoomed { crate::canvas::icons::UNFOCUS } else { crate::canvas::icons::FOCUS };
-            self.canvas.icon(icon, size, r.x + (h - size) / 2, r.y + (h - size) / 2, fg, r);
-            self.multi_tags.push((r, id, watch::Tag::Focus));
-            right = r.x - pad as i32 / 2;
-        }
-        // Before it, minimize: the pane to a row at the top, still running.
-        if n > 0 && many && !zoomed && self.ws().root.contains(id) {
-            let r = Rect { x: right + pad as i32 / 2 - h, y: bar.y, w: h, h };
-            if self.multi_lit == Some((id, watch::Tag::Minimize)) {
-                self.canvas.fill(r, mix(bg, fg, 50));
-            }
-            let (lw, lh) = (h * 4 / 10, self.px(2.0).max(2));
-            self.canvas.fill(Rect { x: r.x + (h - lw) / 2, y: r.y + h * 6 / 10, w: lw, h: lh }, fg);
-            self.multi_tags.push((r, id, watch::Tag::Minimize));
-            right = r.x - pad as i32 / 2;
-        }
+        // At the far right, while a command runs, the restart button. (Focus
+        // and minimize float at the pane's top right: draw_float.)
         let running = self.panes.get(&id).is_some_and(|p| p.shell.marked && !p.shell.at_prompt && p.shell.running.is_some());
         if n > 0 && running {
-            let r = Rect { x: right + pad as i32 / 2 - h, y: bar.y, w: h, h };
+            let r = Rect { x: right - h + pad as i32, y: bar.y, w: h, h };
             if self.multi_lit == Some((id, watch::Tag::Restart)) {
                 self.canvas.fill(r, mix(bg, fg, 50));
             }
@@ -1978,7 +1955,7 @@ impl App {
         // The pane's watchers and its typing into several, each a pill
         // with its icon, that a click stops or toggles.
         let (tee, filter) = self.panes.get(&id).map_or((None, None), |p| (p.tee.as_ref().map(|t| format!("{} ({})", t.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), t.lines)), p.filter.as_ref().map(|f| (f.text.clone(), f.armed))));
-        let mut tags: Vec<(watch::Tag, String, u32, &'static [u8])> = Vec::new();
+        let mut tags: Vec<(watch::Tag, String, u32, char)> = Vec::new();
         if let Some(included) = into {
             tags.push((watch::Tag::Multi, if included { "MULTI" } else { "SKIPPED" }.into(), if included { 0xE5484D } else { 0x6F6F6F }, crate::canvas::icons::KEYBOARD));
         }
@@ -2009,11 +1986,7 @@ impl App {
                 let x = Rect { x: r.x + r.w - stop, y: r.y, w: stop, h };
                 let x_lit = self.multi_lit == Some((id, watch::Tag::TeeStop));
                 self.canvas.fill(x, if x_lit { mix(base, 0x000000, 60) } else { mix(base, 0x000000, 25) });
-                let (cx, cy, arm, dot) = (x.x + stop / 2, x.y + h / 2, self.px(3.5), self.px(1.5).max(2));
-                for t in -arm..=arm {
-                    self.canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy + t - dot / 2, w: dot, h: dot }, dot / 2, fg, 255);
-                    self.canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy - t - dot / 2, w: dot, h: dot }, dot / 2, fg, 255);
-                }
+                self.canvas.icon_in(crate::canvas::icons::CLOSE, x, h * 6 / 10, fg);
                 self.multi_tags.push((x, id, watch::Tag::TeeStop));
             }
             self.multi_tags.push((body, id, kind));
@@ -2215,6 +2188,7 @@ impl ApplicationHandler<()> for App {
             }
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } => self.key(event, event_loop),
             WindowEvent::CursorMoved { position, .. } => self.mouse_move(position.x as i32, position.y as i32),
+            WindowEvent::CursorLeft { .. } => self.float_leave(),
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => self.mouse_press(button, event_loop),
             WindowEvent::MouseInput { state: ElementState::Released, .. } => self.mouse_release(),
             WindowEvent::MouseWheel { delta, .. } => {

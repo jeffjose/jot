@@ -524,18 +524,8 @@ impl App {
                 // take out.
                 app.canvas.round_fill(r, ib / 2, if play { accent } else { 0xE5484D }, 48);
             }
-            let (cx, cy, arm, dot) = (r.x + ib / 2, r.y + ib / 2, px(4.0), px(2.0).max(2));
-            if play {
-                for t in 0..=arm * 2 {
-                    let half = (arm * 2 - t) / 2;
-                    app.canvas.fill(Rect { x: cx - arm + 1 + t, y: cy - half, w: 1, h: half * 2 + 1 }, if lit { accent } else { c.dim });
-                }
-            } else {
-                for t in -arm..=arm {
-                    app.canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy + t - dot / 2, w: dot, h: dot }, dot / 2, if lit { 0xE5484D } else { c.dim }, 255);
-                    app.canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy - t - dot / 2, w: dot, h: dot }, dot / 2, if lit { 0xE5484D } else { c.dim }, 255);
-                }
-            }
+            let (icon, on) = if play { (crate::canvas::icons::PLAY, accent) } else { (crate::canvas::icons::CLOSE, 0xE5484D) };
+            app.canvas.icon_in(icon, r, ib * 6 / 10, if lit { on } else { c.dim });
             app.bar_hits.push((r, id, hit));
         };
         if !open {

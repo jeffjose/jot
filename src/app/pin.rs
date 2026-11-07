@@ -125,12 +125,8 @@ impl App {
             if lit(PinHit::Run) {
                 self.canvas.round_fill(play, ib / 2, accent, 48);
             }
-            let (cx, cy, s) = (play.x + ib / 2 - px(1.0), play.y + ib / 2, px(4.0));
             let tri = if lit(PinHit::Run) { accent } else { c.dim };
-            for t in 0..=s * 2 {
-                let half = (s * 2 - t) / 2;
-                self.canvas.fill(Rect { x: cx - s + t, y: cy - half, w: 1, h: half * 2 + 1 }, tri);
-            }
+            self.canvas.icon_in(crate::canvas::icons::PLAY, play, ib * 6 / 10, tri);
             // Then how it last went, a dot; the command; and when, or that
             // it is running, just after it. × at the right, on hover.
             let x_btn = Rect { x: area.x + area.w - px(6.0) - ib, y: y + (row_h - ib) / 2, w: ib, h: ib };
@@ -160,12 +156,8 @@ impl App {
                 if lit(PinHit::Remove) {
                     self.canvas.round_fill(x_btn, ib / 2, 0xE5484D, 48);
                 }
-                let (bx, by, arm, dot) = (x_btn.x + ib / 2, x_btn.y + ib / 2, px(3.5), px(1.5).max(2));
                 let color = if lit(PinHit::Remove) { 0xE5484D } else { c.dim };
-                for t in -arm..=arm {
-                    self.canvas.round_fill(Rect { x: bx + t - dot / 2, y: by + t - dot / 2, w: dot, h: dot }, dot / 2, color, 255);
-                    self.canvas.round_fill(Rect { x: bx + t - dot / 2, y: by - t - dot / 2, w: dot, h: dot }, dot / 2, color, 255);
-                }
+                self.canvas.icon_in(crate::canvas::icons::CLOSE, x_btn, ib * 6 / 10, color);
             }
             self.pin_hits.push((play, id, i, PinHit::Run));
             self.pin_hits.push((x_btn, id, i, PinHit::Remove));
