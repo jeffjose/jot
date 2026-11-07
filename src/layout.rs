@@ -233,6 +233,16 @@ impl Node {
 
     /// Moves the line at `gap` of the split at `path` so that the share
     /// before it is `fraction` of the two it lies between.
+    /// Swaps two panes' places.
+    pub fn swap(&mut self, a: PaneId, b: PaneId) {
+        match self {
+            Node::Pane(p) if *p == a => *p = b,
+            Node::Pane(p) if *p == b => *p = a,
+            Node::Pane(_) => {}
+            Node::Split { children, .. } => children.iter_mut().for_each(|c| c.swap(a, b)),
+        }
+    }
+
     pub fn drag(&mut self, path: &[usize], gap: usize, fraction: f32) {
         match (self, path.split_first()) {
             (Node::Split { children, .. }, Some((&i, rest))) => children[i].drag(rest, gap, fraction),

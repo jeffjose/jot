@@ -122,6 +122,34 @@ impl Canvas {
         }
     }
 
+    /// A copy of `r`'s pixels, scaled down to `width` wide.
+    pub fn snapshot(&self, r: Rect, width: i32) -> (Vec<u32>, i32, i32) {
+        let width = width.min(r.w).max(1);
+        let height = (r.h * width / r.w.max(1)).max(1);
+        let mut out = Vec::with_capacity((width * height) as usize);
+        for y in 0..height {
+            let sy = (r.y + y * r.h / height).clamp(0, self.height - 1);
+            for x in 0..width {
+                let sx = (r.x + x * r.w / width).clamp(0, self.width - 1);
+                out.push(self.pixels[(sy * self.width + sx) as usize]);
+            }
+        }
+        (out, width, height)
+    }
+
+    /// Pixels laid over the canvas at `(x, y)`, `alpha` of the way.
+    pub fn blit(&mut self, pixels: &[u32], w: i32, h: i32, x: i32, y: i32, alpha: u32) {
+        let (x0, y0, x1, y1) = self.bounds(Rect { x, y, w, h });
+        for py in y0..y1 {
+            let row = (py * self.width) as usize;
+            for px in x0..x1 {
+                let src = pixels[((py - y) * w + (px - x)) as usize];
+                let p = &mut self.pixels[row + px as usize];
+                *p = blend(*p, src, alpha);
+            }
+        }
+    }
+
     /// A floating panel, as jog draws its menus: a soft shadow, a thin
     /// edge, and a faint light along the top.
     pub fn panel(&mut self, r: Rect, radius: i32, fill: u32, edge: u32) {

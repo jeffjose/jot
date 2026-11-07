@@ -28,6 +28,7 @@ use crate::theme::Theme;
 use crate::vt::{self, sys, Cell, Terminal};
 
 mod overlay;
+mod dnd;
 mod find;
 mod links;
 mod settings;
@@ -85,6 +86,7 @@ pub struct Workspace {
 enum Drag {
     Divider(Divider),
     Select { pane: PaneId, from: (u16, u16) },
+    Pane(dnd::Carry),
 }
 
 pub struct App {
@@ -129,6 +131,8 @@ pub struct App {
     find: Option<find::Find>,
     /// The link lit under the pointer, with Ctrl held.
     link: Option<links::Link>,
+    /// A picture of the pane being dragged, carried under the pointer.
+    ghost: Option<(Vec<u32>, i32, i32)>,
     /// What was run from the palette lately, the latest first.
     recent: Vec<String>,
     /// Panes closed, the last last, for Ctrl Shift T.
@@ -208,6 +212,7 @@ impl App {
             settings: None,
             find: None,
             link: None,
+            ghost: None,
             recent: Vec::new(),
             closed: Vec::new(),
             copied: (None, None),
@@ -844,6 +849,10 @@ impl App {
             return;
         }
         if button == MouseButton::Left {
+            if let Some(pane) = self.caption_at(x, y) {
+                self.drag = Some(Drag::Pane(dnd::Carry { pane, from: (x, y), moving: false, over: None }));
+                return;
+            }
             if let Some(&(_, i)) = self.tabs.iter().find(|(r, _)| r.contains(x, y)) {
                 self.go_to(i);
                 return;
@@ -899,6 +908,7 @@ impl App {
                 self.ws_mut().root.drag(&path, gap, fraction);
                 self.changed();
             }
+            Some(Drag::Pane(_)) => self.carry_move(x, y),
             Some(Drag::Select { pane, from }) => {
                 let (pane, from) = (*pane, *from);
                 if let Some(p) = self.panes.get_mut(&pane) {
@@ -933,6 +943,13 @@ impl App {
     }
 
     fn mouse_release(&mut self) {
+        if let Some(Drag::Pane(c)) = self.drag {
+            self.ghost = None;
+            self.drag = None;
+            self.carry_drop(c);
+            self.full = true;
+            return self.redraw();
+        }
         self.settings_release();
         if let Some(Drag::Select { .. }) = self.drag.take() {
             // What is selected is copied, to the clipboard and to the
@@ -1077,6 +1094,9 @@ impl App {
         }
         if full && self.config.status_line {
             self.draw_status();
+        }
+        if full {
+            self.draw_carry();
         }
         if self.find.is_some() && (full || !floating) {
             self.draw_find();
