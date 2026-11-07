@@ -605,6 +605,7 @@ impl App {
         // Where the slash commands rise from: drawn over everything, after
         // the panes, so that what the pane prints does not cover them.
         self.bar_list_at = Some((gx - px(12.0), area.y - px(4.0)));
+        self.bar_field = Some((field_clip, gx));
         let _ = selected;
     }
 }
@@ -778,5 +779,141 @@ impl App {
             }
         }
         "?".into()
+    }
+}
+
+impl App {
+    /// The bar's text field at a point, and the place in its text there.
+    fn bar_field_at(&mut self, x: i32, y: i32) -> Option<usize> {
+        let (r, tx) = self.bar_field?;
+        if !r.contains(x, y) || self.bar.is_none() {
+            return None;
+        }
+        let b = self.bar.as_ref()?;
+        let field = b.field.clone();
+        Some(field.index_at(&mut self.fonts.ui, x - tx))
+    }
+
+    /// A press in the bar's field, as in a text box: the cursor there;
+    /// with Shift, the selection to there; twice, the word; three times,
+    /// all. True when it was in the field.
+    pub(super) fn bar_field_press(&mut self) -> bool {
+        let (x, y) = self.pointer;
+        let Some(at) = self.bar_field_at(x, y) else { return false };
+        let n = match self.bar_clicks {
+            Some((t, n)) if t.elapsed() < Duration::from_millis(400) => n % 3 + 1,
+            _ => 1,
+        };
+        self.bar_clicks = Some((Instant::now(), n));
+        let shift = self.mods.shift_key();
+        if let Some(b) = &mut self.bar {
+            match n {
+                2 => b.field.select_word(at),
+                3 => b.field.select_all(),
+                _ => {
+                    b.field.place(at, shift);
+                    // A drag from here selects; the anchor stays.
+                    b.field.anchor = Some(b.field.anchor.unwrap_or(at));
+                }
+            }
+        }
+        self.bar_drag = n == 1;
+        self.bar_changed();
+        true
+    }
+
+    /// The pointer moved: a drag in the field takes the selection along.
+    pub(super) fn bar_field_drag(&mut self, x: i32, y: i32) -> bool {
+        if !self.bar_drag {
+            return false;
+        }
+        let Some((r, tx)) = self.bar_field else { return false };
+        let Some(b) = &self.bar else { return false };
+        let field = b.field.clone();
+        let dx = x.clamp(r.x, r.x + r.w) - tx;
+        let at = field.index_at(&mut self.fonts.ui, dx);
+        let _ = y;
+        if let Some(b) = &mut self.bar {
+            if b.field.cursor != at {
+                b.field.cursor = at;
+                self.bar_changed();
+            }
+        }
+        true
+    }
+
+    /// The button let go: a click with no drag leaves no selection.
+    pub(super) fn bar_field_release(&mut self) {
+        if std::mem::take(&mut self.bar_drag) {
+            if let Some(b) = &mut self.bar {
+                if b.field.anchor == Some(b.field.cursor) {
+                    b.field.anchor = None;
+                    self.bar_changed();
+                }
+            }
+        }
+    }
+
+    /// The pointer over the field: the text cursor. True when it is.
+    pub(super) fn bar_field_hover(&mut self, x: i32, y: i32) -> bool {
+        let over = self.bar.is_some() && self.bar_field.is_some_and(|(r, _)| r.contains(x, y));
+        if over {
+            if let Some(w) = &self.window {
+                w.set_cursor(CursorIcon::Text);
+            }
+        }
+        over
+    }
+
+    /// A right click in the field: what a text box offers.
+    pub(super) fn bar_field_menu(&mut self) -> bool {
+        let (x, y) = self.pointer;
+        if self.bar_field_at(x, y).is_none() {
+            return false;
+        }
+        let has = self.bar.as_ref().is_some_and(|b| b.field.selection().is_some());
+        let c = |label: &str, hint: &str, action| Some(crate::palette::Item { label: label.into(), hint: hint.into(), action });
+        use crate::palette::Action;
+        let items = vec![
+            if has { c("Cut", "Ctrl X", Action::FieldCut) } else { None },
+            if has { c("Copy", "Ctrl C", Action::FieldCopy) } else { None },
+            c("Paste", "Ctrl V", Action::FieldPaste),
+            None,
+            c("Select all", "Ctrl A", Action::FieldSelectAll),
+        ];
+        let items: Vec<_> = items.into_iter().enumerate().filter(|(i, it)| it.is_some() || *i > 0).map(|(_, it)| it).collect();
+        self.open_items_menu(items);
+        true
+    }
+
+    /// What the field's menu chose.
+    pub(super) fn bar_field_do(&mut self, action: &crate::palette::Action) {
+        use crate::palette::Action;
+        match action {
+            Action::FieldCut => {
+                if let Some(s) = self.bar.as_mut().and_then(|b| b.field.cut()) {
+                    self.clip_set(s, false);
+                }
+            }
+            Action::FieldCopy => {
+                if let Some(s) = self.bar.as_ref().and_then(|b| b.field.selected()) {
+                    self.clip_set(s, false);
+                }
+            }
+            Action::FieldPaste => {
+                if let Some(s) = self.clip_get(false) {
+                    if let Some(b) = &mut self.bar {
+                        b.field.insert(&s);
+                    }
+                }
+            }
+            Action::FieldSelectAll => {
+                if let Some(b) = &mut self.bar {
+                    b.field.select_all();
+                }
+            }
+            _ => return,
+        }
+        self.bar_changed();
     }
 }

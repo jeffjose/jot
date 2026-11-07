@@ -45,6 +45,11 @@ pub enum Action {
     TeeCopyPath(u64),
     FilterStop(u64),
     NotifyOff(u64),
+    /// The text field of a pane's command line: its menu.
+    FieldCut,
+    FieldCopy,
+    FieldPaste,
+    FieldSelectAll,
     Settings,
     Palette,
     /// Opens the n-th submenu of the right-click menu.

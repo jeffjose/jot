@@ -79,6 +79,53 @@ impl TextField {
         self.cursor = to.min(self.text.len());
     }
 
+    /// The cursor put at `at`, as a click puts it; with `extend`, the
+    /// selection taken to it from where it starts (a drag, Shift click).
+    pub fn place(&mut self, at: usize, extend: bool) {
+        self.go(at, extend);
+    }
+
+    /// The word around `at` selected, as a double click does.
+    pub fn select_word(&mut self, at: usize) {
+        let at = at.min(self.text.len());
+        let mut a = at;
+        while a > 0 && !self.text[a - 1].is_whitespace() {
+            a -= 1;
+        }
+        let mut b = at;
+        while b < self.text.len() && !self.text[b].is_whitespace() {
+            b += 1;
+        }
+        self.anchor = Some(a);
+        self.cursor = b;
+    }
+
+
+    /// The place between characters nearest `dx` pixels from where the
+    /// text starts, as drawn in `font`.
+    pub fn index_at(&self, font: &mut UiFont, dx: i32) -> usize {
+        let mut x = 0;
+        for (i, c) in self.text.iter().enumerate() {
+            let w = font.width(&c.to_string());
+            if dx < x + w / 2 {
+                return i;
+            }
+            x += w;
+        }
+        self.text.len()
+    }
+    pub fn select_all(&mut self) {
+        self.anchor = Some(0);
+        self.cursor = self.text.len();
+    }
+
+    /// Cut, copy and paste, from a menu rather than keys.
+    pub fn cut(&mut self) -> Option<String> {
+        let s = self.selected()?;
+        self.delete_selection();
+        Some(s)
+    }
+
     /// Where the word before `at` starts.
     fn word_before(&self, at: usize) -> usize {
         let mut i = at;

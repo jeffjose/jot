@@ -173,6 +173,12 @@ pub struct App {
     bar_lit: Option<usize>,
     /// Where an open bar's slash commands rise from.
     bar_list_at: Option<(i32, i32)>,
+    /// Where an open bar's text field is, and where its text starts;
+    /// whether a drag in it is selecting; its last clicks, for double
+    /// and triple ones.
+    bar_field: Option<(Rect, i32)>,
+    bar_drag: bool,
+    bar_clicks: Option<(Instant, u8)>,
     /// The MULTI tags on captions, to click, and the one the pointer is on.
     multi_tags: Vec<(Rect, PaneId, watch::Tag)>,
     multi_lit: Option<(PaneId, watch::Tag)>,
@@ -308,6 +314,9 @@ impl App {
             bar_hits: Vec::new(),
             bar_lit: None,
             bar_list_at: None,
+            bar_field: None,
+            bar_drag: false,
+            bar_clicks: None,
             multi_tags: Vec::new(),
             multi_lit: None,
             ran: Default::default(),
@@ -1137,7 +1146,7 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
-        if (button == MouseButton::Left && (self.offer_click(event_loop) || self.toast_click() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
+        if (button == MouseButton::Left && (self.offer_click(event_loop) || self.toast_click() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
             return;
         }
         let (x, y) = self.pointer;
@@ -1163,7 +1172,8 @@ impl App {
             if let Some((id, kind)) = tag.or(bare) {
                 match kind {
                     watch::Tag::Multi => self.toggle_multi_pane(id),
-                    watch::Tag::Tee => self.stop_tee(id),
+                    watch::Tag::Tee => self.open_tag_menu(id, kind),
+                    watch::Tag::TeeStop => self.stop_tee(id),
                     watch::Tag::Filter => self.stop_filter(id),
                     watch::Tag::Notify => self.set_notify(id, false),
                 }
@@ -1179,6 +1189,10 @@ impl App {
                 self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_PRESS, Some(b));
                 return;
             }
+        }
+        // The command line's text, right clicked: a text box's menu.
+        if button == MouseButton::Right && self.bar_field_menu() {
+            return;
         }
         // A tag on a caption, right clicked: what can be done with it.
         if button == MouseButton::Right {
@@ -1281,7 +1295,7 @@ impl App {
                 }
             }
             None => {
-                if self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
+                if self.bar_field_drag(x, y) || self.bar_field_hover(x, y) || self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
                     return;
                 }
                 self.update_link();
@@ -1310,6 +1324,7 @@ impl App {
     }
 
     fn mouse_release(&mut self) {
+        self.bar_field_release();
         if let Some((id, b)) = self.mouse_held.take() {
             self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_RELEASE, Some(b));
             return;
@@ -1765,7 +1780,7 @@ impl App {
         self.multi_tags.retain(|(_, p, _)| *p != id);
         // The pane's watchers and its typing into several, each a pill
         // with its icon, that a click stops or toggles.
-        let (tee, filter) = self.panes.get(&id).map_or((None, None), |p| (p.tee.as_ref().map(|t| t.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), p.filter.as_ref().map(|f| (f.text.clone(), f.armed))));
+        let (tee, filter) = self.panes.get(&id).map_or((None, None), |p| (p.tee.as_ref().map(|t| format!("{} ({})", t.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), t.lines)), p.filter.as_ref().map(|f| (f.text.clone(), f.armed))));
         let mut tags: Vec<(watch::Tag, String, u32, &'static [u8])> = Vec::new();
         if let Some(included) = into {
             tags.push((watch::Tag::Multi, if included { "MULTI" } else { "SKIPPED" }.into(), if included { 0xE5484D } else { 0x6F6F6F }, crate::canvas::icons::KEYBOARD));
@@ -1784,13 +1799,27 @@ impl App {
             let lit = self.multi_lit == Some((id, kind));
             let color = if lit { mix(base, 0xFFFFFF, 40) } else { base };
             let (gap, size) = (self.px(6.0), self.px(15.0).min(h - self.px(4.0)));
-            let w = (gap + size + gap + self.fonts.ui.width(&label) + gap).min(bar.w / 2);
+            // A tee has a stop button at its end, an × of its own.
+            let stop = if kind == watch::Tag::Tee { h } else { 0 };
+            let w = (gap + size + gap + self.fonts.ui.width(&label) + gap + stop).min(bar.w / 2);
             let r = Rect { x: right - w, y: bar.y, w, h };
             self.canvas.fill(r, color);
             let fg = crate::canvas::on(color);
             self.canvas.icon(icon, size, r.x + gap, bar.y + (h - size) / 2, fg, r);
-            self.canvas.text_fit(&mut self.fonts.ui, &label, r.x + gap + size + gap, ty, r.w - size - gap * 3, fg, r);
-            self.multi_tags.push((r, id, kind));
+            self.canvas.text_fit(&mut self.fonts.ui, &label, r.x + gap + size + gap, ty, r.w - size - gap * 3 - stop, fg, r);
+            let body = Rect { w: r.w - stop, ..r };
+            if stop > 0 {
+                let x = Rect { x: r.x + r.w - stop, y: r.y, w: stop, h };
+                let x_lit = self.multi_lit == Some((id, watch::Tag::TeeStop));
+                self.canvas.fill(x, if x_lit { mix(base, 0x000000, 60) } else { mix(base, 0x000000, 25) });
+                let (cx, cy, arm, dot) = (x.x + stop / 2, x.y + h / 2, self.px(3.5), self.px(1.5).max(2));
+                for t in -arm..=arm {
+                    self.canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy + t - dot / 2, w: dot, h: dot }, dot / 2, fg, 255);
+                    self.canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy - t - dot / 2, w: dot, h: dot }, dot / 2, fg, 255);
+                }
+                self.multi_tags.push((x, id, watch::Tag::TeeStop));
+            }
+            self.multi_tags.push((body, id, kind));
             right = r.x - pad as i32 / 2;
         }
         for (on, tag, color) in [(copying, " COPY ", 0xFFC53D), (scrolled && !copying, " SCROLLED ", SCROLLED)] {

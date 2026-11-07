@@ -324,6 +324,7 @@ impl App {
             }
             Action::FilterStop(id) => self.stop_filter(id),
             Action::NotifyOff(id) => self.set_notify(id, false),
+            Action::FieldCut | Action::FieldCopy | Action::FieldPaste | Action::FieldSelectAll => self.bar_field_do(&action),
             Action::Palette => self.open_palette(),
             Action::Submenu(_) => {}
             Action::StatusLine => {
@@ -663,10 +664,11 @@ impl App {
             }
             Tag::Tee => {
                 let name = self.panes.get(&id).and_then(|p| p.tee.as_ref()).and_then(|t| t.path.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                vec![c(&format!("Stop writing to {name}"), "click", Action::TeeStop(id)), None, c(&format!("Open {name}"), "", Action::TeeOpen(id)), c("Copy its path", "", Action::TeeCopyPath(id))]
+                vec![c(&format!("Open {name}"), "", Action::TeeOpen(id)), c("Copy path", "", Action::TeeCopyPath(id)), None, c("Stop", "", Action::TeeStop(id))]
             }
-            Tag::Filter => vec![c("Stop filtering", "click", Action::FilterStop(id))],
-            Tag::Notify => vec![c("Don't notify", "click", Action::NotifyOff(id))],
+            Tag::Filter => vec![c("Stop", "click", Action::FilterStop(id))],
+            Tag::Notify => vec![c("Cancel", "click", Action::NotifyOff(id))],
+            Tag::TeeStop => vec![c("Stop", "", Action::TeeStop(id))],
         };
         while matches!(items.last(), Some(None)) {
             items.pop();
@@ -693,5 +695,22 @@ impl App {
             Action::StatusLine => "Show status line",
             _ => return None,
         })
+    }
+}
+
+impl App {
+    /// A menu of these items at the pointer: no line at its ends.
+    pub(super) fn open_items_menu(&mut self, mut items: Vec<Option<Item>>) {
+        while matches!(items.last(), Some(None)) {
+            items.pop();
+        }
+        while matches!(items.first(), Some(None)) {
+            items.remove(0);
+        }
+        self.palette = None;
+        self.menu_at = self.pointer;
+        self.menu = Some(Menu { items, at: self.pointer, hover: None, children: Vec::new(), open: None });
+        self.full = true;
+        self.redraw();
     }
 }

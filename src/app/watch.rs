@@ -11,6 +11,8 @@ pub struct Tee {
     pub path: PathBuf,
     file: std::fs::File,
     pub lines: usize,
+    /// When its tag was last drawn, its count with it.
+    shown_at: Instant,
 }
 
 /// A pane's command's lines, only those with `text` in them shown.
@@ -94,6 +96,11 @@ impl App {
         if let Some(t) = &mut p.tee {
             let text = automate::plain(&bytes);
             t.lines += text.matches('\n').count();
+            // Its count on the caption, kept up a few times a second.
+            if t.shown_at.elapsed() > Duration::from_millis(250) {
+                t.shown_at = Instant::now();
+                p.full = true;
+            }
             if t.file.write_all(text.as_bytes()).is_err() {
                 let path = persist::shorten(&t.path);
                 p.tee = None;
@@ -126,7 +133,7 @@ impl App {
         match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
             Ok(file) => {
                 if let Some(p) = self.panes.get_mut(&id) {
-                    p.tee = Some(Tee { path: path.clone(), file, lines: 0 });
+                    p.tee = Some(Tee { path: path.clone(), file, lines: 0, shown_at: Instant::now() });
                     p.full = true;
                 }
             }
@@ -185,6 +192,8 @@ pub enum Tag {
     Multi,
     /// Writing to a file: stops it.
     Tee,
+    /// The × on a TEE tag: stops it.
+    TeeStop,
     /// Lines filtered: stops it.
     Filter,
     /// To be told when the command ends: no longer.
