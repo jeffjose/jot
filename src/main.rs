@@ -64,7 +64,7 @@ Keys:
   Ctrl = - 0           zoom in, out, reset
 
 Closing the window leaves its panes running; starting jot again takes them up,
-screens and scrollback as they were. Ctrl P, "Quit and end all panes", ends them.
+screens and scrollback as they were. Ctrl P, Quit and end all panes, ends them.
 
 Settings and workspaces: ~/.config/jot/config.toml";
 
