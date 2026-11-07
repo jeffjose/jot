@@ -52,7 +52,12 @@ pub enum Hit {
     WsTheme(usize),
     /// A workspace's accent swatch, which opens its colours.
     WsAccentOpen(usize),
-    WsBroadcast(usize),
+    /// A workspace's name, which a click lets you change.
+    WsName(usize),
+    WsGo(usize),
+    /// Closing a workspace: once to ask, again to do it.
+    WsClose(usize),
+    WsNew,
 }
 
 pub struct Dropdown {
@@ -88,12 +93,19 @@ pub struct Settings {
     pub dropdown: Option<Dropdown>,
     /// A workspace's colours open, under its swatch.
     pub accent_pop: Option<(usize, Rect)>,
+    /// A workspace being renamed, and its name so far.
+    pub renaming: Option<(usize, crate::field::TextField)>,
+    /// A workspace whose close button has been clicked once.
+    pub closing: Option<usize>,
     /// The scrollbar's thumb being dragged: where from, and the scroll then.
     pub drag: Option<(i32, i32)>,
     /// The installed fonts, read once: monospaced, and all.
     mono: Option<Vec<String>>,
     all: Option<Vec<String>>,
 }
+
+/// The red of something that cannot be undone.
+const DANGER: u32 = 0xC9423A;
 
 const KEYS: &[(&str, &str)] = &[
     ("Ctrl F", "Find in the pane; Enter for the match above"),
@@ -146,7 +158,7 @@ impl App {
     pub(super) fn open_settings(&mut self) {
         self.palette = None;
         self.menu = None;
-        self.settings = Some(Settings { scroll: 0, hover: None, hits: Vec::new(), content_h: 0, view_h: 1, tops: Vec::new(), section: 0, dropdown: None, accent_pop: None, drag: None, mono: None, all: None });
+        self.settings = Some(Settings { scroll: 0, hover: None, hits: Vec::new(), content_h: 0, view_h: 1, tops: Vec::new(), section: 0, dropdown: None, accent_pop: None, renaming: None, closing: None, drag: None, mono: None, all: None });
         self.full = true;
         self.redraw();
     }
@@ -252,6 +264,32 @@ impl App {
             }
         }
         persist::unset_config_value(config_key(key));
+    }
+
+    /// A workspace's name, made a field with all of it selected.
+    fn start_rename(&mut self, wi: usize) {
+        self.finish_rename(true);
+        let Some(name) = self.workspaces.get(wi).map(|w| w.name.clone()) else { return };
+        let mut field = crate::field::TextField::new(&name);
+        field.anchor = Some(0);
+        if let Some(s) = &mut self.settings {
+            s.renaming = Some((wi, field));
+        }
+    }
+
+    /// The name typed kept, or let go of; an empty one is not kept.
+    fn finish_rename(&mut self, keep: bool) {
+        let Some((wi, field)) = self.settings.as_mut().and_then(|s| s.renaming.take()) else { return };
+        let name = field.string().trim().to_string();
+        if keep && !name.is_empty() {
+            if let Some(ws) = self.workspaces.get_mut(wi) {
+                ws.name = name;
+                self.unsaved = true;
+                self.set_title();
+            }
+        }
+        self.full = true;
+        self.redraw();
     }
 
     fn settings_do(&mut self, hit: Hit) {
@@ -361,16 +399,27 @@ impl App {
                 }
                 self.unsaved = true;
             }
-            Hit::WsBroadcast(wi) => {
-                if let Some(ws) = self.workspaces.get_mut(wi) {
-                    ws.broadcast = !ws.broadcast;
+            Hit::WsName(wi) => {
+                if self.settings.as_ref().is_some_and(|s| s.renaming.as_ref().is_some_and(|(r, _)| *r == wi)) {
+                    return;
                 }
-                self.refresh_panes();
+                self.start_rename(wi);
+            }
+            Hit::WsGo(wi) => self.go_to(wi),
+            // The first click asks; the second, in settings_click, closes.
+            Hit::WsClose(wi) => {
+                if let Some(s) = &mut self.settings {
+                    s.closing = Some(wi);
+                }
+            }
+            Hit::WsNew => {
+                self.new_workspace();
+                self.start_rename(self.workspaces.len() - 1);
             }
             Hit::WsTheme(wi) => {
                 let anchor = self.settings.as_ref().and_then(|s| s.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r)).unwrap_or_default();
                 let current = self.workspaces.get(wi).and_then(|w| w.theme.clone());
-                let mut items = vec!["Settings' theme".to_string()];
+                let mut items = vec!["Default theme".to_string()];
                 items.extend(THEMES.iter().map(|t| t.name.to_string()));
                 let selected = current.and_then(|c| items.iter().position(|n| *n == c)).unwrap_or(0);
                 if let Some(s) = &mut self.settings {
@@ -395,6 +444,26 @@ impl App {
         let PhysicalKey::Code(code) = event.physical_key else { return };
         let page = self.settings.as_ref().map_or(400, |s| s.view_h * 9 / 10);
         let step = self.px(48.0);
+        // With a name being typed, the keys are its.
+        if self.settings.as_ref().is_some_and(|s| s.renaming.is_some()) {
+            match code {
+                KeyCode::Enter | KeyCode::NumpadEnter => return self.finish_rename(true),
+                KeyCode::Escape => return self.finish_rename(false),
+                _ => {}
+            }
+            let pasted = if self.mods.control_key() && code == KeyCode::KeyV { self.clip_get(false) } else { None };
+            let copied: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+            let mods = self.mods;
+            if let Some((_, field)) = self.settings.as_mut().and_then(|s| s.renaming.as_mut()) {
+                let copied = &copied;
+                field.key(code, mods, event.text.as_deref(), &mut || pasted.clone(), &mut |t| *copied.borrow_mut() = Some(t));
+            }
+            if let Some(s) = copied.into_inner() {
+                self.clip_set(s, false);
+            }
+            self.full = true;
+            return self.redraw();
+        }
         // With a font list open, the keys are its.
         let list_open = self.settings.as_ref().is_some_and(|s| s.dropdown.is_some());
         if list_open {
@@ -469,12 +538,34 @@ impl App {
 
     /// A click while the settings are open: theirs, wherever it is. A
     /// click outside them closes them; outside a font list, the list.
-    pub(super) fn settings_click(&mut self) -> bool {
+    pub(super) fn settings_click(&mut self, event_loop: &ActiveEventLoop) -> bool {
         if self.settings.is_none() {
             return false;
         }
         let (x, y) = self.pointer;
         let hit = self.settings_hit(x, y);
+        // A click off the name being typed keeps what was typed.
+        if self.settings.as_ref().is_some_and(|s| s.renaming.as_ref().is_some_and(|(r, _)| hit != Some(Hit::WsName(*r)))) {
+            self.finish_rename(true);
+        }
+        // A second click on a workspace's Close closes it; any other click
+        // forgets the first.
+        if let Some(wi) = self.settings.as_mut().and_then(|s| s.closing.take()) {
+            if hit == Some(Hit::WsClose(wi)) {
+                let mut ids = Vec::new();
+                if let Some(ws) = self.workspaces.get(wi) {
+                    ws.root.panes(&mut ids);
+                }
+                for id in ids {
+                    self.close(id, event_loop);
+                }
+                self.full = true;
+                self.redraw();
+                return true;
+            }
+            self.full = true;
+            self.redraw();
+        }
         let list_open = self.settings.as_ref().is_some_and(|s| s.dropdown.is_some());
         // With the colours open, a click picks one, or closes them.
         if self.settings.as_ref().is_some_and(|s| s.accent_pop.is_some()) {
@@ -568,21 +659,22 @@ impl App {
     }
 
     pub(super) fn draw_settings(&mut self) {
-        let c = self.cur_theme.chrome();
+        let c = self.theme.chrome();
         let Some(mut st) = self.settings.take() else { return };
         let scale = self.scale;
         let px = |v: f32| (v * scale).round() as i32;
         let r = self.settings_rect();
-        let accent = self.cur_accent;
+        let accent = self.accent;
         let accent_text = mix(accent, 0xFFFFFF, 110);
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         let hover = st.hover;
+        let (renaming, closing) = (st.renaming.clone(), st.closing);
         let modified: Vec<Key> = ALL_KEYS.into_iter().filter(|k| self.modified(*k)).collect();
         let current_theme = THEMES.iter().position(|t| std::ptr::eq(t, self.theme));
         let current_accent = ACCENTS.iter().position(|(_, c)| *c == self.accent);
         let (family, size, ui_family, ui_size, line_height) = (self.config.font_family.clone(), self.font_size, self.config.ui_font_family.clone(), self.config.ui_font_size, self.config.line_height);
         let (captions, status_line) = (self.config.captions, self.config.status_line);
-        let ws_rows: Vec<(String, Option<String>, Option<String>, bool, bool)> = self.workspaces.iter().enumerate().map(|(i, w)| (w.name.clone(), w.accent.clone(), w.theme.clone(), w.broadcast, i == self.current)).collect();
+        let ws_rows: Vec<(String, Option<String>, Option<String>, bool)> = self.workspaces.iter().enumerate().map(|(i, w)| (w.name.clone(), w.accent.clone(), w.theme.clone(), i == self.current)).collect();
         let min_contrast = self.config.min_contrast;
         let ligatures = self.config.ligatures;
         let command_bars = self.config.command_bars;
@@ -780,25 +872,75 @@ impl App {
         }
         if section == 1 {
         heading(canvas, fonts, &mut y, &mut tops, "Workspaces");
-        canvas.text(&mut fonts.small, "Each workspace can have its own accent and theme, over the ones under Appearance.", body.x as f32, y - px(8.0), c.dim, view);
+        canvas.text(&mut fonts.small, "Each can have its own accent and theme; Default is the one under Appearance. Click a name to rename it.", body.x as f32, y - px(8.0), c.dim, view);
         y += sh_ + px(12.0);
-        for (wi, (name, accent_name, theme_name, broadcast, here)) in ws_rows.iter().enumerate() {
+        let many = ws_rows.len() > 1;
+        for (wi, (name, accent_name, theme_name, here)) in ws_rows.iter().enumerate() {
             // The workspace's name, its accent as a dot.
             let its = accent_name.as_deref().map(crate::theme::accent).unwrap_or(accent);
-            canvas.round_fill(Rect { x: body.x, y: y + px(4.0) + (uh - px(10.0)) / 2, w: px(10.0), h: px(10.0) }, px(5.0), its, 255);
-            let end = canvas.text(&mut fonts.ui, name, (body.x + px(18.0)) as f32, y + px(4.0), c.text, view);
+            canvas.round_fill(Rect { x: body.x, y: y + (field_h - px(10.0)) / 2, w: px(10.0), h: px(10.0) }, px(5.0), its, 255);
+            let ty = y + (field_h - uh) / 2;
+            let end = match renaming.as_ref().filter(|(rw, _)| *rw == wi) {
+                Some((_, field)) => {
+                    let b = Rect { x: body.x + px(12.0), y, w: px(200.0).min(body.w / 4), h: field_h };
+                    canvas.round_fill(b, px(7.0), c.field, 255);
+                    canvas.ring(b, px(7.0), 1, accent);
+                    field.draw(canvas, &mut fonts.ui, b.x + px(8.0), ty, c.text, mix(accent, c.panel, 140), true, b);
+                    page.push((b, Hit::WsName(wi)));
+                    b.x + b.w
+                }
+                None => {
+                    let b = Rect { x: body.x + px(12.0), y, w: fonts.ui.width(name) + px(16.0), h: field_h };
+                    if hover == Some(Hit::WsName(wi)) {
+                        canvas.round_fill(b, px(7.0), c.hover, 255);
+                    }
+                    canvas.text(&mut fonts.ui, name, (b.x + px(8.0)) as f32, ty, c.text, view);
+                    page.push((b, Hit::WsName(wi)));
+                    b.x + b.w
+                }
+            };
             if *here {
-                canvas.text(&mut fonts.small, "you are here", (end + px(10.0)) as f32, y + px(4.0) + (uh - sh_) / 2, c.faint, view);
+                canvas.text(&mut fonts.small, "you are here", (end + px(6.0)) as f32, y + (field_h - sh_) / 2, c.faint, view);
+            } else {
+                let b = Rect { x: end + px(2.0), y: y + (field_h - sh_ - px(8.0)) / 2, w: fonts.small.width("Go to") + px(12.0), h: sh_ + px(8.0) };
+                if hover == Some(Hit::WsGo(wi)) {
+                    canvas.round_fill(b, px(5.0), c.hover, 255);
+                }
+                canvas.text(&mut fonts.small, "Go to", (b.x + px(6.0)) as f32, b.y + px(4.0), accent_text, view);
+                page.push((b, Hit::WsGo(wi)));
             }
-            // Its theme, at the right.
-            let field = Rect { x: right - field_w, y, w: field_w, h: field_h };
+            // Close, at the right: once shows what it will do, again does it.
+            let mut edge = right;
+            if many {
+                let asking = closing == Some(wi);
+                let cw = if asking { fonts.ui.width("Close it") + px(24.0) } else { field_h };
+                let b = Rect { x: right - cw, y, w: cw, h: field_h };
+                let lit = hover == Some(Hit::WsClose(wi));
+                if asking {
+                    canvas.round_fill(b, px(7.0), if lit { mix(DANGER, 0xFFFFFF, 30) } else { DANGER }, 255);
+                    canvas.text(&mut fonts.ui, "Close it", (b.x + px(12.0)) as f32, ty, 0xFFFFFF, b);
+                } else {
+                    if lit {
+                        canvas.round_fill(b, px(7.0), c.hover, 255);
+                    }
+                    let (cx, cy, arm, dot) = (b.x + cw / 2, b.y + field_h / 2, px(4.0), px(2.0).max(2));
+                    for t in -arm..=arm {
+                        canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy + t - dot / 2, w: dot, h: dot }, dot / 2, c.dim, 255);
+                        canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy - t - dot / 2, w: dot, h: dot }, dot / 2, c.dim, 255);
+                    }
+                }
+                page.push((b, Hit::WsClose(wi)));
+                edge = b.x - px(8.0);
+            }
+            // Its theme.
+            let field = Rect { x: edge - field_w, y, w: field_w, h: field_h };
             canvas.round_fill(field, px(7.0), if hover == Some(Hit::WsTheme(wi)) { c.hover } else { c.field }, 255);
             canvas.ring(field, px(7.0), 1, c.edge);
-            let shown = theme_name.clone().unwrap_or_else(|| "Settings' theme".into());
+            let shown = theme_name.clone().unwrap_or_else(|| "Default theme".into());
             canvas.text_fit(&mut fonts.ui, &shown, field.x + px(12.0), field.y + (field_h - uh) / 2, field_w - px(44.0), if theme_name.is_some() { c.text } else { c.dim }, field);
             page.push((field, Hit::WsTheme(wi)));
             // Its accent, beside: a swatch of it, which opens the colours.
-            let its_name = accent_name.clone().unwrap_or_else(|| "Settings'".into());
+            let its_name = accent_name.clone().unwrap_or_else(|| "Default".into());
             let sw = fonts.ui.width(&its_name) + px(52.0);
             let swatch = Rect { x: field.x - px(10.0) - sw, y, w: sw, h: field_h };
             canvas.round_fill(swatch, px(7.0), if hover == Some(Hit::WsAccentOpen(wi)) { c.hover } else { c.field }, 255);
@@ -808,21 +950,17 @@ impl App {
             canvas.text(&mut fonts.ui, &its_name, (swatch.x + px(32.0)) as f32, swatch.y + (field_h - uh) / 2, if accent_name.is_some() { c.text } else { c.dim }, swatch);
             page.push((swatch, Hit::WsAccentOpen(wi)));
             y += field_h + px(10.0);
-            // Typing into all its panes.
-            let mid = y + row_h / 2 - row_pad;
-            canvas.text(&mut fonts.ui, "Type into every pane", body.x as f32, mid - uh / 2, c.text, view);
-            canvas.text(&mut fonts.small, "Alt Shift B", (body.x + px(170.0)) as f32, mid - sh_ / 2, c.faint, view);
-            let (sw, shh) = (px(40.0), px(22.0));
-            let pill = Rect { x: right - sw, y: mid - shh / 2, w: sw, h: shh };
-            canvas.round_fill(pill, shh / 2, if *broadcast { accent } else { c.hover }, 255);
-            let k = shh - px(6.0);
-            let kx = if *broadcast { pill.x + sw - k - px(3.0) } else { pill.x + px(3.0) };
-            canvas.round_fill(Rect { x: kx, y: pill.y + px(3.0), w: k, h: k }, k / 2, 0xFFFFFF, 255);
-            page.push((Rect { x: pill.x - px(4.0), y: pill.y - px(4.0), w: sw + px(8.0), h: shh + px(8.0) }, Hit::WsBroadcast(wi)));
-            y += row_h - row_pad;
             canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
             y += px(16.0);
         }
+        // A new one, in the focused pane's folder, named as you like.
+        let label = "+  New workspace";
+        let b = Rect { x: body.x, y, w: fonts.ui.width(label) + px(28.0), h: field_h };
+        canvas.round_fill(b, px(7.0), if hover == Some(Hit::WsNew) { c.hover } else { c.field }, 255);
+        canvas.ring(b, px(7.0), 1, c.edge);
+        canvas.text(&mut fonts.ui, label, (b.x + px(14.0)) as f32, y + (field_h - uh) / 2, c.text, b);
+        page.push((b, Hit::WsNew));
+        y += field_h + px(16.0);
         }
         if section == 2 {
         // ---- Fonts ----
@@ -952,7 +1090,7 @@ impl App {
             let on_settings = current.is_none();
             canvas.round_fill(chip, px(6.0), if on_settings { c.hover } else if hover == Some(Hit::WsAccent(wi, usize::MAX)) { c.field } else { c.panel }, 255);
             canvas.round_fill(Rect { x: chip.x + px(8.0), y: chip.y + (chip_h - px(12.0)) / 2, w: px(12.0), h: px(12.0) }, px(6.0), self.accent, 255);
-            canvas.text(&mut fonts.ui, "Settings' accent", (chip.x + px(28.0)) as f32, chip.y + (chip_h - uh) / 2, c.text, chip);
+            canvas.text(&mut fonts.ui, "Default accent", (chip.x + px(28.0)) as f32, chip.y + (chip_h - uh) / 2, c.text, chip);
             hits.push((chip, Hit::WsAccent(wi, usize::MAX)));
             for (i, (an, color)) in ACCENTS.iter().enumerate() {
                 let (col, row) = (i as i32 % cols, i as i32 / cols);
@@ -995,7 +1133,7 @@ impl App {
             }
             d.first = d.first.min(shown.len().saturating_sub(rows));
             hits.push((list, Hit::Track));
-            let ws_theme_name = if d.key == Key::WsTheme { ws_rows.get(d.ws).map(|w| w.2.clone().unwrap_or_else(|| "Settings' theme".into())).unwrap_or_default() } else { String::new() };
+            let ws_theme_name = if d.key == Key::WsTheme { ws_rows.get(d.ws).map(|w| w.2.clone().unwrap_or_else(|| "Default theme".into())).unwrap_or_default() } else { String::new() };
             let current = match d.key {
                 Key::Family => &family,
                 Key::WsTheme => &ws_theme_name,
