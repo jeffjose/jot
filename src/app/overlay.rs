@@ -325,6 +325,13 @@ impl App {
                 }
             }
             Action::MiniClose(id) => self.close(id, event_loop),
+            Action::MakeSpace => {
+                if let Some((id, _)) = self.pane_at(self.menu_at.0, self.menu_at.1).or_else(|| self.focused().map(|f| (f, (0, 0)))) {
+                    self.make_space(id);
+                }
+            }
+            Action::SpaceToTerminal(id) => self.space_to_terminal(id),
+            Action::SpaceRemove(id) => self.remove_space(id),
             Action::PinRemove(id, i) => self.pin_remove(id, i),
             Action::PinEdit(id, i) => {
                 if let Some(cmd) = self.panes.get(&id).and_then(|p| p.pins.get(i)).map(|pin| pin.cmd.clone()) {
@@ -472,6 +479,7 @@ impl App {
             vec![
                 c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom),
                 c("Minimize", "", Action::Minimize),
+                c("Make empty space", "", Action::MakeSpace),
                 c("New pane", "Ctrl T", Action::NewPane),
                 c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
                 c("Move to new window", "Alt Shift O", Action::PopOut),

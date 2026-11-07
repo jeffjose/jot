@@ -51,6 +51,11 @@ pub enum Action {
     MiniStop(u64),
     MiniCopyLine(u64),
     MiniClose(u64),
+    /// The pane under the menu made empty space; empty space a terminal
+    /// again, or taken out.
+    MakeSpace,
+    SpaceToTerminal(u64),
+    SpaceRemove(u64),
     EditCommand,
     /// The pane's running command, stopped and run again.
     Restart,

@@ -44,6 +44,7 @@ mod popout;
 mod restore;
 mod settings;
 mod slash;
+mod space;
 mod toast;
 mod watch;
 
@@ -128,6 +129,8 @@ pub struct Workspace {
     /// Panes shrunk to a row at the top, out of the layout but running;
     /// each with where it was, to go back there.
     minimized: Vec<PaneId>,
+    /// Panes made into empty space: room only, no shell, no focus.
+    spaces: Vec<PaneId>,
 }
 
 enum Drag {
@@ -463,8 +466,21 @@ impl App {
                 }
             }
         }
+        // And which were empty space: their shells ended, the space kept.
+        let mut spaces = Vec::new();
+        if let Some(layout) = &spec.layout {
+            for (id, empty) in ids.iter().zip(persist::empty_in_order(layout)) {
+                if empty {
+                    if let Some(p) = self.panes.get(id) {
+                        unsafe { libc::kill(-p.pty.pid, libc::SIGHUP) };
+                    }
+                    spaces.push(*id);
+                }
+            }
+        }
+        let focus = ids.iter().copied().find(|i| !spaces.contains(i)).unwrap_or(ids[0]);
         let name = if spec.name.is_empty() { folder_name(&spec.folder()) } else { spec.name.clone() };
-        self.workspaces.push(Workspace { name, root, focus: ids[0], zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new() });
+        self.workspaces.push(Workspace { name, root, focus, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces });
         self.run_hook(self.workspaces.len() - 1, true);
     }
 
@@ -688,7 +704,7 @@ impl App {
             }
             // Its workspace was closed with it: it comes back as one.
             None => {
-                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new(), minimized: Vec::new() });
+                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new() });
                 self.go_to(self.workspaces.len() - 1);
             }
         }
@@ -755,7 +771,10 @@ impl App {
             return;
         }
         let (mut panes, mut divs) = (Vec::new(), Vec::new());
-        self.ws().root.layout(self.area(), &mut panes, &mut divs);
+        // Minimized rows and empty space are not gone to.
+        let (mut rows, row_h) = (Vec::new(), self.mini_row_h());
+        self.ws().root.layout_with(self.area(), &self.ws().minimized, row_h, &mut panes, &mut rows, &mut divs);
+        panes.retain(|(p, _)| !self.ws().spaces.contains(p));
         if let Some(id) = neighbour(&panes, self.ws().focus, dx, dy) {
             self.set_focus(id);
         }
@@ -1225,7 +1244,7 @@ impl App {
         } else {
             let mut v = Vec::new();
             self.ws().root.panes(&mut v);
-            v.retain(|p| !self.ws().minimized.contains(p));
+            v.retain(|p| !self.ws().minimized.contains(p) && !self.ws().spaces.contains(p));
             v
         };
         ids.into_iter().find_map(|id| {
@@ -1292,7 +1311,7 @@ impl App {
             }
         }
         // The command line's text, right clicked: a text box's menu.
-        if button == MouseButton::Right && (self.editor_menu() || self.bar_field_menu() || self.pin_menu() || self.mini_menu()) {
+        if button == MouseButton::Right && (self.editor_menu() || self.bar_field_menu() || self.pin_menu() || self.mini_menu() || self.space_menu()) {
             return;
         }
         // A tag on a caption, right clicked: what can be done with it.
@@ -1525,7 +1544,8 @@ impl App {
             self.find_output(id);
         }
         for id in exited {
-            if self.panes.contains_key(&id) {
+            // Empty space's shell was ended on purpose: the space stays.
+            if self.panes.contains_key(&id) && !self.is_space(id) {
                 self.close(id, event_loop);
             }
         }
@@ -1629,6 +1649,16 @@ impl App {
         let floating = self.palette.is_some() || self.menu.is_some() || self.settings.is_some() || self.editor.is_some();
         if full || !(self.roam_shown || floating) {
             for (n, id) in ids.iter().enumerate() {
+                // Empty space: plain ground, no more.
+                if self.ws().spaces.contains(id) {
+                    if full {
+                        if let Some(r) = self.panes.get(id).map(|p| p.rect) {
+                            self.canvas.fill(r, mix(self.cur_theme.bg, 0x000000, 70));
+                            self.damage.push(r);
+                        }
+                    }
+                    continue;
+                }
                 // A minimized pane is its row, drawn apart; its number kept.
                 if self.ws().minimized.contains(id) {
                     continue;
@@ -2081,9 +2111,10 @@ impl App {
             return;
         }
         let panes = &self.panes;
+        let spaces: Vec<PaneId> = self.workspaces.iter().flat_map(|w| w.spaces.iter().copied()).collect();
         let describe = |id: PaneId| match panes.get(&id) {
-            Some(p) => (p.cmd.clone(), p.pty.cwd(), p.pins.iter().map(|pin| pin.cmd.clone()).collect()),
-            None => (String::new(), None, Vec::new()),
+            Some(p) => (p.cmd.clone(), p.pty.cwd(), p.pins.iter().map(|pin| pin.cmd.clone()).collect(), spaces.contains(&id)),
+            None => (String::new(), None, Vec::new(), spaces.contains(&id)),
         };
         let workspaces = self
             .workspaces

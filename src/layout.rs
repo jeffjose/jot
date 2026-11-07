@@ -66,45 +66,6 @@ impl Node {
         }
     }
 
-    /// Lays the tree out in `area`: each pane's rectangle, and the lines
-    /// between them.
-    pub fn layout(&self, area: Rect, panes: &mut Vec<(PaneId, Rect)>, dividers: &mut Vec<Divider>) {
-        self.layout_at(area, &mut Vec::new(), panes, dividers);
-    }
-
-    fn layout_at(&self, area: Rect, path: &mut Vec<usize>, panes: &mut Vec<(PaneId, Rect)>, dividers: &mut Vec<Divider>) {
-        match self {
-            Node::Pane(id) => panes.push((*id, area)),
-            Node::Split { dir, children, sizes } => {
-                let total = if *dir == Dir::Across { area.w } else { area.h };
-                let room = (total - GAP * (children.len() as i32 - 1)).max(0);
-                let mut at = 0;
-                let mut used = 0.0f32;
-                for (i, child) in children.iter().enumerate() {
-                    used += sizes[i];
-                    let end = if i + 1 == children.len() { room } else { (used * room as f32).round() as i32 };
-                    let len = (end - at).max(0);
-                    let offset = at + GAP * i as i32;
-                    let r = match dir {
-                        Dir::Across => Rect { x: area.x + offset, y: area.y, w: len, h: area.h },
-                        Dir::Down => Rect { x: area.x, y: area.y + offset, w: area.w, h: len },
-                    };
-                    path.push(i);
-                    child.layout_at(r, path, panes, dividers);
-                    path.pop();
-                    if i + 1 < children.len() {
-                        let line = match dir {
-                            Dir::Across => Rect { x: r.x + r.w, y: area.y, w: GAP, h: area.h },
-                            Dir::Down => Rect { x: area.x, y: r.y + r.h, w: area.w, h: GAP },
-                        };
-                        dividers.push(Divider { rect: line, path: path.clone(), gap: i, dir: *dir, span: area });
-                    }
-                    at = end;
-                }
-            }
-        }
-    }
-
     /// Splits pane `at`, putting `new` after it in `dir`. Splitting the
     /// same way as the split it is in adds a sibling, halving its share.
     pub fn split(&mut self, at: PaneId, new: PaneId, dir: Dir) -> bool {
@@ -327,7 +288,7 @@ mod tests {
         n.split(1, 2, Dir::Across);
         n.split(1, 3, Dir::Down);
         let (mut panes, mut divs) = (Vec::new(), Vec::new());
-        n.layout(Rect { x: 0, y: 0, w: 101, h: 51 }, &mut panes, &mut divs);
+        n.layout_with(Rect { x: 0, y: 0, w: 101, h: 51 }, &[], 0, &mut panes, &mut Vec::new(), &mut divs);
         assert_eq!(panes.len(), 3);
         assert_eq!(divs.len(), 2);
         let area: i32 = panes.iter().map(|(_, r)| r.w * r.h).sum::<i32>() + divs.iter().map(|d| d.rect.w * d.rect.h).sum::<i32>();

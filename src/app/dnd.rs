@@ -71,6 +71,7 @@ impl App {
         let reach = self.handle_size() + self.px(6.0);
         let mut ids = Vec::new();
         self.ws().root.panes(&mut ids);
+        ids.retain(|p| !self.ws().spaces.contains(p) && !self.ws().minimized.contains(p));
         ids.into_iter().find(|id| {
             self.panes.get(id).is_some_and(|p| {
                 let (dx, dy) = (x - p.rect.x, y - p.rect.y);

@@ -36,6 +36,9 @@ pub enum Spec {
         /// Commands pinned to the top of the pane.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         pins: Vec<String>,
+        /// Empty space, not a terminal.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        empty: bool,
     },
 }
 
@@ -120,11 +123,11 @@ fn build(spec: &Spec, cwd: &Path, start: &mut impl FnMut(Start) -> PaneId) -> No
 
 /// A layout as it is now, to be saved: `pane` gives each pane's command
 /// and the folder it is in.
-pub fn spec(node: &Node, pane: &impl Fn(PaneId) -> (String, Option<PathBuf>, Vec<String>)) -> Spec {
+pub fn spec(node: &Node, pane: &impl Fn(PaneId) -> (String, Option<PathBuf>, Vec<String>, bool)) -> Spec {
     match node {
         Node::Pane(id) => {
-            let (cmd, cwd, pins) = pane(*id);
-            Spec::Pane { cmd, cwd: cwd.map(|p| shorten(&p)), pins }
+            let (cmd, cwd, pins, empty) = pane(*id);
+            Spec::Pane { cmd, cwd: cwd.map(|p| shorten(&p)), pins, empty }
         }
         Node::Split { dir, children, sizes } => {
             let kids = children.iter().map(|c| spec(c, pane)).collect();
@@ -371,7 +374,7 @@ mod tests {
         let node = s.workspaces[1].build(&mut |_| 9);
         assert!(matches!(node, Node::Split { dir: Dir::Down, .. }));
         // And back.
-        let spec = spec(&node, &|_| ("claude".into(), None, Vec::new()));
+        let spec = spec(&node, &|_| ("claude".into(), None, Vec::new(), false));
         let text = toml::to_string(&WorkspaceSpec { name: "x".into(), cwd: None, panes: vec![], split: None, layout: Some(spec), ..Default::default() }).unwrap();
         let back: WorkspaceSpec = toml::from_str(&text).unwrap();
         assert!(matches!(back.layout, Some(Spec::Down { ref h, .. }) if h.len() == 2), "{text}");
@@ -506,6 +509,21 @@ pub fn pins_in_order(spec: &Spec) -> Vec<Vec<String>> {
                 vec![Vec::new()]
             } else {
                 kids.iter().flat_map(pins_in_order).collect()
+            }
+        }
+    }
+}
+
+/// Which panes a layout makes are empty space, in the order it makes them.
+pub fn empty_in_order(spec: &Spec) -> Vec<bool> {
+    match spec {
+        Spec::Command(_) => vec![false],
+        Spec::Pane { empty, .. } => vec![*empty],
+        Spec::Across { v: kids, .. } | Spec::Down { h: kids, .. } => {
+            if kids.is_empty() {
+                vec![false]
+            } else {
+                kids.iter().flat_map(empty_in_order).collect()
             }
         }
     }
