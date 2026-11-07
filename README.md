@@ -102,3 +102,23 @@ the same folder. As you work, jterm saves the workspaces to
 
 `seq 1 3000000`, 21 MB of output, scrolls through in 0.87 s in a
 1400×900 window (i7-12700K, X11).
+
+## Scripting
+
+The `jterm` command drives the jterm that is running, from any shell or
+script:
+
+```sh
+jterm list                       # the workspaces and their panes, as 1.2
+jterm open ~/scripts/jog         # a workspace there, or the one already there
+jterm split [--down] -- cargo test
+jterm run htop                   # a pane to the right running it
+jterm send 1.2 'make\n'          # typed into pane 2 of workspace 1
+jterm focus 2.1
+jterm notify "build done"
+```
+
+Triggers in the config watch what panes print for a pattern and raise a
+desktop notice, open the link on the line, or run a command; a workspace
+can run commands when it opens and each time you go to it. The config
+written on the first run shows how.

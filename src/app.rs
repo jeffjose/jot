@@ -28,6 +28,7 @@ use crate::theme::Theme;
 use crate::vt::{self, sys, Cell, Terminal};
 
 mod overlay;
+mod automate;
 mod copymode;
 mod dnd;
 mod find;
@@ -88,6 +89,8 @@ pub struct Workspace {
     /// Its own accent and theme, by name, over the ones in the settings.
     accent: Option<String>,
     theme: Option<String>,
+    on_open: Option<String>,
+    on_focus: Option<String>,
     /// What is typed goes to every pane in it.
     broadcast: bool,
 }
@@ -151,6 +154,11 @@ pub struct App {
     copy_mode: Option<copymode::CopyMode>,
     /// Pictures' pixels, by pane and picture, with the generation read.
     pictures: HashMap<(PaneId, u32), (u64, std::rc::Rc<vt::Picture>)>,
+    triggers: Vec<automate::Trigger>,
+    /// When each trigger last went off, in each pane.
+    fired: HashMap<(usize, PaneId), Instant>,
+    /// What the `jterm` command asks.
+    requests: Receiver<crate::remote::Request>,
     /// What was run from the palette lately, the latest first.
     recent: Vec<String>,
     /// Panes closed, the last last, for Ctrl Shift T.
@@ -192,6 +200,14 @@ fn folder_name(p: &std::path::Path) -> String {
 impl App {
     pub fn new(proxy: EventLoopProxy<()>, config: Config, session: Option<Session>) -> App {
         let (tx, rx) = channel();
+        // The `jterm` command's requests, each waking the window.
+        let (req_tx, requests) = channel();
+        let (wake, woke) = (proxy.clone(), Arc::new(AtomicBool::new(false)));
+        let _ = woke;
+        crate::remote::listen(move |r| {
+            let _ = req_tx.send(r);
+            let _ = wake.send_event(());
+        });
         let font_size = config.font_size;
         let theme = Theme::by_name(&config.theme);
         let accent = crate::theme::accent(&config.accent);
@@ -236,6 +252,9 @@ impl App {
             mouse_held: None,
             copy_mode: None,
             pictures: HashMap::new(),
+            triggers: Vec::new(),
+            fired: HashMap::new(),
+            requests,
             recent: Vec::new(),
             closed: Vec::new(),
             copied: (None, None),
@@ -308,7 +327,8 @@ impl App {
             id
         });
         let name = if spec.name.is_empty() { folder_name(&spec.folder()) } else { spec.name.clone() };
-        self.workspaces.push(Workspace { name, root, focus: ids[0], zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), broadcast: false });
+        self.workspaces.push(Workspace { name, root, focus: ids[0], zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false });
+        self.run_hook(self.workspaces.len() - 1, true);
     }
 
     /// The workspaces to begin with: those saved, else those in the
@@ -328,6 +348,7 @@ impl App {
         }
         self.current = current.min(self.workspaces.len().saturating_sub(1));
         self.roam_cwd = roam.map(|r| persist::expand(&r));
+        self.load_triggers();
     }
 
     fn ws(&self) -> &Workspace {
@@ -464,7 +485,7 @@ impl App {
             }
             // Its workspace was closed with it: it comes back as one.
             None => {
-                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, broadcast: false });
+                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false });
                 self.go_to(self.workspaces.len() - 1);
             }
         }
@@ -543,6 +564,7 @@ impl App {
     fn go_to(&mut self, i: usize) {
         if i < self.workspaces.len() && i != self.current {
             self.current = i;
+            self.run_hook(i, false);
             self.roam_shown = false;
             let mut ids = Vec::new();
             self.ws().root.panes(&mut ids);
@@ -1068,6 +1090,9 @@ impl App {
     /// Reads in what the panes wrote.
     fn drain(&mut self, event_loop: &ActiveEventLoop) {
         self.woken.store(false, Ordering::Release);
+        while let Ok(req) = self.requests.try_recv() {
+            self.answer(req, event_loop);
+        }
         let mut exited = Vec::new();
         let shown: Vec<PaneId> = {
             let mut v = Vec::new();
@@ -1092,6 +1117,7 @@ impl App {
                         }
                         any = true;
                     }
+                    self.check_triggers(id, &bytes);
                 }
                 Output::Exit(id) => exited.push(id),
             }
@@ -1525,7 +1551,7 @@ impl App {
         let workspaces = self
             .workspaces
             .iter()
-            .map(|ws| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &describe)), accent: ws.accent.clone(), theme: ws.theme.clone(), ..Default::default() })
+            .map(|ws| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &describe)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), ..Default::default() })
             .collect();
         let roam = self.roam.and_then(|r| panes.get(&r)).and_then(|p| p.pty.cwd()).or(self.roam_cwd.clone()).map(|p| persist::shorten(&p));
         persist::save_session(&Session { current: self.current, roam, workspaces });

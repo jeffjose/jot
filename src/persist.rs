@@ -54,6 +54,11 @@ pub struct WorkspaceSpec {
     pub accent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// Commands it runs when it opens, and each time it is gone to.
+    #[serde(default, rename = "on-open", skip_serializing_if = "Option::is_none")]
+    pub on_open: Option<String>,
+    #[serde(default, rename = "on-focus", skip_serializing_if = "Option::is_none")]
+    pub on_focus: Option<String>,
 }
 
 /// A pane to be started: its command and folder.
@@ -194,6 +199,9 @@ pub struct Config {
     /// as workspaces.
     #[serde(default = "default_projects")]
     pub projects: Vec<String>,
+    /// Patterns looked for in what panes print, and what to do on them.
+    #[serde(default, rename = "trigger")]
+    pub triggers: Vec<TriggerSpec>,
     /// Workspaces to start with when there is no saved session.
     #[serde(default, rename = "workspace")]
     pub workspaces: Vec<WorkspaceSpec>,
@@ -237,7 +245,7 @@ fn default_projects() -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), status_line: false, captions: true, ligatures: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), status_line: false, captions: true, ligatures: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), workspaces: Vec::new() }
     }
 }
 
@@ -387,4 +395,21 @@ pub fn unset_config_value(key: &str) {
             let _ = std::fs::rename(tmp, path);
         }
     }
+}
+
+/// A trigger in the config: a pattern, and notify (a desktop notice),
+/// open (the link on the line), or run (`command`, with the line in
+/// $JTERM_MATCH).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TriggerSpec {
+    #[serde(rename = "match")]
+    pub pattern: String,
+    #[serde(default = "default_action")]
+    pub action: String,
+    #[serde(default)]
+    pub command: Option<String>,
+}
+
+fn default_action() -> String {
+    "notify".into()
 }

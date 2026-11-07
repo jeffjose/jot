@@ -83,3 +83,27 @@
 # name = "hotshot"
 # cwd = "~/scripts/hotshot"
 # layout = { v = [ { h = ["claude", "claude"] }, "", "" ], sizes = [2, 1, 1] }
+#
+# A workspace can run commands when it opens and each time you go to it,
+# in its folder:
+#
+# [[workspace]]
+# name = "jog"
+# cwd = "~/scripts/jog"
+# on-open = "git fetch -q"
+# on-focus = "notify-send jog here"
+
+# ---- Triggers -------------------------------------------------------
+#
+# A pattern looked for in what every pane prints, and what to do when a
+# line has it: notify (a desktop notice, the default), open (the link on
+# the line), or run (a command, with the line in $JTERM_MATCH and the
+# pane, as 1.2, in $JTERM_PANE).
+#
+# [[trigger]]
+# match = "error\\[E[0-9]+\\]|panicked at"
+# action = "notify"
+#
+# [[trigger]]
+# match = "Local: +http://localhost:[0-9]+"
+# action = "open"

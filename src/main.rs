@@ -11,6 +11,7 @@ mod layout;
 mod persist;
 mod palette;
 mod pty;
+mod remote;
 mod theme;
 mod vt;
 
@@ -29,6 +30,9 @@ jterm: a terminal with splits and workspaces
   jterm            bring back the workspaces as you left them
   jterm --fresh    start from the workspaces in the config instead
   jterm --debug    print each key as it is sent to the program
+  jterm list | open DIR | split [--down] [-- CMD] | run CMD
+        | send PANE TEXT | focus PANE | notify TEXT
+                   drive the jterm that is running
   jterm --version
 
 Keys (screen's, on Alt):
@@ -62,6 +66,11 @@ pub fn version() -> String {
 }
 
 fn main() {
+    // The `jterm` command: a request to the jterm running.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| remote::COMMANDS.contains(&a.as_str())) {
+        std::process::exit(remote::client(&args));
+    }
     let mut fresh = false;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {

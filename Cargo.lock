@@ -754,6 +754,7 @@ dependencies = [
  "fontdue",
  "libc",
  "png",
+ "regex",
  "rustybuzz",
  "serde",
  "softbuffer",
