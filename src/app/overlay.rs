@@ -220,6 +220,8 @@ impl App {
             Action::FontLarger => self.set_font_size(self.font_size + 1.0),
             Action::FontSmaller => self.set_font_size(self.font_size - 1.0),
             Action::FontReset => self.set_font_size(self.config.font_size),
+            Action::Settings => self.open_settings(),
+            Action::Palette => self.open_palette(),
             Action::StatusLine => {
                 self.config.status_line = !self.config.status_line;
                 self.relayout();
@@ -309,6 +311,9 @@ impl App {
             None,
             c("New workspace here", "Alt Shift N", Action::NewWorkspace),
             c("Rename workspace…", "", Action::Rename),
+            None,
+            c("Palette…", "Ctrl K", Action::Palette),
+            c("Settings…", "Ctrl ,", Action::Settings),
         ]);
         self.palette = None;
         self.menu = Some(Menu { items, at: self.pointer, hover: None });

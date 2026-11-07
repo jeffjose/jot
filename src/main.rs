@@ -39,7 +39,8 @@ Keys (screen's, on Alt):
   Alt 1-9, Alt , .     go to a workspace, the one before or after
   Alt Shift n          a new workspace, in this pane's folder
   Alt `                the roaming terminal, shown over any workspace
-  Super k              clear the screen and the scrollback
+  Ctrl k               the palette: workspaces, commands, projects
+  Ctrl ,               settings: theme, text size, captions
   Ctrl Shift c / v     copy / paste (a selection is copied as you make it;
                        middle click pastes it)
   Shift PageUp/Down    scroll back
@@ -47,7 +48,7 @@ Keys (screen's, on Alt):
 
 Settings and workspaces: ~/.config/jterm/config.toml";
 
-fn version() -> String {
+pub fn version() -> String {
     let sha = option_env!("VERGEN_GIT_SHA").filter(|s| !s.is_empty() && !s.starts_with("VERGEN"));
     match sha {
         Some(sha) => format!("jterm {} ({sha})", env!("CARGO_PKG_VERSION")),

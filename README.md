@@ -45,7 +45,8 @@ jterm --fresh    # the workspaces in the config instead
 | `Alt 1`–`9`, `Alt ,` `Alt .` | go to a workspace, the one before or after |
 | `Alt Shift n` | a new workspace, in this pane's folder |
 | ``Alt ` `` | the roaming terminal |
-| `Super k` | clear the screen and the scrollback |
+| `Ctrl k` | the palette: workspaces, commands, project folders |
+| `Ctrl ,` | settings: theme, text size, captions, status line |
 | `Ctrl Shift c` / `v` | copy / paste |
 | `Shift PageUp` / `PageDown` | scroll back |
 | `Ctrl =` `-` `0` | text larger, smaller, as it was |

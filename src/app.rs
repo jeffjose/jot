@@ -28,6 +28,7 @@ use crate::theme::Theme;
 use crate::vt::{self, sys, Cell, Terminal};
 
 mod overlay;
+mod settings;
 
 // Colours from Radix, as the screen setup has them.
 const STATUS_BG: u32 = 0x111111;
@@ -110,6 +111,7 @@ pub struct App {
     tabs: Vec<(Rect, usize)>,
     palette: Option<crate::palette::Palette>,
     menu: Option<overlay::Menu>,
+    settings: Option<settings::Settings>,
     /// What was run from the palette lately, the latest first.
     recent: Vec<String>,
     saved_at: Instant,
@@ -180,6 +182,7 @@ impl App {
             tabs: Vec::new(),
             palette: None,
             menu: None,
+            settings: None,
             recent: Vec::new(),
             saved_at: Instant::now(),
             unsaved: false,
@@ -204,6 +207,9 @@ impl App {
     }
 
     fn caption_h(&self) -> i32 {
+        if !self.config.captions {
+            return 0;
+        }
         self.fonts.ui.height + self.px(6.0)
     }
 
@@ -563,6 +569,14 @@ impl App {
             }
             return true;
         }
+        if ctrl && !shift && !alt && code == KeyCode::KeyK {
+            self.open_palette();
+            return true;
+        }
+        if ctrl && !shift && !alt && code == KeyCode::Comma {
+            self.open_settings();
+            return true;
+        }
         if ctrl && !shift && !alt && code == KeyCode::KeyQ {
             self.only();
             return true;
@@ -589,6 +603,12 @@ impl App {
 
     fn key(&mut self, event: winit::event::KeyEvent, event_loop: &ActiveEventLoop) {
         let PhysicalKey::Code(code) = event.physical_key else { return };
+        if self.settings.is_some() {
+            if event.state == ElementState::Pressed {
+                self.settings_key(&event);
+            }
+            return;
+        }
         if self.palette.is_some() {
             if event.state == ElementState::Pressed {
                 self.palette_key(&event, event_loop);
@@ -664,7 +684,7 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
-        if self.overlay_click(button, event_loop) {
+        if self.settings_click() || self.overlay_click(button, event_loop) {
             return;
         }
         let (x, y) = self.pointer;
@@ -716,7 +736,7 @@ impl App {
 
     fn mouse_move(&mut self, x: i32, y: i32) {
         self.pointer = (x, y);
-        if self.overlay_hover(x, y) {
+        if self.settings_hover(x, y) || self.overlay_hover(x, y) {
             if let Some(w) = &self.window {
                 w.set_cursor(CursorIcon::Default);
             }
@@ -878,7 +898,7 @@ impl App {
         // Under the palette, the menu or the roaming terminal, panes are
         // drawn only when all of it is, so that what they write does not
         // land on top.
-        let floating = self.palette.is_some() || self.menu.is_some();
+        let floating = self.palette.is_some() || self.menu.is_some() || self.settings.is_some();
         if full || !(self.roam_shown || floating) {
             for (n, id) in ids.iter().enumerate() {
                 self.draw_pane(*id, n + 1, full, Some(*id) == focus && !self.roam_shown);
@@ -900,6 +920,7 @@ impl App {
         if full {
             self.draw_palette();
             self.draw_menu();
+            self.draw_settings();
         }
         self.present();
     }
@@ -1005,7 +1026,9 @@ impl App {
         let scrolled = !p.term.at_bottom();
         let activity = p.activity;
         if full {
-            self.draw_caption(rect, n, &caption, focused, scrolled, activity);
+            if self.config.captions {
+                self.draw_caption(rect, n, &caption, focused, scrolled, activity);
+            }
         }
     }
 
@@ -1182,7 +1205,7 @@ impl ApplicationHandler<()> for App {
                     MouseScrollDelta::LineDelta(_, y) => -(y * 3.0) as isize,
                     MouseScrollDelta::PixelDelta(p) => -(p.y / self.fonts.cell_h as f64) as isize,
                 };
-                if lines != 0 {
+                if lines != 0 && !self.settings_scroll(lines) {
                     self.scroll(lines);
                 }
             }

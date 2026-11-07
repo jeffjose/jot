@@ -1,4 +1,4 @@
-//! The palette, on Cmd-K (Super K), as jog's find box is: type to find a
+//! The palette, on Ctrl K (or Super K), as jog's find box is: type to find a
 //! workspace, a project folder or a command, Enter to go. `>` finds only
 //! commands, `@` only workspaces. With nothing typed, what was run from
 //! it lately comes first.
@@ -27,6 +27,8 @@ pub enum Action {
     FontSmaller,
     FontReset,
     StatusLine,
+    Settings,
+    Palette,
 }
 
 #[derive(Clone, Debug)]
@@ -168,6 +170,8 @@ pub fn commands() -> Vec<Item> {
         c("Text smaller", "Ctrl -", Action::FontSmaller),
         c("Text as it was", "Ctrl 0", Action::FontReset),
         c("Status line, on or off", "", Action::StatusLine),
+        c("Settings", "Ctrl ,", Action::Settings),
+        c("Palette", "Ctrl K", Action::Palette),
     ]
 }
 

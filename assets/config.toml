@@ -1,16 +1,34 @@
 # jterm: settings.
 #
 # Nothing here is set until you take the # off the front of a line. Each
-# setting is shown with its usual value.
+# setting is shown with its usual value. Settings (Ctrl ,) writes the
+# ones it changes here too.
 
 # ---- Look -----------------------------------------------------------
+
+# The colours, by name:
+#   Dark Modern  Light Modern  Catppuccin Mocha  Catppuccin Latte
+#   Tokyo Night  Dracula  One Dark  GitHub Dark  Nord  Gruvbox Dark
+#   Gruvbox Light  Solarized Dark  Solarized Light  Rosé Pine  Kanagawa
+#   Monokai
+# theme = "Dark Modern"
 
 # The size of the terminal's text, in points (Ctrl = and Ctrl - change it
 # for this run).
 # font-size = 14
 
+# A caption along the bottom of each pane: its title, red for the one
+# you are in.
+# captions = true
+
+# A status line along the bottom of the window: host, workspaces, clock.
+# status-line = false
+
 # Lines kept above the screen, in each pane.
 # scrollback = 40960
+
+# Folders whose folders are projects, for the palette to open.
+# projects = ["~/scripts", "~/code", "~/src", "~/projects", "~/dev"]
 
 # ---- Workspaces -----------------------------------------------------
 #

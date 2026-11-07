@@ -158,6 +158,9 @@ pub struct Config {
     /// A status line along the bottom: host, workspaces, clock.
     #[serde(default)]
     pub status_line: bool,
+    /// A caption along the bottom of each pane.
+    #[serde(default = "yes")]
+    pub captions: bool,
     /// The colour theme, by name.
     #[serde(default = "default_theme")]
     pub theme: String,
@@ -170,6 +173,10 @@ pub struct Config {
     pub workspaces: Vec<WorkspaceSpec>,
 }
 
+fn yes() -> bool {
+    true
+}
+
 fn default_theme() -> String {
     "Dark Modern".into()
 }
@@ -180,7 +187,7 @@ fn default_projects() -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), status_line: false, theme: default_theme(), projects: default_projects(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), status_line: false, captions: true, theme: default_theme(), projects: default_projects(), workspaces: Vec::new() }
     }
 }
 
@@ -274,5 +281,37 @@ mod tests {
         let text = toml::to_string(&WorkspaceSpec { name: "x".into(), cwd: None, panes: vec![], split: None, layout: Some(spec) }).unwrap();
         let back: WorkspaceSpec = toml::from_str(&text).unwrap();
         assert!(matches!(back.layout, Some(Spec::Down { ref h, .. }) if h.len() == 2), "{text}");
+    }
+}
+
+pub fn config_path() -> PathBuf {
+    config_dir().join("config.toml")
+}
+
+/// Sets one top-level setting in the config file, keeping the rest of it
+/// as it is written, comments and all: the line that has it, or has it
+/// commented out, is replaced; else it goes in above the first table.
+pub fn set_config_value(key: &str, value: &str) {
+    let path = config_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| CONFIG.to_string());
+    let setting = format!("{key} = {value}");
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let tables = lines.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(lines.len());
+    let is_key = |l: &str| {
+        let l = l.trim_start();
+        l.strip_prefix(key).is_some_and(|rest| rest.trim_start().starts_with('='))
+    };
+    let commented = |l: &str| l.trim_start().strip_prefix('#').is_some_and(|rest| is_key(rest.trim_start()));
+    if let Some(i) = lines[..tables].iter().position(|l| is_key(l)) {
+        lines[i] = setting;
+    } else if let Some(i) = lines[..tables].iter().position(|l| commented(l)) {
+        lines[i] = setting;
+    } else {
+        lines.insert(tables, setting);
+    }
+    let _ = std::fs::create_dir_all(config_dir());
+    let tmp = path.with_extension("toml.tmp");
+    if std::fs::write(&tmp, lines.join("\n") + "\n").is_ok() {
+        let _ = std::fs::rename(tmp, path);
     }
 }
