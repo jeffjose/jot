@@ -29,9 +29,10 @@ pub enum Key {
     /// A workspace's theme, in the list of themes.
     WsTheme,
     Ligatures,
+    CommandBars,
 }
 
-const ALL_KEYS: [Key; 11] = [Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine];
+const ALL_KEYS: [Key; 12] = [Key::CommandBars, Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
@@ -133,6 +134,7 @@ fn config_key(key: Key) -> &'static str {
         Key::StatusLine => "status-line",
         Key::WsTheme => "theme",
         Key::Ligatures => "ligatures",
+        Key::CommandBars => "command-bars",
     }
 }
 
@@ -169,6 +171,7 @@ impl App {
             Key::StatusLine => c.status_line,
             Key::WsTheme => false,
             Key::Ligatures => !c.ligatures,
+            Key::CommandBars => c.command_bars,
         }
     }
 
@@ -231,6 +234,10 @@ impl App {
                 self.relayout();
             }
             Key::WsTheme => {}
+            Key::CommandBars => {
+                self.config.command_bars = false;
+                self.refresh_panes();
+            }
             Key::Ligatures => {
                 self.config.ligatures = true;
                 self.reload_fonts();
@@ -265,6 +272,10 @@ impl App {
                         self.config.captions = !self.config.captions;
                         self.config.captions
                     }
+                    Key::CommandBars => {
+                        self.config.command_bars = !self.config.command_bars;
+                        self.config.command_bars
+                    }
                     Key::Ligatures => {
                         self.config.ligatures = !self.config.ligatures;
                         self.config.ligatures
@@ -275,6 +286,9 @@ impl App {
                     }
                 };
                 persist::set_config_value(config_key(key), if on { "true" } else { "false" });
+                if key == Key::CommandBars {
+                    self.refresh_panes();
+                }
                 if key == Key::Ligatures {
                     self.reload_fonts();
                 }
@@ -536,6 +550,7 @@ impl App {
         let ws_rows: Vec<(String, Option<String>, Option<String>, bool, bool)> = self.workspaces.iter().enumerate().map(|(i, w)| (w.name.clone(), w.accent.clone(), w.theme.clone(), w.broadcast, i == self.current)).collect();
         let min_contrast = self.config.min_contrast;
         let ligatures = self.config.ligatures;
+        let command_bars = self.config.command_bars;
         let version = crate::version();
         let canvas_h = self.canvas.height;
         let canvas = &mut self.canvas;
@@ -713,6 +728,7 @@ impl App {
             ("Captions under panes", "Each pane's title along its bottom, as screen's regions have.", Key::Captions, captions),
             ("Status line", "Workspaces, host and clock along the bottom of the window.", Key::StatusLine, status_line),
             ("Ligatures", "Characters joined as the font draws them: => and != in Fira Code.", Key::Ligatures, ligatures),
+            ("Command bars", "A bar beside each command, green or red by how it ended, with its time when slow.", Key::CommandBars, command_bars),
         ] {
             let mid = title(canvas, fonts, &mut page, y, name, what, key);
             let (sw, sh) = (px(40.0), px(22.0));

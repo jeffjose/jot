@@ -131,7 +131,7 @@ impl App {
         let scale = self.scale;
         let px = |v: f32| (v * scale).round() as i32;
         let Some(p) = self.panes.get(&id) else { return };
-        if !p.shell.marked {
+        if !p.shell.marked || !self.config.command_bars {
             return;
         }
         let (_, offset, len) = p.term.scrollbar();
