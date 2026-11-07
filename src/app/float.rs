@@ -60,7 +60,7 @@ impl App {
         if ids.len() < 2 && !zoomed {
             return;
         }
-        let Some((rect, bg)) = self.panes.get(&id).map(|p| (p.rect, p.term.colors().1)) else { return };
+        let Some(rect) = self.panes.get(&id).map(|p| p.rect) else { return };
         let kinds: &[watch::Tag] = if zoomed { &[watch::Tag::Focus] } else { &[watch::Tag::Minimize, watch::Tag::Focus] };
         let c = self.cur_theme.chrome();
         let (b, gap, inset, radius) = (self.px(24.0), self.px(2.0), self.px(3.0), self.px(7.0));
@@ -74,12 +74,9 @@ impl App {
         }
         self.float_rect = Some((id, panel));
         let near = panel.contains(self.pointer.0, self.pointer.1);
+        // At rest the icons sit over the text, which shows through.
         if near {
             self.canvas.panel(panel, radius, c.side, c.edge);
-        } else {
-            // Text under the icons kept from crowding them: the pane's own
-            // background, which shows as nothing.
-            self.canvas.round_fill(panel, radius, bg, 255);
         }
         let mut x = panel.x + inset;
         for kind in kinds {
