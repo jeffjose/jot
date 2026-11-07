@@ -392,11 +392,11 @@ impl App {
         ]);
         let children = vec![
             vec![
-                c(if self.ws().zoom.is_some() { "Show all panes" } else { "Pane alone" }, "Alt Shift M", Action::Zoom),
+                c(if self.ws().zoom.is_some() { "Show all panes" } else { "Focus pane" }, "Alt Shift F", Action::Zoom),
                 c("New pane", "Ctrl T", Action::NewPane),
                 c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
                 c("Pop out", "Alt Shift O", Action::PopOut),
-                c("Type into several panes", "Alt Shift B", Action::Broadcast),
+                c("Type into several panes", "Alt Shift M", Action::Broadcast),
                 None,
                 c("Clear screen and scrollback", "", Action::Clear),
             ],

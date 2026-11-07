@@ -173,7 +173,7 @@ pub fn commands() -> Vec<Item> {
         c("Close pane", "Ctrl W", Action::Close),
         c("Pop out into a window of its own", "Alt Shift O", Action::PopOut),
         c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
-        c("Pane alone, and back", "Alt Shift M", Action::Zoom),
+        c("Focus pane, and back", "Alt Shift F", Action::Zoom),
         c("Make panes equal", "Alt =", Action::Equalize),
         c("Close every other pane", "", Action::Only),
         c("New workspace here", "Alt Shift N", Action::NewWorkspace),
@@ -187,7 +187,7 @@ pub fn commands() -> Vec<Item> {
         c("Text smaller", "Ctrl -", Action::FontSmaller),
         c("Text as it was", "Ctrl 0", Action::FontReset),
         c("Status line, on or off", "", Action::StatusLine),
-        c("Type into several panes", "Alt Shift B", Action::Broadcast),
+        c("Type into several panes", "Alt Shift M", Action::Broadcast),
         c("Settings", "Ctrl ,", Action::Settings),
         c("Find a workspace, pane or project", "Ctrl K", Action::Palette),
     ]

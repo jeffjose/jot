@@ -835,7 +835,7 @@ impl App {
                 (KeyCode::KeyX, false) => {
                     self.close_pane(event_loop);
                 }
-                (KeyCode::KeyM, true) => {
+                (KeyCode::KeyF, true) => {
                     if !self.roam_shown {
                         let ws = self.ws_mut();
                         ws.zoom = if ws.zoom.is_some() { None } else { Some(ws.focus) };
@@ -865,7 +865,7 @@ impl App {
                 (KeyCode::Comma, _) => self.go_to((self.current + self.workspaces.len() - 1) % self.workspaces.len()),
                 (KeyCode::Period, _) => self.go_to((self.current + 1) % self.workspaces.len()),
                 (KeyCode::KeyN, true) => self.new_workspace(),
-                (KeyCode::KeyB, true) => self.toggle_broadcast(),
+                (KeyCode::KeyM, true) => self.toggle_broadcast(),
                 (KeyCode::KeyO, true) => self.pop_out(event_loop),
                 (KeyCode::KeyP, true) => self.paste(false),
                 (KeyCode::KeyP, false) => self.open_copy_mode(),
