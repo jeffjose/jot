@@ -203,7 +203,7 @@ impl App {
             }
         };
         let Some(s) = &self.slash else {
-            if plain && self.input_targets(id).len() == 1 {
+            if plain {
                 self.slash_open(id, code, text, before.as_deref() == Some(""));
             }
             return false;
@@ -356,8 +356,10 @@ impl App {
         let rows = self.slash_rows(&typed, mid);
         let Some(row) = rows.get(selected) else { return };
         let write = |app: &mut App, bytes: &[u8]| {
-            if let Some(p) = app.panes.get(&id) {
-                p.pty.write(bytes);
+            for t in app.input_targets(id) {
+                if let Some(p) = app.panes.get(&t) {
+                    p.pty.write(bytes);
+                }
             }
         };
         // A command that takes a word: its name and a space on the line,
@@ -397,8 +399,10 @@ impl App {
     /// A slash command done, for pane `id`; `arg` is the word after it.
     pub(super) fn slash_apply(&mut self, id: PaneId, does: Does, arg: &str, event_loop: &ActiveEventLoop) {
         let write = |app: &mut App, bytes: &[u8]| {
-            if let Some(p) = app.panes.get(&id) {
-                p.pty.write(bytes);
+            for t in app.input_targets(id) {
+                if let Some(p) = app.panes.get(&t) {
+                    p.pty.write(bytes);
+                }
             }
         };
         match does {
@@ -436,8 +440,12 @@ impl App {
 
     /// Text put on the command line, counted as typed.
     fn slash_insert(&mut self, id: PaneId, text: &str) {
+        for t in self.input_targets(id) {
+            if let Some(p) = self.panes.get(&t) {
+                p.pty.write(text.as_bytes());
+            }
+        }
         if let Some(p) = self.panes.get_mut(&id) {
-            p.pty.write(text.as_bytes());
             if let Some(l) = &mut p.shell.line {
                 l.push_str(text);
             }

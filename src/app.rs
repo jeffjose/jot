@@ -166,6 +166,9 @@ pub struct App {
     bar_hits: Vec<(Rect, PaneId, bar::BarHit)>,
     /// Which of them the pointer is on, to light it.
     bar_lit: Option<usize>,
+    /// The MULTI tags on captions, to click, and the one the pointer is on.
+    multi_tags: Vec<(Rect, PaneId)>,
+    multi_lit: Option<PaneId>,
     /// Commands run now from a bar, as they end: pane, output, status.
     ran: Arc<std::sync::Mutex<Vec<(PaneId, String, i32)>>>,
     last_click: Option<(Instant, (u16, u16), u8)>,
@@ -297,6 +300,8 @@ impl App {
             bar: None,
             bar_hits: Vec::new(),
             bar_lit: None,
+            multi_tags: Vec::new(),
+            multi_lit: None,
             ran: Default::default(),
             last_click: None,
             clipboard: None,
@@ -810,6 +815,38 @@ impl App {
         self.refresh_panes();
     }
 
+
+    /// While typing into several, a pane left out, or taken back in.
+    fn toggle_multi_pane(&mut self, id: PaneId) {
+        let Some(into) = self.typed_into(id) else { return };
+        let ws = &mut self.workspaces[self.current];
+        if into {
+            ws.left_out.push(id);
+        } else {
+            ws.left_out.retain(|p| *p != id);
+        }
+        self.refresh_panes();
+    }
+
+    /// The pointer over a MULTI tag: lit, and the hand. True when on one.
+    fn multi_hover(&mut self, x: i32, y: i32) -> bool {
+        let at = self.multi_tags.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| *id);
+        if at != self.multi_lit {
+            for id in [self.multi_lit, at].into_iter().flatten() {
+                if let Some(p) = self.panes.get_mut(&id) {
+                    p.full = true;
+                }
+            }
+            self.multi_lit = at;
+            self.redraw();
+        }
+        if at.is_some() {
+            if let Some(w) = &self.window {
+                w.set_cursor(CursorIcon::Pointer);
+            }
+        }
+        at.is_some()
+    }
     /// While typing into several, whether a pane gets what is typed.
     pub(super) fn typed_into(&self, id: PaneId) -> Option<bool> {
         let ws = self.workspaces.get(self.current)?;
@@ -1102,19 +1139,15 @@ impl App {
                 return;
             }
         }
-        // Typing into several: a click on a pane leaves it out, or takes
-        // it back; it does not go to the pane.
-        if button == MouseButton::Left && !self.roam_shown && self.caption_at(x, y).is_none() {
-            if let Some((id, _)) = self.pane_at(x, y) {
-                if let Some(into) = self.typed_into(id) {
-                    let ws = &mut self.workspaces[self.current];
-                    if into {
-                        ws.left_out.push(id);
-                    } else {
-                        ws.left_out.retain(|p| *p != id);
-                    }
-                    return self.refresh_panes();
-                }
+        // Typing into several: a click on a pane's MULTI tag leaves it out,
+        // or takes it back. Without captions, there being no tag, a click
+        // anywhere on the pane does.
+        if button == MouseButton::Left && !self.roam_shown {
+            let tag = self.multi_tags.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| *id);
+            let bare = if self.config.captions { None } else { self.pane_at(x, y).map(|(id, _)| id).filter(|id| self.typed_into(*id).is_some()) };
+            if let Some(id) = tag.or(bare) {
+                self.toggle_multi_pane(id);
+                return;
             }
         }
         if let (Some((id, _)), Some(b)) = (self.pane_at(x, y), App::button_of(button)) {
@@ -1222,7 +1255,7 @@ impl App {
                 }
             }
             None => {
-                if self.bar_hover(x, y) || self.handle_hover(x, y) {
+                if self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
                     return;
                 }
                 self.update_link();
@@ -1671,7 +1704,7 @@ impl App {
         if full {
             if self.config.captions {
                 let into = self.typed_into(id);
-                self.draw_caption(rect, n, &caption, focused, scrolled, activity, into);
+                self.draw_caption(id, rect, n, &caption, focused, scrolled, activity, into);
             }
         }
         if full {
@@ -1681,7 +1714,8 @@ impl App {
         self.draw_blocks(id);
     }
 
-    fn draw_caption(&mut self, rect: Rect, n: usize, caption: &str, focused: bool, scrolled: bool, activity: bool, into: Option<bool>) {
+    #[allow(clippy::too_many_arguments)]
+    fn draw_caption(&mut self, id: PaneId, rect: Rect, n: usize, caption: &str, focused: bool, scrolled: bool, activity: bool, into: Option<bool>) {
         let h = self.caption_h();
         let bar = Rect { x: rect.x, y: rect.y + rect.h - h, w: rect.w, h };
         let (bg, fg) = if focused {
@@ -1695,11 +1729,38 @@ impl App {
         let pad = self.px(6.0) as f32;
         let label = if n == 0 { format!("~  {caption}") } else { format!("{n}  {caption}") };
         self.canvas.text(&mut self.fonts.ui, &label, bar.x as f32 + pad, ty, fg, bar);
-        // Tags at the right: scrolled back, and typing into every pane.
-        let (typing, left_out) = (into == Some(true), into == Some(false));
+        // Tags at the right: copy mode, scrolled back, and typing into
+        // several panes, the last a button that takes this pane in or out.
         let mut right = bar.x + bar.w - pad as i32;
         let copying = self.copy_mode.as_ref().is_some_and(|c| self.panes.get(&c.pane).is_some_and(|p| p.rect == rect));
-        for (on, tag, color) in [(copying, " COPY ", 0xFFC53D), (scrolled && !copying, " SCROLLED ", SCROLLED), (typing, " TYPING ", 0xE5484D), (left_out, " SKIPPED ", 0x6F6F6F)] {
+        self.multi_tags.retain(|(_, p)| *p != id);
+        if let Some(included) = into {
+            let lit = self.multi_lit == Some(id);
+            let base = if included { 0xE5484D } else { 0x6F6F6F };
+            let color = if lit { mix(base, 0xFFFFFF, 40) } else { base };
+            let label = if included { "MULTI" } else { "SKIPPED" };
+            let (gap, icon_w) = (self.px(6.0), self.px(11.0));
+            let w = gap + icon_w + gap + self.fonts.ui.width(label) + gap;
+            let r = Rect { x: right - w, y: bar.y, w, h };
+            self.canvas.fill(r, color);
+            // Two cursors, one a little behind the other: typing in more
+            // than one place.
+            let fg = crate::canvas::on(color);
+            // Each a text cursor, an I beam: a stem with a cap at each end.
+            let (bh, bw, cap) = (h * 11 / 20, self.px(1.5).max(1), self.px(5.0));
+            let beam = |canvas: &mut Canvas, cx: i32, top: i32, c: u32| {
+                canvas.fill(Rect { x: cx - bw / 2, y: top, w: bw.max(1), h: bh }, c);
+                canvas.fill(Rect { x: cx - cap / 2, y: top, w: cap, h: bw.max(1) }, c);
+                canvas.fill(Rect { x: cx - cap / 2, y: top + bh - bw.max(1), w: cap, h: bw.max(1) }, c);
+            };
+            let (ix, iy, off) = (r.x + gap, bar.y + (h - bh) / 2, self.px(2.0));
+            beam(&mut self.canvas, ix + cap / 2, iy - off, mix(color, fg, 140));
+            beam(&mut self.canvas, ix + icon_w - cap / 2, iy + off, fg);
+            self.canvas.text(&mut self.fonts.ui, label, (r.x + gap + icon_w + gap) as f32, ty, fg, r);
+            self.multi_tags.push((r, id));
+            right = r.x - pad as i32 / 2;
+        }
+        for (on, tag, color) in [(copying, " COPY ", 0xFFC53D), (scrolled && !copying, " SCROLLED ", SCROLLED)] {
             if !on {
                 continue;
             }
