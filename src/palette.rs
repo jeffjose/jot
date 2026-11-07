@@ -195,7 +195,7 @@ pub fn commands() -> Vec<Item> {
         c("Focus pane / show all", "Alt Shift F", Action::Zoom),
         c("Equalize pane sizes", "Alt =", Action::Equalize),
         c("Close other panes", "", Action::Only),
-        c("New workspace", "Alt Shift N", Action::NewWorkspace),
+        c("New workspace", "Ctrl N", Action::NewWorkspace),
         c("Rename workspace…", "", Action::Rename),
         c("Close workspace", "", Action::CloseWorkspace),
         c("Toggle roaming terminal", "Alt `", Action::Roam),

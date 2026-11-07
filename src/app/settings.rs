@@ -129,7 +129,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Alt =", "Equalize pane sizes"),
     ("Alt 1–9", "Go to a workspace"),
     ("Alt ,  Alt .", "Previous / next workspace"),
-    ("Alt Shift N", "New workspace, in this pane's folder"),
+    ("Ctrl N  Alt Shift N", "New workspace, in this pane's folder"),
     ("Alt Shift M", "Multi: type into every pane; click a MULTI tag to skip one"),
     ("Alt ;", "Pane command line: run now, or queue behind the running command"),
     ("Alt P", "Copy mode: hjkl to move, v or V to select, y to copy"),

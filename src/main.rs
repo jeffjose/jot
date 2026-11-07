@@ -49,7 +49,7 @@ Keys:
   Alt Shift o          move pane to a new window, and back
   Alt arrows, Alt =    resize pane, equalize pane sizes
   Alt 1-9, Alt , .     go to workspace, previous / next workspace
-  Alt Shift n          new workspace, in this pane's folder
+  Ctrl n, Alt Shift n  new workspace, in this pane's folder
   Alt `                toggle roaming terminal
   Alt p                copy mode
   Ctrl f               find in pane (Enter: previous match, Shift Enter: next)

@@ -438,7 +438,7 @@ impl App {
                 c("Clear terminal", "", Action::Clear),
             ],
             vec![
-                c("New workspace", "Alt Shift N", Action::NewWorkspace),
+                c("New workspace", "Ctrl N", Action::NewWorkspace),
                 c("Rename workspace…", "", Action::Rename),
                 None,
                 c("Toggle roaming terminal", "Alt `", Action::Roam),

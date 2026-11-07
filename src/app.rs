@@ -990,6 +990,12 @@ impl App {
             self.close_pane(event_loop);
             return true;
         }
+        // Ctrl N: a new workspace, in this pane's folder, as a browser's new
+        // window.
+        if ctrl && !shift && !alt && code == KeyCode::KeyN {
+            self.new_workspace();
+            return true;
+        }
         if ctrl && !shift && !alt && code == KeyCode::KeyT {
             self.new_pane();
             return true;
