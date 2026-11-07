@@ -7,11 +7,48 @@ use crate::field::{Outcome, TextField};
 use crate::palette::{self, Action, Item, Mode, Palette};
 
 
-/// The right-click menu: items, with lines between groups (None).
+/// The right-click menu: items, with lines between groups (None). Rows
+/// whose action is Submenu(n) open `children[n]` beside them.
 pub struct Menu {
     pub items: Vec<Option<Item>>,
     pub at: (i32, i32),
     pub hover: Option<usize>,
+    pub children: Vec<Vec<Option<Item>>>,
+    /// The submenu shown: the row it hangs from, and the row hovered in it.
+    pub open: Option<(usize, Option<usize>)>,
+}
+
+/// Where a menu, or a submenu, is drawn.
+#[derive(Clone, Copy)]
+pub struct MenuBox {
+    pub rect: Rect,
+    pub pad: i32,
+    pub row_h: i32,
+    pub sep_h: i32,
+}
+
+impl MenuBox {
+    /// The top of each row.
+    fn tops(&self, items: &[Option<Item>]) -> Vec<i32> {
+        let mut top = self.rect.y + self.pad / 2;
+        items
+            .iter()
+            .map(|i| {
+                let t = top;
+                top += if i.is_some() { self.row_h } else { self.sep_h };
+                t
+            })
+            .collect()
+    }
+
+    /// The item row at a point, not counting lines between groups.
+    fn row_at(&self, items: &[Option<Item>], x: i32, y: i32) -> Option<usize> {
+        if !self.rect.contains(x, y) {
+            return None;
+        }
+        let tops = self.tops(items);
+        (0..items.len()).find(|&i| items[i].is_some() && y >= tops[i] && y < tops[i] + self.row_h)
+    }
 }
 
 pub struct Layout {
@@ -260,7 +297,7 @@ impl App {
             Action::PopOut => self.pop_out(event_loop),
             Action::CopyOutput => self.copy_output_at(self.menu_at),
             Action::Palette => self.open_palette(),
-            Action::Commands => self.open_palette_with(">"),
+            Action::Submenu(_) => {}
             Action::StatusLine => {
                 self.config.status_line = !self.config.status_line;
                 self.relayout();
@@ -329,12 +366,14 @@ impl App {
         (l.panel.contains(x, y) && (0..l.rows as i32).contains(&row)).then(|| p.first + row as usize)
     }
 
-    /// The right-click menu, at the pointer.
+    /// The right-click menu, at the pointer: what is used most on top,
+    /// the rest in Pane and Workspace. Everything is in Ctrl P as well.
     pub(super) fn open_menu(&mut self) {
         let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
-        let has_selection = self.focused().and_then(|f| self.panes.get(&f)).is_some_and(|p| p.term.selection_text().is_some());
+        let pane = self.focused().and_then(|f| self.panes.get(&f));
+        let has_selection = pane.is_some_and(|p| p.term.selection_text().is_some());
+        let marked = pane.is_some_and(|p| p.shell.marked);
         let mut items = Vec::new();
-        let marked = self.focused().and_then(|f| self.panes.get(&f)).is_some_and(|p| p.shell.marked);
         if has_selection {
             items.push(c("Copy", "Ctrl Shift C", Action::Copy));
         }
@@ -344,81 +383,98 @@ impl App {
             None,
             c("Split side by side", "Alt V", Action::Split(Dir::Across)),
             c("Split one above another", "Alt S", Action::Split(Dir::Down)),
-            c(if self.ws().zoom.is_some() { "Show all panes" } else { "Pane alone" }, "Alt Shift M", Action::Zoom),
-            c("New pane", "Ctrl T", Action::NewPane),
-            c("Pop out", "Alt Shift O", Action::PopOut),
             c("Close pane", "Ctrl W", Action::Close),
-            c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
             None,
-            c("Clear screen and scrollback", "", Action::Clear),
-            c("Roaming terminal", "Alt `", Action::Roam),
+            c("Pane", "›", Action::Submenu(0)),
+            c("Workspace", "›", Action::Submenu(1)),
             None,
-            c("New workspace here", "Alt Shift N", Action::NewWorkspace),
-            c("Rename workspace…", "", Action::Rename),
-            None,
-            c("Find…", "Ctrl K", Action::Palette),
-            c("Run a command…", "Ctrl P", Action::Commands),
             c("Settings…", "Ctrl ,", Action::Settings),
         ]);
+        let children = vec![
+            vec![
+                c(if self.ws().zoom.is_some() { "Show all panes" } else { "Pane alone" }, "Alt Shift M", Action::Zoom),
+                c("New pane", "Ctrl T", Action::NewPane),
+                c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
+                c("Pop out", "Alt Shift O", Action::PopOut),
+                None,
+                c("Clear screen and scrollback", "", Action::Clear),
+            ],
+            vec![
+                c("New workspace here", "Alt Shift N", Action::NewWorkspace),
+                c("Rename workspace…", "", Action::Rename),
+                None,
+                c("Roaming terminal", "Alt `", Action::Roam),
+            ],
+        ];
         self.palette = None;
-        let items: Vec<Option<Item>> = items.into_iter().enumerate().filter(|(i, it)| it.is_some() || *i > 0).map(|(_, it)| it).collect();
+        // No line where the menu starts, or two in a row.
+        let mut tidy: Vec<Option<Item>> = Vec::new();
+        for it in items {
+            if it.is_some() || tidy.last().is_some_and(|l| l.is_some()) {
+                tidy.push(it);
+            }
+        }
         self.menu_at = self.pointer;
-        self.menu = Some(Menu { items, at: self.pointer, hover: None });
+        self.menu = Some(Menu { items: tidy, at: self.pointer, hover: None, children, open: None });
         self.full = true;
         self.redraw();
     }
 
-    pub(super) fn menu_layout(&mut self) -> Option<(Rect, i32, i32, i32)> {
-        let m = self.menu.as_ref()?;
+    /// Where a list of items goes: at a point, kept inside the window; a
+    /// submenu beside its parent, on the left when there is no room right.
+    fn menu_box(&mut self, items: &[Option<Item>], at: (i32, i32), beside: Option<Rect>) -> MenuBox {
         let ui = &mut self.fonts.ui;
         let pad = (self.scale * 8.0).round() as i32;
         let row_h = ui.height + pad;
         let sep_h = pad;
-        let widest = m.items.iter().flatten().map(|i| ui.width(&i.label) + if i.hint.is_empty() { 0 } else { ui.width(&i.hint) + 3 * pad }).max().unwrap_or(0);
+        let widest = items.iter().flatten().map(|i| ui.width(&i.label) + if i.hint.is_empty() { 0 } else { ui.width(&i.hint) + 3 * pad }).max().unwrap_or(0);
         let w = widest + 4 * pad;
-        let h = m.items.iter().map(|i| if i.is_some() { row_h } else { sep_h }).sum::<i32>() + pad;
-        // Kept inside the window, flipped to the pointer's other side when
-        // there is no room.
-        let (mut x, mut y) = m.at;
-        if x + w > self.canvas.width {
-            x = (x - w).max(0);
-        }
-        if y + h > self.canvas.height {
-            y = (y - h).max(0);
-        }
-        Some((Rect { x, y, w, h }, pad, row_h, sep_h))
-    }
-
-    /// Which item of the menu is at a point.
-    pub(super) fn menu_item_at(&mut self, x: i32, y: i32) -> Option<usize> {
-        let (r, pad, row_h, sep_h) = self.menu_layout()?;
-        if !r.contains(x, y) {
-            return None;
-        }
-        let m = self.menu.as_ref()?;
-        let mut top = r.y + pad / 2;
-        for (i, item) in m.items.iter().enumerate() {
-            let h = if item.is_some() { row_h } else { sep_h };
-            if y >= top && y < top + h {
-                return item.is_some().then_some(i);
+        let h = items.iter().map(|i| if i.is_some() { row_h } else { sep_h }).sum::<i32>() + pad;
+        let (mut x, mut y) = at;
+        match beside {
+            Some(p) => {
+                x = p.x + p.w - pad / 4;
+                if x + w > self.canvas.width {
+                    x = (p.x - w + pad / 4).max(0);
+                }
+                y = (y - pad / 2).min(self.canvas.height - h).max(0);
             }
-            top += h;
+            None => {
+                if x + w > self.canvas.width {
+                    x = (x - w).max(0);
+                }
+                if y + h > self.canvas.height {
+                    y = (y - h).max(0);
+                }
+            }
         }
-        None
+        MenuBox { rect: Rect { x, y, w, h }, pad, row_h, sep_h }
     }
 
-    pub(super) fn draw_menu(&mut self) {
+    /// The menu's box, and the open submenu's with its items.
+    pub(super) fn menu_boxes(&mut self) -> Option<(MenuBox, Option<(MenuBox, Vec<Option<Item>>)>)> {
+        let m = self.menu.as_ref()?;
+        let (items, at, open) = (m.items.clone(), m.at, m.open);
+        let sub = open.and_then(|(row, _)| match items.get(row)?.as_ref()?.action {
+            Action::Submenu(k) => Some((row, m.children.get(k)?.clone())),
+            _ => None,
+        });
+        let main = self.menu_box(&items, at, None);
+        let sub = sub.map(|(row, kids)| {
+            let top = main.tops(&items)[row];
+            (self.menu_box(&kids, (0, top), Some(main.rect)), kids)
+        });
+        Some((main, sub))
+    }
+
+    fn draw_menu_box(&mut self, b: MenuBox, items: &[Option<Item>], hover: Option<usize>) {
         let c = self.cur_theme.chrome();
-        let Some((r, pad, row_h, sep_h)) = self.menu_layout() else { return };
-        let Some(m) = self.menu.as_ref() else { return };
-        let (items, hover) = (m.items.clone(), m.hover);
+        let MenuBox { rect: r, pad, row_h, sep_h } = b;
         self.canvas.panel(r, pad, c.panel, c.edge);
         let ui = &mut self.fonts.ui;
-        let mut top = r.y + pad / 2;
-        for (i, item) in items.iter().enumerate() {
-            let Some(item) = item else {
+        for (i, top) in b.tops(items).into_iter().enumerate() {
+            let Some(item) = &items[i] else {
                 self.canvas.fill(Rect { x: r.x + pad, y: top + sep_h / 2, w: r.w - 2 * pad, h: 1 }, c.edge);
-                top += sep_h;
                 continue;
             };
             let picked = hover == Some(i);
@@ -432,9 +488,33 @@ impl App {
                 let hw = ui.width(&item.hint);
                 self.canvas.text(ui, &item.hint, (r.x + r.w - pad * 3 / 2 - hw) as f32, ty, dim, r);
             }
-            top += row_h;
+        }
+    }
+
+    pub(super) fn draw_menu(&mut self) {
+        let Some((main, sub)) = self.menu_boxes() else { return };
+        let Some(m) = self.menu.as_ref() else { return };
+        let (items, open) = (m.items.clone(), m.open);
+        // The row a submenu hangs from stays lit while it is open.
+        let hover = open.map(|(row, _)| row).or(m.hover);
+        self.draw_menu_box(main, &items, hover);
+        if let Some((b, kids)) = sub {
+            self.draw_menu_box(b, &kids, open.and_then(|(_, h)| h));
         }
         self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
+    }
+
+    /// What is under the pointer in the menu: a row of the submenu, or
+    /// of the menu itself, as (in the submenu, row).
+    fn menu_hit(&mut self, x: i32, y: i32) -> Option<(bool, Option<usize>)> {
+        let (main, sub) = self.menu_boxes()?;
+        if let Some((b, kids)) = &sub {
+            if b.rect.contains(x, y) {
+                return Some((true, b.row_at(kids, x, y)));
+            }
+        }
+        let items = self.menu.as_ref()?.items.clone();
+        main.rect.contains(x, y).then(|| (false, main.row_at(&items, x, y)))
     }
 
     /// A click while something floats: the palette or the menu gets it.
@@ -442,11 +522,34 @@ impl App {
     pub(super) fn overlay_click(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) -> bool {
         let (x, y) = self.pointer;
         if self.menu.is_some() {
-            let hit = self.menu_item_at(x, y);
-            let item = hit.and_then(|i| self.menu.as_ref().and_then(|m| m.items[i].clone()));
-            self.close_overlay();
-            if let (Some(item), MouseButton::Left) = (item, button) {
-                self.run(item.action, event_loop);
+            let hit = self.menu_hit(x, y);
+            let item = match hit {
+                Some((true, Some(row))) => self.menu.as_ref().and_then(|m| {
+                    let (parent, _) = m.open?;
+                    let Action::Submenu(k) = m.items[parent].as_ref()?.action else { return None };
+                    m.children.get(k)?.get(row)?.clone()
+                }),
+                Some((false, Some(row))) => self.menu.as_ref().and_then(|m| m.items[row].clone()),
+                _ => None,
+            };
+            match item {
+                // A row with a submenu opens it, as hovering does.
+                Some(Item { action: Action::Submenu(_), .. }) => {
+                    if let (Some(m), Some((false, Some(row)))) = (&mut self.menu, hit) {
+                        m.open = Some((row, None));
+                    }
+                    self.full = true;
+                    self.redraw();
+                }
+                Some(item) => {
+                    self.close_overlay();
+                    if button == MouseButton::Left {
+                        self.run(item.action, event_loop);
+                    }
+                }
+                // On a line between groups: nothing. Elsewhere: gone.
+                None if hit.is_some() => {}
+                None => self.close_overlay(),
             }
             return true;
         }
@@ -469,13 +572,23 @@ impl App {
     /// The pointer over the menu or the palette: the row under it picked.
     pub(super) fn overlay_hover(&mut self, x: i32, y: i32) -> bool {
         if self.menu.is_some() {
-            let hit = self.menu_item_at(x, y);
-            if let Some(m) = &mut self.menu {
-                if m.hover != hit {
-                    m.hover = hit;
-                    self.full = true;
-                    self.redraw();
-                }
+            let hit = self.menu_hit(x, y);
+            let Some(m) = &mut self.menu else { return true };
+            let (hover, open) = match hit {
+                Some((true, h)) => (None, m.open.map(|(p, _)| (p, h))),
+                Some((false, Some(row))) => match m.items[row].as_ref().map(|i| &i.action) {
+                    Some(Action::Submenu(_)) => (Some(row), Some((row, m.open.filter(|(p, _)| *p == row).and_then(|(_, h)| h)))),
+                    _ => (Some(row), None),
+                },
+                // Off any row: what is open stays open, so the pointer can
+                // cross to it.
+                _ => (None, m.open.map(|(p, _)| (p, None))),
+            };
+            if m.hover != hover || m.open != open {
+                m.hover = hover;
+                m.open = open;
+                self.full = true;
+                self.redraw();
             }
             return true;
         }

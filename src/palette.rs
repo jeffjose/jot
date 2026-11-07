@@ -36,7 +36,8 @@ pub enum Action {
     CopyOutput,
     Settings,
     Palette,
-    Commands,
+    /// Opens the n-th submenu of the right-click menu.
+    Submenu(usize),
 }
 
 #[derive(Clone, Debug)]
