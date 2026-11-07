@@ -46,6 +46,7 @@ jterm --fresh    # the workspaces in the config instead
 | `Alt 1`–`9`, `Alt ,` `Alt .` | go to a workspace, the one before or after |
 | `Alt Shift n` | a new workspace, in this pane's folder |
 | `Alt Shift b` | type into every pane of the workspace at once, and back |
+| `Alt p` | copy mode: h j k l, v or V to select, y to copy, Esc to leave |
 | ``Alt ` `` | the roaming terminal |
 | `Ctrl f` | find in the pane, Enter for the match above, Shift Enter below |
 | `Ctrl` click | open a link in the browser, a file in your editor at its line, a folder in a new pane |

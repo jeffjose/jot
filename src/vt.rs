@@ -432,6 +432,27 @@ impl Terminal {
         }
     }
 
+    /// The rows held, scrollback and screen together; the first shown;
+    /// and how many are shown.
+    pub fn scrollbar(&self) -> (u64, u64, u64) {
+        let mut s = GhosttyTerminalScrollbar { total: 0, offset: 0, len: 0 };
+        unsafe { ghostty_terminal_get(self.raw, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &mut s as *mut _ as *mut c_void) };
+        (s.total, s.offset, s.len)
+    }
+
+    /// Selects from one cell to another, counted in rows from the top of
+    /// the scrollback, both included.
+    pub fn select_rows(&mut self, from: (u16, u64), to: (u16, u64)) {
+        let at = |(x, y): (u16, u64)| unsafe {
+            let point = GhosttyPoint { tag: GHOSTTY_POINT_TAG_SCREEN, value: GhosttyPointValue { coordinate: GhosttyPointCoordinate { x, y: y as u32 } } };
+            let mut r: GhosttyGridRef = std::mem::zeroed();
+            (ghostty_terminal_grid_ref(self.raw, point, &mut r) == GHOSTTY_SUCCESS).then_some(r)
+        };
+        let (Some(start), Some(end)) = (at(from), at(to)) else { return };
+        let sel = GhosttySelection { start, end, rectangle: false };
+        unsafe { ghostty_terminal_set(self.raw, GHOSTTY_TERMINAL_OPT_SELECTION, &sel as *const _ as *const c_void) };
+    }
+
     /// Whether the program has asked for the mouse.
     pub fn wants_mouse(&self) -> bool {
         let mut on = false;

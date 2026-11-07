@@ -28,6 +28,7 @@ use crate::theme::Theme;
 use crate::vt::{self, sys, Cell, Terminal};
 
 mod overlay;
+mod copymode;
 mod dnd;
 mod find;
 mod links;
@@ -147,6 +148,7 @@ pub struct App {
     ghost: Option<(Vec<u32>, i32, i32)>,
     /// A button held down in a pane whose program has the mouse.
     mouse_held: Option<(PaneId, sys::GhosttyMouseButton)>,
+    copy_mode: Option<copymode::CopyMode>,
     /// What was run from the palette lately, the latest first.
     recent: Vec<String>,
     /// Panes closed, the last last, for Ctrl Shift T.
@@ -230,6 +232,7 @@ impl App {
             link: None,
             ghost: None,
             mouse_held: None,
+            copy_mode: None,
             recent: Vec::new(),
             closed: Vec::new(),
             copied: (None, None),
@@ -721,6 +724,7 @@ impl App {
                 (KeyCode::KeyN, true) => self.new_workspace(),
                 (KeyCode::KeyB, true) => self.toggle_broadcast(),
                 (KeyCode::KeyP, true) => self.paste(false),
+                (KeyCode::KeyP, false) => self.open_copy_mode(),
                 (KeyCode::Backquote, false) => self.toggle_roam(),
                 _ => return false,
             }
@@ -794,6 +798,12 @@ impl App {
         if self.palette.is_some() {
             if event.state == ElementState::Pressed {
                 self.palette_key(&event, event_loop);
+            }
+            return;
+        }
+        if self.copy_mode.is_some() && self.palette.is_none() && self.settings.is_none() {
+            if event.state == ElementState::Pressed {
+                self.copy_mode_key(&event);
             }
             return;
         }
@@ -1218,6 +1228,7 @@ impl App {
         let (rows, cols) = self.panes.get(&id).map_or((0, 0), |p| (p.rows, p.cols));
         let (hl_all, hl_pick) = self.find_spans(id, rows, cols);
         let (link_sp, link_color) = (self.link_spans(id), self.cur_accent);
+        let copy_cur = self.copy_cursor(id);
         let Some(p) = self.panes.get_mut(&id) else { return };
         let full = full || p.full;
         p.full = false;
@@ -1306,7 +1317,14 @@ impl App {
                     canvas.fill(Rect { x: left, y: top + ch / 2, w: cw, h: (ch / 16).max(1) }, fg);
                 }
             }
-            if cursor.visible && cursor.y == y {
+            if let Some((cx, _)) = copy_cur.filter(|(_, cy)| *cy == y) {
+                let left = content.x + cx as i32 * cw;
+                canvas.fill(Rect { x: left, y: top, w: cw, h: 2 }, link_color);
+                canvas.fill(Rect { x: left, y: top + ch - 2, w: cw, h: 2 }, link_color);
+                canvas.fill(Rect { x: left, y: top, w: 2, h: ch }, link_color);
+                canvas.fill(Rect { x: left + cw - 2, y: top, w: 2, h: ch }, link_color);
+            }
+            if cursor.visible && cursor.y == y && copy_cur.is_none() {
                 let left = content.x + cursor.x as i32 * cw;
                 let color = cursor.color.unwrap_or(tfg);
                 let t = (cw / 8).max(1);
@@ -1351,7 +1369,8 @@ impl App {
         // Tags at the right: scrolled back, and typing into every pane.
         let broadcast = n > 0 && self.workspaces.get(self.current).is_some_and(|w| w.broadcast);
         let mut right = bar.x + bar.w - pad as i32;
-        for (on, tag, color) in [(scrolled, " SCROLLED ", SCROLLED), (broadcast, " TYPING INTO ALL ", 0xE5484D)] {
+        let copying = self.copy_mode.as_ref().is_some_and(|c| self.panes.get(&c.pane).is_some_and(|p| p.rect == rect));
+        for (on, tag, color) in [(copying, " COPY ", 0xFFC53D), (scrolled && !copying, " SCROLLED ", SCROLLED), (broadcast, " TYPING INTO ALL ", 0xE5484D)] {
             if !on {
                 continue;
             }
