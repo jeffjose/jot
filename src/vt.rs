@@ -16,6 +16,7 @@ use crate::theme::Theme;
 
 pub const BOLD: u16 = 1 << 0;
 pub const FAINT: u16 = 1 << 2;
+pub const ITALIC: u16 = 1 << 1;
 pub const INVERSE: u16 = 1 << 4;
 pub const INVISIBLE: u16 = 1 << 5;
 pub const STRIKE: u16 = 1 << 6;

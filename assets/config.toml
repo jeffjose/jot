@@ -41,6 +41,9 @@
 # you are in.
 # captions = true
 
+# Characters joined as the font draws them: => and != in Fira Code.
+# ligatures = true
+
 # A status line along the bottom of the window: host, workspaces, clock.
 # status-line = false
 

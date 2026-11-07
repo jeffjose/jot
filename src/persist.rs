@@ -166,6 +166,9 @@ pub struct Config {
     /// A caption along the bottom of each pane.
     #[serde(default = "yes")]
     pub captions: bool,
+    /// Characters joined as the font draws them, => and != in Fira Code.
+    #[serde(default = "yes")]
+    pub ligatures: bool,
     /// The colour theme, by name.
     #[serde(default = "default_theme")]
     pub theme: String,
@@ -234,7 +237,7 @@ fn default_projects() -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), status_line: false, captions: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), status_line: false, captions: true, ligatures: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), workspaces: Vec::new() }
     }
 }
 

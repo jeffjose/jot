@@ -194,7 +194,7 @@ impl App {
         let theme = Theme::by_name(&config.theme);
         let accent = crate::theme::accent(&config.accent);
         App {
-            fonts: Fonts::new(&crate::font::Choice { family: config.font_family.clone(), size: font_size, ui_family: config.ui_font_family.clone(), ui_size: config.ui_font_size, line_height: config.line_height }, 1.0),
+            fonts: Fonts::new(&crate::font::Choice { family: config.font_family.clone(), size: font_size, ui_family: config.ui_font_family.clone(), ui_size: config.ui_font_size, line_height: config.line_height, ligatures: config.ligatures }, 1.0),
             font_size,
             config,
             proxy,
@@ -587,7 +587,7 @@ impl App {
     }
 
     fn font_choice(&self) -> crate::font::Choice {
-        crate::font::Choice { family: self.config.font_family.clone(), size: self.font_size, ui_family: self.config.ui_font_family.clone(), ui_size: self.config.ui_font_size, line_height: self.config.line_height }
+        crate::font::Choice { family: self.config.font_family.clone(), size: self.font_size, ui_family: self.config.ui_font_family.clone(), ui_size: self.config.ui_font_size, line_height: self.config.line_height, ligatures: self.config.ligatures }
     }
 
     /// Every pane drawn again in full, after a setting of how they look
@@ -1292,6 +1292,35 @@ impl App {
                     canvas.fill(Rect { x: content.x + x as i32 * cw, y: top, w: cw, h: ch }, bg);
                 }
             }
+            // Ligatures: each run of symbols, as => or !=, shaped, and the
+            // cells whose glyph that changes drawn with the shaped one.
+            let mut ligs: Vec<Option<u16>> = vec![None; cells.len()];
+            if fonts.ligatures {
+                let mut i = 0;
+                while i < cells.len() {
+                    let one = |c: &Cell| c.text.chars().count() == 1 && !c.text.starts_with(' ') && c.text.is_ascii();
+                    if !one(&cells[i]) {
+                        i += 1;
+                        continue;
+                    }
+                    let bold = cells[i].flags & vt::BOLD != 0;
+                    let mut j = i;
+                    while j < cells.len() && one(&cells[j]) && (cells[j].flags & vt::BOLD != 0) == bold {
+                        j += 1;
+                    }
+                    let run: String = cells[i..j].iter().map(|c| c.text.as_str()).collect();
+                    if j - i >= 2 && run.chars().any(|ch| "=<>!-|&*/:.+~#_%^?;\\\\[]{}()w".contains(ch)) {
+                        if let Some(ids) = fonts.shape(&run, bold) {
+                            for (k, (id, ch)) in ids.iter().zip(run.chars()).enumerate() {
+                                if *id != fonts.plain_id(ch, bold) {
+                                    ligs[i + k] = Some(*id);
+                                }
+                            }
+                        }
+                    }
+                    i = j;
+                }
+            }
             for (x, c) in cells.iter().enumerate() {
                 let left = content.x + x as i32 * cw;
                 let (mut fg, bg) = colors(c, x as u16, y);
@@ -1303,7 +1332,11 @@ impl App {
                 if c.flags & vt::INVISIBLE == 0 {
                     if let Some(chr) = c.text.chars().next() {
                         if chr != ' ' {
-                            let g = fonts.glyph(chr, c.flags & vt::BOLD != 0);
+                            let style = (c.flags & vt::BOLD != 0) as u8 | (((c.flags & vt::ITALIC != 0) as u8) << 1);
+                            let g = match ligs.get(x).copied().flatten() {
+                                Some(id) => fonts.glyph_id(id, style),
+                                None => fonts.glyph(chr, style),
+                            };
                             canvas.glyph(g, left, top, fg, clip);
                         }
                     }

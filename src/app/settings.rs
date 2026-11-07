@@ -28,9 +28,10 @@ pub enum Key {
     StatusLine,
     /// A workspace's theme, in the list of themes.
     WsTheme,
+    Ligatures,
 }
 
-const ALL_KEYS: [Key; 10] = [Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine];
+const ALL_KEYS: [Key; 11] = [Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
@@ -128,6 +129,7 @@ fn config_key(key: Key) -> &'static str {
         Key::Captions => "captions",
         Key::StatusLine => "status-line",
         Key::WsTheme => "theme",
+        Key::Ligatures => "ligatures",
     }
 }
 
@@ -163,6 +165,7 @@ impl App {
             Key::Captions => !c.captions,
             Key::StatusLine => c.status_line,
             Key::WsTheme => false,
+            Key::Ligatures => !c.ligatures,
         }
     }
 
@@ -225,6 +228,10 @@ impl App {
                 self.relayout();
             }
             Key::WsTheme => {}
+            Key::Ligatures => {
+                self.config.ligatures = true;
+                self.reload_fonts();
+            }
             Key::StatusLine => {
                 self.config.status_line = false;
                 self.relayout();
@@ -250,14 +257,24 @@ impl App {
                 persist::set_config_value("accent", &format!("{name:?}"));
             }
             Hit::Toggle(key) => {
-                let on = if key == Key::Captions {
-                    self.config.captions = !self.config.captions;
-                    self.config.captions
-                } else {
-                    self.config.status_line = !self.config.status_line;
-                    self.config.status_line
+                let on = match key {
+                    Key::Captions => {
+                        self.config.captions = !self.config.captions;
+                        self.config.captions
+                    }
+                    Key::Ligatures => {
+                        self.config.ligatures = !self.config.ligatures;
+                        self.config.ligatures
+                    }
+                    _ => {
+                        self.config.status_line = !self.config.status_line;
+                        self.config.status_line
+                    }
                 };
                 persist::set_config_value(config_key(key), if on { "true" } else { "false" });
+                if key == Key::Ligatures {
+                    self.reload_fonts();
+                }
                 self.relayout();
             }
             Hit::Step(Key::Size, by) => {
@@ -515,6 +532,7 @@ impl App {
         let (captions, status_line) = (self.config.captions, self.config.status_line);
         let ws_rows: Vec<(String, Option<String>, Option<String>, bool, bool)> = self.workspaces.iter().enumerate().map(|(i, w)| (w.name.clone(), w.accent.clone(), w.theme.clone(), w.broadcast, i == self.current)).collect();
         let min_contrast = self.config.min_contrast;
+        let ligatures = self.config.ligatures;
         let version = crate::version();
         let canvas_h = self.canvas.height;
         let canvas = &mut self.canvas;
@@ -691,6 +709,7 @@ impl App {
         for (name, what, key, value) in [
             ("Captions under panes", "Each pane's title along its bottom, as screen's regions have.", Key::Captions, captions),
             ("Status line", "Workspaces, host and clock along the bottom of the window.", Key::StatusLine, status_line),
+            ("Ligatures", "Characters joined as the font draws them: => and != in Fira Code.", Key::Ligatures, ligatures),
         ] {
             let mid = title(canvas, fonts, &mut page, y, name, what, key);
             let (sw, sh) = (px(40.0), px(22.0));

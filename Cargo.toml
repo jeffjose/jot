@@ -14,6 +14,7 @@ serde = { version = "1", features = ["derive"] }
 toml = { version = "1", default-features = false, features = ["parse", "display", "serde", "std"] }
 # The clipboard, on X11 and on Wayland.
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+rustybuzz = "0.20"
 
 [build-dependencies]
 vergen-gitcl = "10.0.3"
