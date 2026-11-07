@@ -575,3 +575,140 @@ impl Drop for Terminal {
         }
     }
 }
+
+/// A picture placed in the view, as the kitty graphics protocol put it.
+#[derive(Clone, Debug)]
+pub struct Placement {
+    pub image: u32,
+    pub generation: u64,
+    pub col: i32,
+    pub row: i32,
+    pub offset: (u32, u32),
+    pub size: (u32, u32),
+    pub source: (u32, u32, u32, u32),
+    pub z: i32,
+}
+
+/// A picture's pixels, 0xAARRGGBB.
+pub struct Picture {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u32>,
+}
+
+unsafe extern "C" fn decode_png(_: *mut c_void, allocator: *const GhosttyAllocator, data: *const u8, len: usize, out: *mut GhosttySysImage) -> bool {
+    let bytes = std::slice::from_raw_parts(data, len);
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let Ok(mut reader) = decoder.read_info() else { return false };
+    let Some(size) = reader.output_buffer_size() else { return false };
+    let mut buf = vec![0u8; size];
+    let Ok(info) = reader.next_frame(&mut buf) else { return false };
+    let (w, h) = (info.width as usize, info.height as usize);
+    let src = &buf[..info.buffer_size()];
+    // As RGBA, whatever the PNG was.
+    let rgba: Vec<u8> = match info.color_type {
+        png::ColorType::Rgba => src.to_vec(),
+        png::ColorType::Rgb => src.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        png::ColorType::GrayscaleAlpha => src.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::Grayscale => src.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        _ => return false,
+    };
+    if rgba.len() != w * h * 4 {
+        return false;
+    }
+    let ptr = ghostty_alloc(allocator, rgba.len());
+    if ptr.is_null() {
+        return false;
+    }
+    std::ptr::copy_nonoverlapping(rgba.as_ptr(), ptr, rgba.len());
+    (*out).width = w as u32;
+    (*out).height = h as u32;
+    (*out).data = ptr;
+    (*out).data_len = rgba.len();
+    true
+}
+
+/// PNG pictures sent to any terminal are decoded with the png crate.
+pub fn set_up() {
+    let f: GhosttySysDecodePngFn = Some(decode_png);
+    unsafe { ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG, f.map_or(null(), |f| f as *const c_void)) };
+}
+
+impl Terminal {
+    /// The pictures placed in the view, lowest first.
+    pub fn placements(&mut self) -> Vec<Placement> {
+        let mut out = Vec::new();
+        unsafe {
+            let mut it = null_mut();
+            if ghostty_render_state_image_iterator_new(null(), &mut it) != GHOSTTY_SUCCESS {
+                return out;
+            }
+            if ghostty_render_state_get(self.render, GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR, &mut it as *mut _ as *mut c_void) == GHOSTTY_SUCCESS {
+                while ghostty_render_state_image_iterator_next(it) {
+                    let get32 = |d: GhosttyRenderStateImageData| {
+                        let mut v: u32 = 0;
+                        ghostty_render_state_image_get(it, d, &mut v as *mut u32 as *mut c_void);
+                        v
+                    };
+                    let geti = |d: GhosttyRenderStateImageData| {
+                        let mut v: i32 = 0;
+                        ghostty_render_state_image_get(it, d, &mut v as *mut i32 as *mut c_void);
+                        v
+                    };
+                    let mut generation: u64 = 0;
+                    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION, &mut generation as *mut u64 as *mut c_void);
+                    out.push(Placement {
+                        image: get32(GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID),
+                        generation,
+                        col: geti(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL),
+                        row: geti(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW),
+                        offset: (get32(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X), get32(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y)),
+                        size: (get32(GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH), get32(GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT)),
+                        source: (
+                            get32(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X),
+                            get32(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y),
+                            get32(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH),
+                            get32(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT),
+                        ),
+                        z: geti(GHOSTTY_RENDER_STATE_IMAGE_DATA_Z),
+                    });
+                }
+            }
+            ghostty_render_state_image_iterator_free(it);
+        }
+        out
+    }
+
+    /// A kitty picture's pixels.
+    pub fn picture(&self, id: u32) -> Option<Picture> {
+        unsafe {
+            let mut graphics: GhosttyKittyGraphics = null_mut();
+            if ghostty_terminal_get(self.raw, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &mut graphics as *mut _ as *mut c_void) != GHOSTTY_SUCCESS {
+                return None;
+            }
+            let image = ghostty_kitty_graphics_image(graphics, id);
+            if image.is_null() {
+                return None;
+            }
+            let (mut w, mut h, mut format): (u32, u32, GhosttyKittyImageFormat) = (0, 0, 0);
+            ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_WIDTH, &mut w as *mut u32 as *mut c_void);
+            ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_HEIGHT, &mut h as *mut u32 as *mut c_void);
+            ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_FORMAT, &mut format as *mut _ as *mut c_void);
+            let mut s = GhosttyString { ptr: null(), len: 0 };
+            if ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PIXELS, &mut s as *mut _ as *mut c_void) != GHOSTTY_SUCCESS || s.ptr.is_null() {
+                return None;
+            }
+            let bytes = std::slice::from_raw_parts(s.ptr, s.len);
+            let argb = |r: u8, g: u8, b: u8, a: u8| (u32::from(a) << 24) | (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+            let pixels: Vec<u32> = match format {
+                GHOSTTY_KITTY_IMAGE_FORMAT_RGBA => bytes.chunks_exact(4).map(|p| argb(p[0], p[1], p[2], p[3])).collect(),
+                GHOSTTY_KITTY_IMAGE_FORMAT_RGB => bytes.chunks_exact(3).map(|p| argb(p[0], p[1], p[2], 255)).collect(),
+                GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA => bytes.chunks_exact(2).map(|p| argb(p[0], p[0], p[0], p[1])).collect(),
+                GHOSTTY_KITTY_IMAGE_FORMAT_GRAY => bytes.iter().map(|&g| argb(g, g, g, 255)).collect(),
+                _ => return None,
+            };
+            (pixels.len() == (w * h) as usize).then_some(Picture { width: w, height: h, pixels })
+        }
+    }
+}

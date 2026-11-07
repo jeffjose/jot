@@ -150,6 +150,31 @@ impl Canvas {
         }
     }
 
+    /// Part of a picture (`src` x, y, w, h in its pixels) scaled into `dest`,
+    /// each pixel laid over by its own alpha, 0xAARRGGBB, kept in `clip`.
+    pub fn picture(&mut self, pixels: &[u32], pw: u32, src: (u32, u32, u32, u32), dest: Rect, clip: Rect) {
+        let (x0, y0, x1, y1) = self.bounds(Rect {
+            x: dest.x.max(clip.x),
+            y: dest.y.max(clip.y),
+            w: (dest.x + dest.w).min(clip.x + clip.w) - dest.x.max(clip.x),
+            h: (dest.y + dest.h).min(clip.y + clip.h) - dest.y.max(clip.y),
+        });
+        let (sw, sh) = (src.2.max(1) as i64, src.3.max(1) as i64);
+        for y in y0..y1 {
+            let sy = src.1 as i64 + (y - dest.y) as i64 * sh / dest.h.max(1) as i64;
+            let row = (y * self.width) as usize;
+            for x in x0..x1 {
+                let sx = src.0 as i64 + (x - dest.x) as i64 * sw / dest.w.max(1) as i64;
+                let Some(&s) = pixels.get((sy * pw as i64 + sx) as usize) else { continue };
+                let a = s >> 24;
+                if a > 0 {
+                    let p = &mut self.pixels[row + x as usize];
+                    *p = blend(*p, s & 0xFFFFFF, a);
+                }
+            }
+        }
+    }
+
     /// A floating panel, as jog draws its menus: a soft shadow, a thin
     /// edge, and a faint light along the top.
     pub fn panel(&mut self, r: Rect, radius: i32, fill: u32, edge: u32) {

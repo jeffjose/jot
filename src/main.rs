@@ -77,6 +77,7 @@ fn main() {
     }
     let config = persist::load_config();
     let session = if fresh { None } else { persist::load_session() };
+    vt::set_up();
     let event_loop = EventLoop::<()>::with_user_event().build().expect("no display to open a window on");
     let mut app = app::App::new(event_loop.create_proxy(), config, session);
     event_loop.run_app(&mut app).expect("event loop");

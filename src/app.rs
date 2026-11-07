@@ -149,6 +149,8 @@ pub struct App {
     /// A button held down in a pane whose program has the mouse.
     mouse_held: Option<(PaneId, sys::GhosttyMouseButton)>,
     copy_mode: Option<copymode::CopyMode>,
+    /// Pictures' pixels, by pane and picture, with the generation read.
+    pictures: HashMap<(PaneId, u32), (u64, std::rc::Rc<vt::Picture>)>,
     /// What was run from the palette lately, the latest first.
     recent: Vec<String>,
     /// Panes closed, the last last, for Ctrl Shift T.
@@ -233,6 +235,7 @@ impl App {
             ghost: None,
             mouse_held: None,
             copy_mode: None,
+            pictures: HashMap::new(),
             recent: Vec::new(),
             closed: Vec::new(),
             copied: (None, None),
@@ -1250,6 +1253,9 @@ impl App {
         }
         p.cursor_was = cursor.visible.then_some(cursor.y);
         let mut row = Vec::new();
+        // With pictures in it, the pane is drawn whole, pictures over text.
+        let mut placements = p.term.placements();
+        placements.sort_by_key(|pl| pl.z);
         let canvas = &mut self.canvas;
         let fonts = &mut self.fonts;
         let damage = &mut self.damage;
@@ -1258,7 +1264,7 @@ impl App {
         if lines.len() != p.rows as usize {
             lines.resize(p.rows as usize, Vec::new());
         }
-        p.term.rows(full || dirty == 2, &extra, &mut row, |y, cells: &[Cell]| {
+        p.term.rows(full || dirty == 2 || !placements.is_empty(), &extra, &mut row, |y, cells: &[Cell]| {
             // The row's characters, one a column, for finding links in.
             if let Some(l) = lines.get_mut(y as usize) {
                 l.clear();
@@ -1376,6 +1382,21 @@ impl App {
             }
             damage.push(line);
         });
+        // Pictures, over the text, each scaled into the cells it covers.
+        for pl in &placements {
+            let key = (id, pl.image);
+            let stale = self.pictures.get(&key).is_none_or(|(g, _)| *g != pl.generation);
+            if stale {
+                if let Some(pic) = p.term.picture(pl.image) {
+                    self.pictures.insert(key, (pl.generation, std::rc::Rc::new(pic)));
+                }
+            }
+            let Some((_, pic)) = self.pictures.get(&key).cloned() else { continue };
+            let dest = Rect { x: content.x + pl.col * cw + pl.offset.0 as i32, y: content.y + pl.row * ch + pl.offset.1 as i32, w: pl.size.0 as i32, h: pl.size.1 as i32 };
+            let src = if pl.source.2 == 0 { (0, 0, pic.width, pic.height) } else { pl.source };
+            self.canvas.picture(&pic.pixels, pic.width, src, dest, content);
+            self.damage.push(dest);
+        }
         // The caption, along the bottom of the pane, as screen's is.
         let caption = p.caption.clone();
         let scrolled = !p.term.at_bottom();
