@@ -275,7 +275,10 @@ impl App {
         let p = self.panes.get(&id)?;
         let (_, offset, _) = p.term.scrollbar();
         let row = offset + cell.1 as u64;
-        p.shell.blocks.iter().rev().find(|b| b.row <= row && row <= b.end).map(|b| b.command.clone()).filter(|c| !c.is_empty())
+        // The command running, from its first row to the cursor, else one
+        // that ended.
+        let running = p.shell.running.as_ref().filter(|(_, start, _)| *start <= row && row <= p.term.cursor_now().1).map(|(_, _, line)| line.clone());
+        running.or_else(|| p.shell.blocks.iter().rev().find(|b| b.row <= row && row <= b.end).map(|b| b.command.clone())).filter(|c| !c.trim().is_empty())
     }
 
     /// The command line under a point, to the clipboard.
