@@ -112,7 +112,7 @@ impl App {
         let r = Rect { x: self.canvas.width - w - px(16.0), y: px(16.0), w, h };
         self.canvas.panel(r, px(10.0), c.panel, c.edge);
         let tx = r.x + px(16.0);
-        self.canvas.text(&mut self.fonts.ui, "Restore your last session?", tx as f32, r.y + px(14.0), c.text, r);
+        self.canvas.text(&mut self.fonts.ui, "Restore last session?", tx as f32, r.y + px(14.0), c.text, r);
         self.canvas.text_fit(&mut self.fonts.small, &summary, tx, r.y + px(18.0) + uh, w - px(32.0), c.dim, r);
         let bh = uh + px(12.0);
         let by = r.y + h - px(14.0) - bh;
@@ -120,8 +120,6 @@ impl App {
         let restore = Rect { x: tx, y: by, w: bw, h: bh };
         self.canvas.round_fill(restore, px(7.0), if hover == Some(true) { mix(accent, 0xFFFFFF, 30) } else { accent }, 255);
         self.canvas.text(&mut self.fonts.ui, "Restore", (restore.x + px(14.0)) as f32, restore.y + px(6.0), on(accent), restore);
-        let hint = "or start typing to begin fresh";
-        self.canvas.text_fit(&mut self.fonts.small, hint, restore.x + bw + px(12.0), by + (bh - sh) / 2, r.x + r.w - (restore.x + bw + px(12.0)) - px(12.0), c.faint, r);
         // Close, an × at the top right.
         let cs = px(24.0);
         let close = Rect { x: r.x + r.w - cs - px(8.0), y: r.y + px(8.0), w: cs, h: cs };
