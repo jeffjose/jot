@@ -11,6 +11,9 @@ use vergen_gitcl::{Emitter, Gitcl};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let git = Gitcl::builder().sha(true).dirty(false).build();
     Emitter::default().add_instructions(&git)?.emit()?;
+    // A new commit: the build told again which it is.
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs/heads");
 
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let ghostty = root.join("vendor/ghostty");
