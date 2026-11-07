@@ -28,7 +28,7 @@ use crate::theme::Theme;
 use crate::vt::{self, sys, Cell, Terminal};
 
 mod overlay;
-mod automate;
+pub(crate) mod automate;
 mod bar;
 mod commands;
 mod copymode;
@@ -209,6 +209,9 @@ pub struct App {
     multi_lit: Option<(PaneId, watch::Tag)>,
     /// The pane the pointer is over, which shows its floating buttons.
     float_pane: Option<PaneId>,
+    /// Where its buttons are, and whether the pointer is on them.
+    float_rect: Option<(PaneId, Rect)>,
+    float_near: Option<bool>,
     /// Minimized panes' rows, to click, and the one the pointer is on.
     mini_hits: Vec<(Rect, PaneId)>,
     mini_lit: Option<PaneId>,
@@ -394,6 +397,8 @@ impl App {
             multi_tags: Vec::new(),
             multi_lit: None,
             float_pane: None,
+            float_rect: None,
+            float_near: None,
             mini_hits: Vec::new(),
             mini_lit: None,
             mini_rows: Vec::new(),

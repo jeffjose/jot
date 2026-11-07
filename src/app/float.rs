@@ -9,6 +9,15 @@ impl App {
     /// the one it left stops.
     pub(super) fn float_track(&mut self, x: i32, y: i32) {
         let over = if self.drag.is_some() || self.roam_shown { None } else { self.pane_at(x, y).map(|(id, _)| id) };
+        // On the icons, or off them: the panel comes and goes.
+        let near = self.float_rect.filter(|(id, _)| Some(*id) == over).map(|(_, r)| r.contains(x, y));
+        if near != self.float_near {
+            self.float_near = near;
+            if let Some(id) = over {
+                self.float_refresh(id);
+                self.redraw();
+            }
+        }
         if over == self.float_pane {
             return;
         }
@@ -38,7 +47,8 @@ impl App {
     }
 
     /// The buttons over a pane, when the pointer is on it: minimize and
-    /// focus; focused, only the way back.
+    /// focus; focused, only the way back. At rest just the two icons, out
+    /// of the way; with the pointer on them, their panel and the one lit.
     pub(super) fn draw_float(&mut self, id: PaneId) {
         self.multi_tags.retain(|(_, p, k)| !(*p == id && matches!(k, watch::Tag::Focus | watch::Tag::Minimize)));
         if self.float_pane != Some(id) || self.roam_shown || !self.ws().root.contains(id) || self.ws().minimized.contains(&id) {
@@ -50,7 +60,7 @@ impl App {
         if ids.len() < 2 && !zoomed {
             return;
         }
-        let Some(rect) = self.panes.get(&id).map(|p| p.rect) else { return };
+        let Some((rect, bg)) = self.panes.get(&id).map(|p| (p.rect, p.term.colors().1)) else { return };
         let kinds: &[watch::Tag] = if zoomed { &[watch::Tag::Focus] } else { &[watch::Tag::Minimize, watch::Tag::Focus] };
         let c = self.cur_theme.chrome();
         let (b, gap, inset, radius) = (self.px(24.0), self.px(2.0), self.px(3.0), self.px(7.0));
@@ -62,7 +72,15 @@ impl App {
         if panel.x < rect.x || panel.y + h > rect.y + rect.h {
             return;
         }
-        self.canvas.panel(panel, radius, c.side, c.edge);
+        self.float_rect = Some((id, panel));
+        let near = panel.contains(self.pointer.0, self.pointer.1);
+        if near {
+            self.canvas.panel(panel, radius, c.side, c.edge);
+        } else {
+            // Text under the icons kept from crowding them: the pane's own
+            // background, which shows as nothing.
+            self.canvas.round_fill(panel, radius, bg, 255);
+        }
         let mut x = panel.x + inset;
         for kind in kinds {
             let r = Rect { x, y: panel.y + inset, w: b, h: b };
@@ -75,7 +93,8 @@ impl App {
                 _ if zoomed => crate::canvas::icons::UNFOCUS,
                 _ => crate::canvas::icons::FOCUS,
             };
-            self.canvas.icon_in(icon, r, self.px(15.0), if lit { c.text } else { c.dim });
+            let color = if lit { c.text } else if near { c.dim } else { c.faint };
+            self.canvas.icon_in(icon, r, self.px(15.0), color);
             self.multi_tags.push((r, id, *kind));
             x += b + gap;
         }
