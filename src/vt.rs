@@ -73,14 +73,51 @@ pub struct Terminal {
     encoder: GhosttyKeyEncoder,
     event: GhosttyKeyEvent,
     /// Kept boxed so its address, handed to libghostty, holds still.
-    reply: Box<Reply>,
+    hooks: Box<Hooks>,
+}
+
+/// What the terminal hands back through libghostty's callbacks: replies to
+/// write to the program, and the shell's steps through each command.
+pub struct Hooks {
+    reply: Reply,
+    events: Vec<ShellEvent>,
+}
+
+/// A step of a command, as the shell marks it (OSC 133).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShellEvent {
+    Prompt,
+    Input,
+    /// The command started, with its line if the shell sent it.
+    Output(String),
+    /// It ended, with its exit status if the shell said.
+    End(Option<i32>),
+}
+
+unsafe extern "C" fn on_semantic_prompt(_t: GhosttyTerminal, user: *mut c_void, ev: *const GhosttyTerminalSemanticPrompt) {
+    if user.is_null() || ev.is_null() {
+        return;
+    }
+    let ev = &*ev;
+    let hooks = &mut *(user as *mut Hooks);
+    let event = match ev.kind {
+        GHOSTTY_SEMANTIC_PROMPT_PROMPT_START if ev.prompt_kind == GHOSTTY_SEMANTIC_PROMPT_PROMPT_PRIMARY => ShellEvent::Prompt,
+        GHOSTTY_SEMANTIC_PROMPT_INPUT_START => ShellEvent::Input,
+        GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START => {
+            let cmd = if ev.command.ptr.is_null() { String::new() } else { String::from_utf8_lossy(std::slice::from_raw_parts(ev.command.ptr, ev.command.len)).into_owned() };
+            ShellEvent::Output(cmd)
+        }
+        GHOSTTY_SEMANTIC_PROMPT_COMMAND_END => ShellEvent::End(ev.has_exit_code.then_some(ev.exit_code)),
+        _ => return,
+    };
+    hooks.events.push(event);
 }
 
 unsafe extern "C" fn on_write_pty(_t: GhosttyTerminal, user: *mut c_void, data: *const u8, len: usize) {
     if user.is_null() || data.is_null() {
         return;
     }
-    let reply = &mut *(user as *mut Reply);
+    let reply = &mut (*(user as *mut Hooks)).reply;
     reply(std::slice::from_raw_parts(data, len));
 }
 
@@ -99,9 +136,11 @@ impl Terminal {
             ghostty_key_encoder_new(null(), &mut encoder);
             let mut event = null_mut();
             ghostty_key_event_new(null(), &mut event);
-            let mut term = Terminal { raw, render, rows: row_iter, cells, encoder, event, reply: Box::new(reply) };
-            let user: *mut Reply = &mut *term.reply;
+            let mut term = Terminal { raw, render, rows: row_iter, cells, encoder, event, hooks: Box::new(Hooks { reply, events: Vec::new() }) };
+            let user: *mut Hooks = &mut *term.hooks;
             ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_USERDATA, user as *const c_void);
+            let sp: GhosttyTerminalSemanticPromptFn = Some(on_semantic_prompt);
+            ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT, sp.map_or(null(), |f| f as *const c_void));
             let f: GhosttyTerminalWritePtyFn = Some(on_write_pty);
             ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_WRITE_PTY, f.map_or(null(), |f| f as *const c_void));
             ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollback as *const usize as *const c_void);
@@ -710,5 +749,51 @@ impl Terminal {
             };
             (pixels.len() == (w * h) as usize).then_some(Picture { width: w, height: h, pixels })
         }
+    }
+}
+
+impl Terminal {
+    /// The shell's steps since this was last asked.
+    pub fn take_events(&mut self) -> Vec<ShellEvent> {
+        std::mem::take(&mut self.hooks.events)
+    }
+
+    /// Scrolls the view to the prompt `by` prompts up (below zero) or down.
+    pub fn jump_prompt(&mut self, by: isize) {
+        let mut how = GhosttyTerminalScrollViewport { tag: GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA_PROMPT, value: unsafe { std::mem::zeroed() } };
+        how.value.delta_prompt = by;
+        unsafe { ghostty_terminal_scroll_viewport(self.raw, how) };
+    }
+
+    /// Selects the output of the command at a cell of the view, as the
+    /// shell marked it. False when there is none there.
+    pub fn select_output_at(&mut self, x: u16, y: u16) -> bool {
+        unsafe {
+            let point = GhosttyPoint { tag: GHOSTTY_POINT_TAG_VIEWPORT, value: GhosttyPointValue { coordinate: GhosttyPointCoordinate { x, y: u32::from(y) } } };
+            let mut r: GhosttyGridRef = std::mem::zeroed();
+            if ghostty_terminal_grid_ref(self.raw, point, &mut r) != GHOSTTY_SUCCESS {
+                return false;
+            }
+            let mut sel: GhosttySelection = std::mem::zeroed();
+            if ghostty_terminal_select_output(self.raw, &r, &mut sel) != GHOSTTY_SUCCESS {
+                return false;
+            }
+            ghostty_terminal_set(self.raw, GHOSTTY_TERMINAL_OPT_SELECTION, &sel as *const _ as *const c_void) == GHOSTTY_SUCCESS
+        }
+    }
+}
+
+impl Terminal {
+    /// Where the cursor is now, counted from the top of the scrollback:
+    /// not as last drawn.
+    pub fn cursor_now(&self) -> (u16, u64) {
+        let (mut x, mut y, mut rows): (u16, u16, u16) = (0, 0, 0);
+        unsafe {
+            ghostty_terminal_get(self.raw, GHOSTTY_TERMINAL_DATA_CURSOR_X, &mut x as *mut u16 as *mut c_void);
+            ghostty_terminal_get(self.raw, GHOSTTY_TERMINAL_DATA_CURSOR_Y, &mut y as *mut u16 as *mut c_void);
+            ghostty_terminal_get(self.raw, GHOSTTY_TERMINAL_DATA_ROWS, &mut rows as *mut u16 as *mut c_void);
+        }
+        let (total, _, _) = self.scrollbar();
+        (x, total.saturating_sub(rows as u64) + y as u64)
     }
 }

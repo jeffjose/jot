@@ -110,6 +110,8 @@ const KEYS: &[(&str, &str)] = &[
     ("Alt Shift B", "Type into every pane of the workspace, and back"),
     ("Alt P", "Copy mode: hjkl, v or V, y to copy"),
     ("Alt Shift O", "Pop the pane out into a window, and back"),
+    ("Ctrl Shift ↑ ↓", "The prompt before or after"),
+    ("Ctrl Shift E", "Edit the command line in a box of its own"),
     ("Alt `", "Roaming terminal"),
     ("Ctrl Shift C", "Copy"),
     ("Ctrl Shift V", "Paste"),

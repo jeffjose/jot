@@ -29,6 +29,7 @@ use crate::vt::{self, sys, Cell, Terminal};
 
 mod overlay;
 mod automate;
+mod commands;
 mod copymode;
 mod dnd;
 mod find;
@@ -72,6 +73,8 @@ pub struct Pane {
     started: Instant,
     /// The characters of each row as last drawn, to find links in.
     lines: Vec<Vec<char>>,
+    /// What the shell's marks have told of its commands.
+    shell: commands::Shell,
 }
 
 /// A pane closed, to bring back.
@@ -166,6 +169,11 @@ pub struct App {
     /// Panes in windows of their own, and the one with the keyboard.
     popouts: Vec<popout::Popout>,
     focused_popout: Option<WindowId>,
+    /// The main window has the focus: what happens in it is seen.
+    focused_window: bool,
+    editor: Option<commands::Editor>,
+    /// Where the right-click menu was opened.
+    menu_at: (i32, i32),
     /// What was run from the palette lately, the latest first.
     recent: Vec<String>,
     /// Panes closed, the last last, for Ctrl Shift T.
@@ -265,6 +273,9 @@ impl App {
             requests,
             popouts: Vec::new(),
             focused_popout: None,
+            focused_window: true,
+            editor: None,
+            menu_at: (0, 0),
             recent: Vec::new(),
             closed: Vec::new(),
             copied: (None, None),
@@ -324,7 +335,7 @@ impl App {
         let caption = folder_name(&start.cwd);
         self.panes.insert(
             id,
-            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new() },
+            Pane { term, pty, cmd: start.cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default() },
         );
         id
     }
@@ -803,6 +814,9 @@ impl App {
                 KeyCode::KeyC => self.copy(false),
                 KeyCode::KeyV => self.paste(false),
                 KeyCode::KeyT => self.reopen(),
+                KeyCode::ArrowUp => self.jump_prompt(-1),
+                KeyCode::ArrowDown => self.jump_prompt(1),
+                KeyCode::KeyE => self.open_editor(),
                 _ => return false,
             }
             return true;
@@ -865,6 +879,12 @@ impl App {
             }
             return;
         }
+        if self.editor.is_some() {
+            if event.state == ElementState::Pressed {
+                self.editor_key(&event);
+            }
+            return;
+        }
         if self.copy_mode.is_some() && self.palette.is_none() && self.settings.is_none() {
             if event.state == ElementState::Pressed {
                 self.copy_mode_key(&event);
@@ -912,6 +932,9 @@ impl App {
         let text = event.text.as_deref().filter(|t| !t.is_empty()).unwrap_or(if m.alt_key() { logical } else { "" });
         // Broadcasting, every pane in the workspace gets the key, each as
         // its own program would have it.
+        if event.state == ElementState::Pressed {
+            self.note_typing(id);
+        }
         for target in self.input_targets(id) {
             let Some(p) = self.panes.get_mut(&target) else { continue };
             let bytes = p.term.encode_key(crate::keys::ghostty(code), mods, action, text, unshifted);
@@ -1157,6 +1180,7 @@ impl App {
                         any = true;
                     }
                     self.check_triggers(id, &bytes);
+                    self.shell_events(id);
                     if let Some(i) = self.popout_of(id) {
                         self.popouts[i].window.request_redraw();
                     }
@@ -1258,7 +1282,7 @@ impl App {
         // Under the palette, the menu or the roaming terminal, panes are
         // drawn only when all of it is, so that what they write does not
         // land on top.
-        let floating = self.palette.is_some() || self.menu.is_some() || self.settings.is_some();
+        let floating = self.palette.is_some() || self.menu.is_some() || self.settings.is_some() || self.editor.is_some();
         if full || !(self.roam_shown || floating) {
             for (n, id) in ids.iter().enumerate() {
                 self.draw_pane(*id, n + 1, full, Some(*id) == focus && !self.roam_shown);
@@ -1287,6 +1311,7 @@ impl App {
             self.draw_palette();
             self.draw_menu();
             self.draw_settings();
+            self.draw_editor();
         }
         self.present();
     }
@@ -1474,6 +1499,7 @@ impl App {
                 self.draw_caption(rect, n, &caption, focused, scrolled, activity);
             }
         }
+        self.draw_blocks(id);
     }
 
     fn draw_caption(&mut self, rect: Rect, n: usize, caption: &str, focused: bool, scrolled: bool, activity: bool) {
@@ -1670,7 +1696,8 @@ impl ApplicationHandler<()> for App {
                     self.scroll(lines);
                 }
             }
-            WindowEvent::Focused(_) => {
+            WindowEvent::Focused(on) => {
+                self.focused_window = on;
                 if let Some(id) = self.focused() {
                     if let Some(p) = self.panes.get_mut(&id) {
                         p.full = true;

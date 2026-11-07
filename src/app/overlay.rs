@@ -258,6 +258,7 @@ impl App {
             Action::Settings => self.open_settings(),
             Action::Broadcast => self.toggle_broadcast(),
             Action::PopOut => self.pop_out(event_loop),
+            Action::CopyOutput => self.copy_output_at(self.menu_at),
             Action::Palette => self.open_palette(),
             Action::Commands => self.open_palette_with(">"),
             Action::StatusLine => {
@@ -333,11 +334,13 @@ impl App {
         let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
         let has_selection = self.focused().and_then(|f| self.panes.get(&f)).is_some_and(|p| p.term.selection_text().is_some());
         let mut items = Vec::new();
+        let marked = self.focused().and_then(|f| self.panes.get(&f)).is_some_and(|p| p.shell.marked);
         if has_selection {
             items.push(c("Copy", "Ctrl Shift C", Action::Copy));
         }
         items.extend([
             c("Paste", "Ctrl Shift V", Action::Paste),
+            if marked { c("Copy command output", "", Action::CopyOutput) } else { None },
             None,
             c("Split side by side", "Alt V", Action::Split(Dir::Across)),
             c("Split one above another", "Alt S", Action::Split(Dir::Down)),
@@ -358,6 +361,8 @@ impl App {
             c("Settings…", "Ctrl ,", Action::Settings),
         ]);
         self.palette = None;
+        let items: Vec<Option<Item>> = items.into_iter().enumerate().filter(|(i, it)| it.is_some() || *i > 0).map(|(_, it)| it).collect();
+        self.menu_at = self.pointer;
         self.menu = Some(Menu { items, at: self.pointer, hover: None });
         self.full = true;
         self.redraw();

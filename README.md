@@ -48,6 +48,8 @@ jterm --fresh    # the workspaces in the config instead
 | `Alt Shift b` | type into every pane of the workspace at once, and back |
 | `Alt p` | copy mode: h j k l, v or V to select, y to copy, Esc to leave |
 | `Alt Shift o` | pop the pane out into a window of its own, and back in |
+| `Ctrl Shift ↑ ↓` | the prompt before or after |
+| `Ctrl Shift e` | edit the command line in a box of its own |
 | ``Alt ` `` | the roaming terminal |
 | `Ctrl f` | find in the pane, Enter for the match above, Shift Enter below |
 | `Ctrl` click | open a link in the browser, a file in your editor at its line, a folder in a new pane |
@@ -123,3 +125,18 @@ Triggers in the config watch what panes print for a pattern and raise a
 desktop notice, open the link on the line, or run a command; a workspace
 can run commands when it opens and each time you go to it. The config
 written on the first run shows how.
+
+## Shell integration
+
+When the shell marks its prompts and commands (OSC 133), jterm shows a
+bar beside each command and its output, green when it succeeded, red
+when it failed, amber while it runs, with its exit status and time when
+it failed or took a while. Ctrl Shift Up and Down go from prompt to
+prompt; Copy command output in the right-click menu takes a command's
+output whole; a command that ran ten seconds or more and ends where you
+cannot see it raises a desktop notice. Ctrl Shift E lifts the command
+line into an editor of its own, broken at its options and pipes: Ctrl
+Enter runs it, Shift Enter puts it back at the prompt.
+
+For tcsh, `~/dotfiles/shell/jterm.tcsh` adds the marks to twig's
+precmd and postcmd; .cshrc sources it when TERM_PROGRAM is jterm.

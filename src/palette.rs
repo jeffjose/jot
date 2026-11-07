@@ -33,6 +33,7 @@ pub enum Action {
     StatusLine,
     Broadcast,
     PopOut,
+    CopyOutput,
     Settings,
     Palette,
     Commands,
