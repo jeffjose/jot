@@ -644,13 +644,23 @@ impl App {
     }
 
     fn split(&mut self, dir: Dir) {
+        self.split_side(dir, false);
+    }
+
+    /// A new shell beside the pane you are in: after it (right, down) or
+    /// before it (left, up), in its folder.
+    fn split_side(&mut self, dir: Dir, before: bool) {
         let at = self.focused().unwrap_or(0);
         let cwd = self.panes.get(&at).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
-        self.split_with(dir, Start { cmd: String::new(), cwd });
+        self.split_at(dir, before, Start { cmd: String::new(), cwd });
     }
 
     /// Splits the pane you are in, the new one running `start`.
     pub(super) fn split_with(&mut self, dir: Dir, start: Start) {
+        self.split_at(dir, false, start);
+    }
+
+    fn split_at(&mut self, dir: Dir, before: bool, start: Start) {
         if self.roam_shown {
             return;
         }
@@ -658,7 +668,7 @@ impl App {
         let id = self.spawn(start);
         let ws = self.ws_mut();
         ws.zoom = None;
-        ws.root.split(at, id, dir);
+        ws.root.split_beside(at, id, dir, before);
         ws.focus = id;
         self.changed();
     }
@@ -1005,6 +1015,8 @@ impl App {
             match (code, shift) {
                 (KeyCode::KeyS, false) => self.split(Dir::Down),
                 (KeyCode::KeyV, false) => self.split(Dir::Across),
+                (KeyCode::KeyS, true) => self.split_side(Dir::Down, true),
+                (KeyCode::KeyV, true) => self.split_side(Dir::Across, true),
                 (KeyCode::KeyH, false) => self.focus_dir(-1, 0),
                 (KeyCode::KeyJ, false) => self.focus_dir(0, 1),
                 (KeyCode::KeyK, false) => self.focus_dir(0, -1),

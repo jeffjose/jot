@@ -10,6 +10,8 @@ use crate::layout::Dir;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Split(Dir),
+    /// Split, the new pane before: left, or up.
+    SplitBefore(Dir),
     Close,
     NewPane,
     Reopen,
@@ -211,6 +213,8 @@ pub fn commands() -> Vec<Item> {
     vec![
         c("Split right", "Alt V", Action::Split(Dir::Across)),
         c("Split down", "Alt S", Action::Split(Dir::Down)),
+        c("Split left", "Alt Shift V", Action::SplitBefore(Dir::Across)),
+        c("Split up", "Alt Shift S", Action::SplitBefore(Dir::Down)),
         c("New pane", "Ctrl T", Action::NewPane),
         c("Close pane", "Ctrl W", Action::Close),
         c("Move pane to new window", "Alt Shift O", Action::PopOut),

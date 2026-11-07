@@ -120,6 +120,8 @@ const KEYS: &[(&str, &str)] = &[
     ("Ctrl ,", "Settings"),
     ("Alt V", "Split right"),
     ("Alt S", "Split down"),
+    ("Alt Shift V", "Split left"),
+    ("Alt Shift S", "Split up"),
     ("Alt H J K L", "Move to the pane left, down, up or right"),
     ("Ctrl T", "New pane to the right"),
     ("Ctrl W  Alt X", "Close pane"),

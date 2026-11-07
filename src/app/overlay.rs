@@ -238,6 +238,7 @@ impl App {
         self.full = true;
         match action {
             Action::Split(dir) => self.split(dir),
+            Action::SplitBefore(dir) => self.split_side(dir, true),
             Action::Close => self.close_pane(event_loop),
             Action::NewPane => self.new_pane(),
             Action::Reopen => self.reopen(),
@@ -480,6 +481,8 @@ impl App {
                 c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom),
                 c("Minimize", "", Action::Minimize),
                 c("Make empty space", "", Action::MakeSpace),
+                c("Split left", "Alt Shift V", Action::SplitBefore(Dir::Across)),
+                c("Split up", "Alt Shift S", Action::SplitBefore(Dir::Down)),
                 c("New pane", "Ctrl T", Action::NewPane),
                 c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
                 c("Move to new window", "Alt Shift O", Action::PopOut),
