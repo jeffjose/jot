@@ -36,6 +36,7 @@ mod find;
 mod links;
 mod mouse;
 mod popout;
+mod restore;
 mod settings;
 mod toast;
 
@@ -172,6 +173,10 @@ pub struct App {
     wheel_at: Instant,
     wheel_streak: u32,
     toasts: Vec<toast::Toast>,
+    /// The last session, offered back rather than brought back.
+    offered: Option<restore::Offer>,
+    /// The next start may offer the last session (only the first may).
+    may_offer: bool,
     /// Pictures' pixels, by pane and picture, with the generation read.
     pictures: HashMap<(PaneId, u32), (u64, std::rc::Rc<vt::Picture>)>,
     triggers: Vec<automate::Trigger>,
@@ -285,6 +290,8 @@ impl App {
             wheel_at: Instant::now(),
             wheel_streak: 0,
             toasts: Vec::new(),
+            offered: None,
+            may_offer: true,
             pictures: HashMap::new(),
             triggers: Vec::new(),
             fired: HashMap::new(),
@@ -373,6 +380,19 @@ impl App {
     /// The workspaces to begin with: those saved, else those in the
     /// config, else one shell where jterm was started.
     fn start(&mut self) {
+        // Opening fresh, the last session offered on a card, unless the
+        // settings say to bring it back always, or never.
+        if std::mem::take(&mut self.may_offer) {
+            match self.config.restore.as_str() {
+                "always" => {}
+                "never" => self.session = None,
+                _ => {
+                    if let Some(s) = self.session.take() {
+                        self.offer(s);
+                    }
+                }
+            }
+        }
         let session = self.session.take();
         let restoring = session.is_some();
         let (specs, current, roam) = match session {
@@ -968,6 +988,8 @@ impl App {
         // its own program would have it.
         if event.state == ElementState::Pressed {
             self.note_typing(id);
+            // Typing is beginning fresh: the offer of the last session goes.
+            self.dismiss_offer();
         }
         for target in self.input_targets(id) {
             let Some(p) = self.panes.get_mut(&target) else { continue };
@@ -1008,7 +1030,7 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
-        if (button == MouseButton::Left && self.toast_click()) || self.settings_click() || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
+        if (button == MouseButton::Left && (self.offer_click(event_loop) || self.toast_click())) || self.settings_click() || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
             return;
         }
         let (x, y) = self.pointer;
@@ -1078,7 +1100,7 @@ impl App {
 
     fn mouse_move(&mut self, x: i32, y: i32) {
         self.pointer = (x, y);
-        if self.find_hover(x, y) || self.settings_hover(x, y) || self.overlay_hover(x, y) {
+        if self.offer_hover(x, y) || self.find_hover(x, y) || self.settings_hover(x, y) || self.overlay_hover(x, y) {
             if let Some(w) = &self.window {
                 w.set_cursor(CursorIcon::Default);
             }
@@ -1304,7 +1326,7 @@ impl App {
         self.refresh_captions();
         // With notices up, the frame is drawn whole, so panes do not draw
         // over them.
-        let full = std::mem::take(&mut self.full) || !self.toasts.is_empty();
+        let full = std::mem::take(&mut self.full) || !self.toasts.is_empty() || self.offered.is_some();
         if full {
             self.canvas.fill(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height }, self.cur_theme.divider());
             self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
@@ -1353,6 +1375,7 @@ impl App {
             self.draw_settings();
             self.draw_editor();
             self.draw_toasts();
+            self.draw_offer();
         }
         let drawn = t0.elapsed();
         self.present();
@@ -1644,6 +1667,10 @@ impl App {
     /// Every pane's scrollback kept, by its place: "1-2" for workspace
     /// 1's second pane, "p1" for the first popped out.
     fn save_scrollback(&mut self) {
+        // The last session is left as it was while it is on offer.
+        if self.offered.is_some() {
+            return;
+        }
         let mut dumps = Vec::new();
         for (wi, ws) in self.workspaces.iter().enumerate() {
             let mut ids = Vec::new();
@@ -1664,6 +1691,9 @@ impl App {
     }
 
     fn save(&mut self) {
+        if self.offered.is_some() {
+            return;
+        }
         let panes = &self.panes;
         let describe = |id: PaneId| match panes.get(&id) {
             Some(p) => (p.cmd.clone(), p.pty.cwd()),
@@ -1710,17 +1740,7 @@ impl ApplicationHandler<()> for App {
         }
         self.window = Some(window);
         self.start();
-        // The panes that were in windows of their own, in them again.
-        for (i, spec) in std::mem::take(&mut self.pending_popouts).into_iter().enumerate() {
-            let (cmd, cwd) = match spec {
-                persist::Spec::Pane { cmd, cwd } => (cmd, cwd.map(|c| persist::expand(&c)).unwrap_or_else(pty::home)),
-                persist::Spec::Command(cmd) => (cmd, pty::home()),
-                _ => continue,
-            };
-            let id = self.spawn(Start { cmd, cwd });
-            restore_scrollback(self.panes.get_mut(&id), &format!("p{}", i + 1));
-            self.open_popout_window(id, event_loop);
-        }
+        self.open_pending_popouts(event_loop);
         self.load_recent();
         self.set_title();
         self.relayout();
@@ -1887,5 +1907,21 @@ pub fn catch_end_signals() {
     unsafe {
         libc::signal(libc::SIGTERM, on_end_signal as extern "C" fn(libc::c_int) as libc::sighandler_t);
         libc::signal(libc::SIGHUP, on_end_signal as extern "C" fn(libc::c_int) as libc::sighandler_t);
+    }
+}
+
+impl App {
+    /// The panes that were in windows of their own, in them again.
+    pub(super) fn open_pending_popouts(&mut self, event_loop: &ActiveEventLoop) {
+        for (i, spec) in std::mem::take(&mut self.pending_popouts).into_iter().enumerate() {
+            let (cmd, cwd) = match spec {
+                persist::Spec::Pane { cmd, cwd } => (cmd, cwd.map(|c| persist::expand(&c)).unwrap_or_else(pty::home)),
+                persist::Spec::Command(cmd) => (cmd, pty::home()),
+                _ => continue,
+            };
+            let id = self.spawn(Start { cmd, cwd });
+            restore_scrollback(self.panes.get_mut(&id), &format!("p{}", i + 1));
+            self.open_popout_window(id, event_loop);
+        }
     }
 }

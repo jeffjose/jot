@@ -201,6 +201,10 @@ pub struct Config {
     pub projects: Vec<String>,
     /// What puts frames on the screen: "gpu" (with the CPU when there
     /// is no GPU to use), or "cpu".
+    /// The last session at the start: "ask" (open fresh, with a card to
+    /// bring it back), "always", or "never".
+    #[serde(default = "default_restore")]
+    pub restore: String,
     #[serde(default = "default_renderer")]
     pub renderer: String,
     /// Patterns looked for in what panes print, and what to do on them.
@@ -249,7 +253,7 @@ fn default_projects() -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), status_line: false, captions: true, ligatures: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), restore: default_restore(), status_line: false, captions: true, ligatures: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), workspaces: Vec::new() }
     }
 }
 
@@ -417,6 +421,10 @@ pub struct TriggerSpec {
     pub command: Option<String>,
 }
 
+fn default_restore() -> String {
+    "ask".into()
+}
+
 fn default_renderer() -> String {
     "gpu".into()
 }
@@ -456,4 +464,9 @@ pub fn load_scrollback(name: &str) -> Option<(String, std::time::SystemTime)> {
     let path = scrollback_dir().join(format!("{name}.vt"));
     let when = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
     Some((std::fs::read_to_string(path).ok()?, when))
+}
+
+/// When the last session was saved.
+pub fn session_saved_at() -> Option<std::time::SystemTime> {
+    std::fs::metadata(state_dir().join("session.toml")).and_then(|m| m.modified()).ok()
 }
