@@ -362,6 +362,7 @@ pub mod icons {
     pub static BELL: &[u8] = include_bytes!("../assets/icons/bell.png");
     pub static FOCUS: &[u8] = include_bytes!("../assets/icons/focus.png");
     pub static UNFOCUS: &[u8] = include_bytes!("../assets/icons/unfocus.png");
+    pub static RESTART: &[u8] = include_bytes!("../assets/icons/restart.png");
 }
 
 /// An icon's mask at `size` pixels square: its coverage, scaled down from

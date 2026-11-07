@@ -964,3 +964,57 @@ impl App {
         }
     }
 }
+
+impl App {
+    /// /restart: the running command stopped (Ctrl C) and run again once
+    /// the prompt is back; with nothing running, the last one run again.
+    pub(super) fn restart(&mut self, id: PaneId) {
+        self.restart_with(id, false);
+    }
+
+    /// As /restart; `hard` kills the command's processes outright (SIGKILL)
+    /// rather than asking with Ctrl C.
+    pub(super) fn restart_with(&mut self, id: PaneId, hard: bool) {
+        let job = self.job(id);
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        let running = p.shell.running.as_ref().map(|r| r.2.trim().to_string()).filter(|c| !c.is_empty());
+        match running {
+            Some(cmd) if !p.shell.at_prompt => {
+                // A restart already waiting (Ctrl R, then Ctrl Shift R when that
+                // did not stop it) is not queued twice.
+                if !(p.shell.restarting && p.shell.queue.first() == Some(&cmd)) {
+                    p.shell.queue.insert(0, cmd);
+                }
+                p.shell.paused = false;
+                p.shell.restarting = true;
+                match (hard, job) {
+                    (true, Some(pgrp)) => unsafe {
+                        libc::kill(-pgrp, libc::SIGKILL);
+                    },
+                    _ => p.pty.write(&[0x03]),
+                }
+                p.full = true;
+                self.relayout();
+            }
+            _ => {
+                let last = p.shell.blocks.iter().rev().map(|b| b.command.trim().to_string()).find(|c| !c.is_empty());
+                if let Some(cmd) = last {
+                    self.run_or_queue(id, cmd);
+                }
+            }
+        }
+    }
+}
+
+impl App {
+    /// Ctrl R and Ctrl Shift R: true when they were jterm's, not the
+    /// program's.
+    pub(super) fn reload_key(&mut self, hard: bool) -> bool {
+        let Some(id) = self.focused() else { return false };
+        let ours = self.panes.get(&id).is_some_and(|p| p.shell.marked && !p.term.alt_screen());
+        if ours {
+            self.restart_with(id, hard);
+        }
+        ours
+    }
+}

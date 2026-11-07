@@ -305,6 +305,11 @@ impl App {
             Action::CopyCommand => self.copy_command_at(self.menu_at),
             Action::Rerun => self.rerun_at(self.menu_at),
             Action::EditCommand => self.edit_command_at(self.menu_at),
+            Action::Restart => {
+                if let Some((id, _)) = self.pane_at(self.menu_at.0, self.menu_at.1) {
+                    self.restart(id);
+                }
+            }
             Action::CommandLine => self.toggle_bar(),
             Action::MultiSkip(id) => self.toggle_multi_pane(id),
             Action::MultiAll => {
@@ -405,6 +410,8 @@ impl App {
         let pane = self.focused().and_then(|f| self.panes.get(&f));
         let has_selection = pane.is_some_and(|p| p.term.selection_text().is_some());
         let has_command = self.command_at(self.pointer).is_some();
+        // The pane under the pointer running a command: it can be restarted.
+        let busy = self.pane_at(self.pointer.0, self.pointer.1).and_then(|(id, _)| self.panes.get(&id)).is_some_and(|p| p.shell.marked && !p.shell.at_prompt && p.shell.running.is_some());
         let mut items = Vec::new();
         if has_selection {
             items.push(c("Copy", "Ctrl Shift C", Action::Copy));
@@ -414,7 +421,8 @@ impl App {
             if has_command { c("Copy output", "", Action::CopyOutput) } else { None },
             if has_command { c("Copy command", "", Action::CopyCommand) } else { None },
             None,
-            if has_command { c("Rerun", "", Action::Rerun) } else { None },
+            if busy { c("Restart", "Ctrl R", Action::Restart) } else { None },
+            if has_command && !busy { c("Rerun", "", Action::Rerun) } else { None },
             if has_command { c("Edit command", "", Action::EditCommand) } else { None },
             None,
             c("Split right", "Alt V", Action::Split(Dir::Across)),
@@ -676,6 +684,7 @@ impl App {
             Tag::Notify => vec![c("Cancel", "click", Action::NotifyOff(id))],
             Tag::TeeStop => vec![c("Stop", "", Action::TeeStop(id))],
             Tag::Focus => vec![c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom)],
+            Tag::Restart => vec![c("Restart", "Ctrl R", Action::Restart)],
         };
         while matches!(items.last(), Some(None)) {
             items.pop();

@@ -962,6 +962,13 @@ impl App {
             self.open_palette();
             return true;
         }
+        // Ctrl R, as a browser reloads: the running command stopped and run
+        // again, Ctrl Shift R killing it outright first; at a prompt, the
+        // last one run again. Under a full-screen program (vim's redo) the
+        // key is the program's.
+        if ctrl && !alt && code == KeyCode::KeyR && self.reload_key(shift) {
+            return true;
+        }
         if ctrl && shift && !alt {
             match code {
                 KeyCode::KeyC => self.copy(false),
@@ -1184,6 +1191,7 @@ impl App {
                     watch::Tag::Multi => self.toggle_multi_pane(id),
                     watch::Tag::Tee => self.open_tag_menu(id, kind),
                     watch::Tag::TeeStop => self.stop_tee(id),
+                    watch::Tag::Restart => self.restart(id),
                     watch::Tag::Focus => {
                         self.set_focus(id);
                         let ws = self.ws_mut();
@@ -1794,7 +1802,8 @@ impl App {
         let mut right = bar.x + bar.w - pad as i32;
         let copying = self.copy_mode.as_ref().is_some_and(|c| self.panes.get(&c.pane).is_some_and(|p| p.rect == rect));
         self.multi_tags.retain(|(_, p, _)| *p != id);
-        // At the far right, the focus button: this pane alone, and back.
+        // At the far right, the focus button: this pane alone, and back;
+        // before it, while a command runs, the restart button.
         // Only where there are panes to hide, or one is alone already.
         let zoomed = self.ws().zoom.is_some();
         let many = {
@@ -1811,6 +1820,17 @@ impl App {
             let icon = if zoomed { crate::canvas::icons::UNFOCUS } else { crate::canvas::icons::FOCUS };
             self.canvas.icon(icon, size, r.x + (h - size) / 2, r.y + (h - size) / 2, fg, r);
             self.multi_tags.push((r, id, watch::Tag::Focus));
+            right = r.x - pad as i32 / 2;
+        }
+        let running = self.panes.get(&id).is_some_and(|p| p.shell.marked && !p.shell.at_prompt && p.shell.running.is_some());
+        if n > 0 && running {
+            let r = Rect { x: right + pad as i32 / 2 - h, y: bar.y, w: h, h };
+            if self.multi_lit == Some((id, watch::Tag::Restart)) {
+                self.canvas.fill(r, mix(bg, fg, 50));
+            }
+            let size = h * 6 / 10;
+            self.canvas.icon(crate::canvas::icons::RESTART, size, r.x + (h - size) / 2, r.y + (h - size) / 2, fg, r);
+            self.multi_tags.push((r, id, watch::Tag::Restart));
             right = r.x - pad as i32 / 2;
         }
         // The pane's watchers and its typing into several, each a pill

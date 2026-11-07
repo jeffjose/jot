@@ -886,3 +886,13 @@ impl Terminal {
         }
     }
 }
+
+impl Terminal {
+    /// Whether a full-screen program (vim, less, htop) has the alternate
+    /// screen up.
+    pub fn alt_screen(&self) -> bool {
+        let mut s: GhosttyTerminalScreen = 0;
+        unsafe { ghostty_terminal_get(self.raw, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &mut s as *mut _ as *mut c_void) };
+        s == GHOSTTY_TERMINAL_SCREEN_ALTERNATE
+    }
+}

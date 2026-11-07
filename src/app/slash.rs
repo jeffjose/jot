@@ -40,6 +40,8 @@ pub enum Does {
     Ports,
     Files,
     Kill,
+    /// The running command stopped and run again.
+    Restart,
 }
 
 #[derive(Clone, Debug)]
@@ -117,6 +119,7 @@ impl App {
         if self.bar.is_some() {
             all.insert(0, Command::new("stop", "Ctrl C to the running job", Does::Stop));
             all.insert(1, Command::new("kill", "Kill the running job (again: kill -9)", Does::Kill));
+            all.insert(2, Command::new("restart", "Stop the running command and run it again", Does::Restart));
         }
         // The config's: "name" = "text" puts the text on the line; a name
         // starting with ! runs it.
@@ -493,6 +496,7 @@ impl App {
                 self.open_editor_with(id, &text, false);
             }
             Does::Kill => self.kill_job(id),
+            Does::Restart => self.restart(id),
         }
         self.redraw();
     }
@@ -583,7 +587,7 @@ fn kind_of(d: &Does) -> &'static str {
         Does::Grep => "find",
         Does::Rename => "jterm",
         Does::Run(_) => "run",
-        Does::Stop | Does::Kill | Does::Info | Does::Notify | Does::Tree | Does::Ports | Does::Files => "job",
+        Does::Stop | Does::Kill | Does::Restart | Does::Info | Does::Notify | Does::Tree | Does::Ports | Does::Files => "job",
     }
 }
 

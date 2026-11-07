@@ -38,6 +38,8 @@ pub enum Action {
     /// The command under the menu: again, or into the editor first.
     Rerun,
     EditCommand,
+    /// The pane's running command, stopped and run again.
+    Restart,
     CommandLine,
     /// From a caption's tags, for the pane with this id: typing into
     /// several, a tee, a filter.

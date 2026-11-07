@@ -52,6 +52,8 @@ pub struct Shell {
     pub killed_at: Option<Instant>,
     /// /notify: the command running, or the next, told of when it ends.
     pub notify: bool,
+    /// /restart sent Ctrl C: the command's failing that way holds nothing.
+    pub restarting: bool,
     /// Commands waiting for another pane's command to end (@2 cmd): then
     /// they join this pane's queue.
     pub after: Vec<(PaneId, String)>,
@@ -122,6 +124,8 @@ impl App {
                     let entered = p.shell.entered.take().filter(|e| !e.trim().is_empty());
                     let line = if !cmd.is_empty() { cmd } else { entered.unwrap_or_else(|| Self::typed(p, start, row)) };
                     p.shell.running = Some((Instant::now(), start, line));
+                    // Its caption shows the restart button while it runs.
+                    p.full = true;
                 }
                 ShellEvent::Output(_) => {}
                 ShellEvent::End(exit) => {
@@ -138,7 +142,8 @@ impl App {
                     }
                     ended = Some(exit.is_some_and(|e| e != 0));
                     // A failed command holds what is queued behind it.
-                    if exit.is_some_and(|e| e != 0) && !p.shell.queue.is_empty() {
+                    let restarting = std::mem::take(&mut p.shell.restarting);
+                    if exit.is_some_and(|e| e != 0) && !p.shell.queue.is_empty() && !restarting {
                         p.shell.paused = true;
                     }
                     // The new prompt is drawn by now: the command's rows end
