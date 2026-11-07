@@ -516,3 +516,21 @@ pub fn human(d: Duration) -> String {
         format!("{}h {:02}m", (s / 3600.0) as u64, (s as u64 % 3600) / 60)
     }
 }
+
+impl App {
+    /// The command under a point, run again: at the prompt, or queued
+    /// behind what the pane is running.
+    pub(super) fn rerun_at(&mut self, at: (i32, i32)) {
+        let (Some(cmd), Some((id, _))) = (self.command_at(at), self.pane_at(at.0, at.1)) else { return };
+        self.run_or_queue(id, cmd);
+    }
+
+    /// The command under a point, in the editor to change first; what is
+    /// made goes to the prompt, or to the pane's command line to queue
+    /// when it is busy.
+    pub(super) fn edit_command_at(&mut self, at: (i32, i32)) {
+        let (Some(cmd), Some((id, _))) = (self.command_at(at), self.pane_at(at.0, at.1)) else { return };
+        let busy = !self.pane_waiting(id);
+        self.open_editor_with(id, &cmd, busy);
+    }
+}

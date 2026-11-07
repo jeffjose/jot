@@ -35,6 +35,9 @@ pub enum Action {
     PopOut,
     CopyOutput,
     CopyCommand,
+    /// The command under the menu: again, or into the editor first.
+    Rerun,
+    EditCommand,
     CommandLine,
     /// From a caption's tags, for the pane with this id: typing into
     /// several, a tee, a filter.

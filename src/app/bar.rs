@@ -202,7 +202,7 @@ impl App {
 
     /// Whether the pane's shell is waiting at its prompt, so a command can
     /// be typed into it now; without the shell's marks, it is taken to be.
-    fn waiting(&self, id: PaneId) -> bool {
+    pub(super) fn pane_waiting(&self, id: PaneId) -> bool {
         self.panes.get(&id).is_some_and(|p| !p.shell.marked || (p.shell.at_prompt && !p.pty.busy()))
     }
 
@@ -226,7 +226,7 @@ impl App {
         // pane N is not running anything, it runs as any other would.
         let (cmd, after) = match cmd.strip_prefix('@').and_then(|r| r.split_once(char::is_whitespace)) {
             Some((name, rest)) => match self.pane_by_number(name) {
-                Some(t) if t != id && !self.waiting(t) => (rest.trim().to_string(), Some(t)),
+                Some(t) if t != id && !self.pane_waiting(t) => (rest.trim().to_string(), Some(t)),
                 Some(_) => (rest.trim().to_string(), None),
                 None => {
                     self.toast("No such pane", &format!("@{name}: pane N in this workspace, or W.P"), None, Some(id));
@@ -245,7 +245,7 @@ impl App {
             }
             return self.bar_changed();
         }
-        let waiting = self.waiting(id);
+        let waiting = self.pane_waiting(id);
         let Some(p) = self.panes.get_mut(&id) else { return };
         p.shell.history.retain(|h| *h != cmd);
         p.shell.history.push(cmd.clone());
@@ -448,7 +448,7 @@ impl App {
                     p.shell.paused = false;
                 }
                 // At the prompt already: the next one goes now.
-                if self.waiting(id) {
+                if self.pane_waiting(id) {
                     self.run_next(id);
                 }
                 self.bar_changed();
@@ -489,7 +489,7 @@ impl App {
         let (queue, paused, ran, after) = (p.shell.queue.clone(), p.shell.paused, p.shell.ran.clone(), p.shell.after.clone());
         // Each pane waited on, named as @ names it.
         let after: Vec<(String, String)> = after.into_iter().map(|(t, cmd)| (self.pane_number(t), cmd)).collect();
-        let busy = !self.waiting(id);
+        let busy = !self.pane_waiting(id);
         let c = self.cur_theme.chrome();
         let accent = self.cur_accent;
         let scale = self.scale;
@@ -912,5 +912,23 @@ impl App {
             _ => return,
         }
         self.bar_changed();
+    }
+}
+
+impl App {
+    /// A command run in a pane: at its prompt when its shell is waiting,
+    /// else queued behind what it is running.
+    pub(super) fn run_or_queue(&mut self, id: PaneId, cmd: String) {
+        let waiting = self.pane_waiting(id);
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        if waiting {
+            p.pty.write(format!("\x15{cmd}\r").as_bytes());
+            p.shell.entered = Some(cmd);
+        } else {
+            p.shell.queue.push(cmd);
+            p.full = true;
+            self.relayout();
+        }
+        self.redraw();
     }
 }

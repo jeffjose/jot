@@ -303,6 +303,8 @@ impl App {
             Action::PopOut => self.pop_out(event_loop),
             Action::CopyOutput => self.copy_output_at(self.menu_at),
             Action::CopyCommand => self.copy_command_at(self.menu_at),
+            Action::Rerun => self.rerun_at(self.menu_at),
+            Action::EditCommand => self.edit_command_at(self.menu_at),
             Action::CommandLine => self.toggle_bar(),
             Action::MultiSkip(id) => self.toggle_multi_pane(id),
             Action::MultiAll => {
@@ -410,6 +412,9 @@ impl App {
             c("Paste", "Ctrl Shift V", Action::Paste),
             if has_command { c("Copy output", "", Action::CopyOutput) } else { None },
             if has_command { c("Copy command", "", Action::CopyCommand) } else { None },
+            None,
+            if has_command { c("Rerun", "", Action::Rerun) } else { None },
+            if has_command { c("Edit command", "", Action::EditCommand) } else { None },
             None,
             c("Split right", "Alt V", Action::Split(Dir::Across)),
             c("Split down", "Alt S", Action::Split(Dir::Down)),
