@@ -41,7 +41,7 @@ const OUTPUT_SHOWN: usize = 10;
 
 impl App {
     fn bar_row_h(&self) -> i32 {
-        self.fonts.ui.height + self.px(12.0)
+        self.fonts.ui.height + self.px(8.0)
     }
 
     /// The rows the bar takes at the bottom of a pane: its own rows (the
@@ -54,7 +54,7 @@ impl App {
             let (head, out) = s.ran.as_ref().map_or((0, 0), |(_, text, _)| (1, text.lines().count().clamp(1, OUTPUT_SHOWN)));
             (1 + s.queue.len().min(QUEUE_SHOWN) + s.after.len().min(QUEUE_SHOWN) + head, out)
         } else {
-            (usize::from(!s.queue.is_empty() || !s.after.is_empty()), 0)
+            (s.queue.len().min(QUEUE_SHOWN) + s.after.len().min(QUEUE_SHOWN), 0)
         }
     }
 
@@ -526,18 +526,25 @@ impl App {
             app.bar_hits.push((r, id, hit));
         };
         if !open {
-            // The strip: what is next, and how many after it.
-            let (label, first, total) = match (queue.first(), after.first()) {
-                (Some(q), _) => (if paused { "held".to_string() } else { "next".to_string() }, q.clone(), queue.len() + after.len()),
-                (None, Some((n, cmd))) => (format!("after {n}"), cmd.clone(), after.len()),
-                _ => (String::new(), String::new(), 0),
-            };
-            let tx = area.x + pad;
-            let ty = y + (row_h - sh) / 2;
-            let end = self.canvas.text(&mut self.fonts.small, &label, tx as f32, ty, if paused && !queue.is_empty() { 0xE5484D } else { accent }, area);
-            let more = if total > 1 { format!("  +{} more", total - 1) } else { String::new() };
-            self.canvas.text_fit(&mut self.fonts.ui, &format!("{first}{more}"), end + px(10.0), y + (row_h - uh) / 2, area.x + area.w - end - pad * 2, c.text, area);
-            self.bar_hits.push((Rect { x: area.x, y: area.y, w: area.w, h: area.h }, id, BarHit::Open));
+            // The strip: each command waiting, a row each with its ×; a
+            // click on one opens the bar.
+            let mut rows: Vec<(String, String, BarHit, bool)> = Vec::new();
+            for (i, (n, cmd)) in after.iter().enumerate() {
+                rows.push((format!("after {n}"), cmd.clone(), BarHit::RemoveAfter(i), false));
+            }
+            for (i, cmd) in queue.iter().enumerate() {
+                let label = if i == 0 { if paused { "held" } else { "next" } } else { "then" };
+                rows.push((label.into(), cmd.clone(), BarHit::Remove(i), i == 0 && paused));
+            }
+            for (label, cmd, remove, red) in rows.into_iter().take(QUEUE_SHOWN * 2) {
+                let ty = y + (row_h - sh) / 2;
+                let end = self.canvas.text(&mut self.fonts.small, &label, (area.x + pad) as f32, ty, if red { 0xE5484D } else { accent }, area);
+                let room = area.x + area.w - pad - ib - px(8.0) - (end + px(10.0));
+                self.canvas.text_fit(&mut self.fonts.ui, &cmd, end + px(10.0), y + (row_h - uh) / 2, room, c.text, area);
+                self.bar_hits.push((Rect { x: area.x, y, w: area.w - pad - ib - px(4.0), h: row_h }, id, BarHit::Open));
+                button(self, area.x + area.w - pad - ib, y, remove, false);
+                y += row_h;
+            }
             self.damage.push(area);
             return;
         }
