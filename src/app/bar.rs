@@ -520,7 +520,9 @@ impl App {
             let r = Rect { x, y: y + (row_h - ib) / 2, w: ib, h: ib };
             let lit = r.contains(app.pointer.0, app.pointer.1);
             if lit {
-                app.canvas.round_fill(r, px(5.0), c.hover, 255);
+                // A soft circle of the button's own color: accent to run, red to
+                // take out.
+                app.canvas.round_fill(r, ib / 2, if play { accent } else { 0xE5484D }, 48);
             }
             let (cx, cy, arm, dot) = (r.x + ib / 2, r.y + ib / 2, px(4.0), px(2.0).max(2));
             if play {
@@ -589,15 +591,18 @@ impl App {
             y += row_h;
         }
         // The queue, each with run now and remove.
+        // ▶ at the left (run it now), as a pin has it; then its place in
+        // the queue and the command; × at the right.
         for (i, cmd) in queue.iter().enumerate().take(QUEUE_SHOWN) {
+            button(self, area.x + pad - px(4.0), y, BarHit::RunNow(i), true);
             let (bg, fg) = self.badge_colors(i == 0, i == 0 && paused);
-            let end = self.queue_badge(area.x + pad, y + row_h / 2, &format!("{}", i + 1), bg, fg);
-            let room = area.x + area.w - pad - 2 * ib - px(8.0) - (end + px(10.0));
-            self.canvas.text_fit(&mut self.fonts.ui, cmd, end + px(10.0), y + (row_h - uh) / 2, room, c.text, area);
-            button(self, area.x + area.w - pad - 2 * ib - px(4.0), y, BarHit::RunNow(i), true);
+            let start = area.x + pad - px(4.0) + ib + px(6.0);
+            let end = self.queue_badge(start, y + row_h / 2, &format!("{}", i + 1), bg, fg);
+            let room = area.x + area.w - pad - ib - px(8.0) - (end + px(10.0));
+            self.canvas.text_fit(&mut self.fonts.mono, cmd, end + px(10.0), y + (row_h - mh) / 2, room, c.text, area);
             button(self, area.x + area.w - pad - ib, y, BarHit::Remove(i), false);
             if i == 0 && paused {
-                self.bar_hits.push((Rect { x: area.x, y, w: end - area.x + px(4.0), h: row_h }, id, BarHit::Resume));
+                self.bar_hits.push((Rect { x: start, y, w: end - start + px(4.0), h: row_h }, id, BarHit::Resume));
             }
             y += row_h;
         }

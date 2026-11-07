@@ -101,7 +101,6 @@ impl App {
         let Some(p) = self.panes.get(&id) else { return };
         let area = Rect { x: p.rect.x, y: p.rect.y, w: p.rect.w, h };
         let running = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.trim().to_string());
-        let busy = p.shell.marked && !p.shell.at_prompt;
         let rows: Vec<(usize, String, Option<(Instant, Option<i32>)>)> = p.pins.iter().enumerate().skip(p.pins_scroll).take(SHOWN).map(|(i, pin)| (i, pin.cmd.clone(), pin.last)).collect();
         let (total, scroll) = (p.pins.len(), p.pins_scroll);
         let c = self.cur_theme.chrome();
@@ -118,12 +117,13 @@ impl App {
             let row = Rect { x: area.x, y, w: area.w, h: row_h };
             let lit = |hit| self.pin_lit == Some((id, i, hit));
             if lit(PinHit::Row) || lit(PinHit::Run) || lit(PinHit::Remove) {
-                self.canvas.fill(row, c.hover);
+                // The row under the pointer lifted, just.
+                self.canvas.fill(row, mix(c.side, c.text, 10));
             }
             // ▶ at the left: run, or queue while the pane is busy.
             let play = Rect { x: area.x + px(16.0), y: y + (row_h - ib) / 2, w: ib, h: ib };
             if lit(PinHit::Run) {
-                self.canvas.round_fill(play, px(4.0), mix(c.hover, c.text, 30), 255);
+                self.canvas.round_fill(play, ib / 2, accent, 48);
             }
             let (cx, cy, s) = (play.x + ib / 2 - px(1.0), play.y + ib / 2, px(4.0));
             let tri = if lit(PinHit::Run) { accent } else { c.dim };
@@ -131,31 +131,34 @@ impl App {
                 let half = (s * 2 - t) / 2;
                 self.canvas.fill(Rect { x: cx - s + t, y: cy - half, w: 1, h: half * 2 + 1 }, tri);
             }
-            // The command, then how it last went, then × while the pointer is
-            // on the row.
-            let x = play.x + ib + px(8.0);
+            // Then how it last went, a dot; the command; and when, or that
+            // it is running, just after it. × at the right, on hover.
             let x_btn = Rect { x: area.x + area.w - px(6.0) - ib, y: y + (row_h - ib) / 2, w: ib, h: ib };
-            let meta = if running.as_deref() == Some(cmd.as_str()) {
+            let is_running = running.as_deref() == Some(cmd.as_str());
+            let (when, dot) = if is_running {
                 ("running".to_string(), Some(0x30A46C))
-            } else if busy {
-                ("queues".to_string(), None)
             } else {
                 match last {
-                    Some((at, exit)) => (ago(at.elapsed()), Some(if exit.is_some_and(|e| e != 0) { 0xE5484D } else { 0x30A46C })),
+                    Some((at, exit)) => (ago(at.elapsed()), Some(if exit.is_some_and(|e| e != 0) { 0xE5484D } else { c.faint })),
                     None => (String::new(), None),
                 }
             };
-            let mw = self.fonts.small.width(&meta.0);
-            let meta_x = x_btn.x - px(10.0) - mw;
-            if let Some(dot) = meta.1 {
-                let d = px(6.0);
-                self.canvas.round_fill(Rect { x: meta_x - d - px(6.0), y: y + (row_h - d) / 2, w: d, h: d }, d / 2, dot, 255);
+            let mut x = play.x + ib + px(6.0);
+            let d = px(6.0);
+            if let Some(dot) = dot {
+                self.canvas.round_fill(Rect { x, y: y + (row_h - d) / 2, w: d, h: d }, d / 2, dot, 255);
             }
-            self.canvas.text(&mut self.fonts.small, &meta.0, meta_x as f32, y + (row_h - sh) / 2, c.faint, area);
-            self.canvas.text_fit(&mut self.fonts.mono, &cmd, x, y + (row_h - mh) / 2, (meta_x - px(20.0) - x).max(0), c.text, area);
+            x += d + px(8.0);
+            let room = x_btn.x - px(8.0) - x;
+            let when_w = if when.is_empty() { 0 } else { self.fonts.small.width(&when) + px(14.0) };
+            let cmd_w = self.fonts.mono.width(&cmd).min((room - when_w).max(0));
+            let end = self.canvas.text_fit(&mut self.fonts.mono, &cmd, x, y + (row_h - mh) / 2, cmd_w, c.text, area);
+            if !when.is_empty() {
+                self.canvas.text(&mut self.fonts.small, &format!("· {when}"), (end + px(8.0)) as f32, y + (row_h - sh) / 2, if is_running { 0x30A46C } else { c.faint }, area);
+            }
             if lit(PinHit::Row) || lit(PinHit::Run) || lit(PinHit::Remove) {
                 if lit(PinHit::Remove) {
-                    self.canvas.round_fill(x_btn, px(4.0), mix(c.hover, c.text, 30), 255);
+                    self.canvas.round_fill(x_btn, ib / 2, 0xE5484D, 48);
                 }
                 let (bx, by, arm, dot) = (x_btn.x + ib / 2, x_btn.y + ib / 2, px(3.5), px(1.5).max(2));
                 let color = if lit(PinHit::Remove) { 0xE5484D } else { c.dim };
