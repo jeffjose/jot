@@ -53,7 +53,7 @@ pub enum Mode {
 
 pub struct Palette {
     pub mode: Mode,
-    pub typed: String,
+    pub field: crate::field::TextField,
     pub matches: Vec<Item>,
     pub selected: usize,
     /// The first row shown, when there are more than fit.
@@ -62,11 +62,15 @@ pub struct Palette {
 
 impl Palette {
     pub fn new() -> Palette {
-        Palette { mode: Mode::Find, typed: String::new(), matches: Vec::new(), selected: 0, first: 0 }
+        Palette { mode: Mode::Find, field: crate::field::TextField::default(), matches: Vec::new(), selected: 0, first: 0 }
+    }
+
+    pub fn typed(&self) -> String {
+        self.field.string()
     }
 
     pub fn label(&self) -> &'static str {
-        match (self.mode, self.typed.chars().next()) {
+        match (self.mode, self.field.text.first().copied()) {
             (Mode::Rename, _) => "Name:",
             (_, None) if !self.matches.is_empty() => "Find:",
             (_, Some('>')) => "Run:",

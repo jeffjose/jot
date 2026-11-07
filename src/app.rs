@@ -126,6 +126,8 @@ pub struct App {
     recent: Vec<String>,
     /// Panes closed, the last last, for Ctrl Shift T.
     closed: Vec<Closed>,
+    /// What jterm last put on the clipboard and the selection.
+    copied: (Option<String>, Option<String>),
     saved_at: Instant,
     unsaved: bool,
     captions_at: Instant,
@@ -199,6 +201,7 @@ impl App {
             settings: None,
             recent: Vec::new(),
             closed: Vec::new(),
+            copied: (None, None),
             saved_at: Instant::now(),
             unsaved: false,
             captions_at: Instant::now() - Duration::from_secs(10),
@@ -563,26 +566,41 @@ impl App {
         self.relayout();
     }
 
-    fn copy(&mut self, primary: bool) {
-        let Some(text) = self.focused().and_then(|f| self.panes.get(&f)).and_then(|p| p.term.selection_text()) else { return };
+    /// Puts text on the clipboard, or on the selection (what a middle
+    /// click pastes), and keeps it: reading back what jterm itself put
+    /// there can come back empty on X11.
+    pub(super) fn clip_set(&mut self, text: String, primary: bool) {
         let cb = self.clipboard.get_or_insert_with(|| arboard::Clipboard::new().expect("clipboard"));
         if primary {
             use arboard::SetExtLinux;
-            let _ = cb.set().clipboard(arboard::LinuxClipboardKind::Primary).text(text);
+            let _ = cb.set().clipboard(arboard::LinuxClipboardKind::Primary).text(text.clone());
+            self.copied.1 = Some(text);
         } else {
-            let _ = cb.set_text(text);
+            let _ = cb.set_text(text.clone());
+            self.copied.0 = Some(text);
         }
     }
 
-    fn paste(&mut self, primary: bool) {
+    /// What is on the clipboard or the selection: another program's, or
+    /// else what jterm put there last.
+    pub(super) fn clip_get(&mut self, primary: bool) -> Option<String> {
         let cb = self.clipboard.get_or_insert_with(|| arboard::Clipboard::new().expect("clipboard"));
-        let text = if primary {
+        let got = if primary {
             use arboard::GetExtLinux;
             cb.get().clipboard(arboard::LinuxClipboardKind::Primary).text()
         } else {
             cb.get_text()
         };
-        let (Ok(text), Some(id)) = (text, self.focused()) else { return };
+        got.ok().filter(|t| !t.is_empty()).or_else(|| if primary { self.copied.1.clone() } else { self.copied.0.clone() })
+    }
+
+    fn copy(&mut self, primary: bool) {
+        let Some(text) = self.focused().and_then(|f| self.panes.get(&f)).and_then(|p| p.term.selection_text()) else { return };
+        self.clip_set(text, primary);
+    }
+
+    fn paste(&mut self, primary: bool) {
+        let (Some(text), Some(id)) = (self.clip_get(primary), self.focused()) else { return };
         if let Some(p) = self.panes.get_mut(&id) {
             let bytes = p.term.encode_paste(&text);
             p.pty.write(&bytes);

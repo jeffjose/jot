@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::canvas::on;
+use crate::field::{Outcome, TextField};
 use crate::palette::{self, Action, Item, Mode, Palette};
 
 
@@ -89,7 +90,7 @@ impl App {
         self.menu = None;
         self.settings = None;
         let mut p = Palette::new();
-        p.typed = typed.to_string();
+        p.field = TextField::new(typed);
         self.palette = Some(p);
         self.palette_changed();
     }
@@ -97,7 +98,7 @@ impl App {
     fn palette_changed(&mut self) {
         let Some(p) = &self.palette else { return };
         if p.mode == Mode::Find {
-            let matches = palette::matching(self.palette_items(), &p.typed, &self.recent);
+            let matches = palette::matching(self.palette_items(), &p.typed(), &self.recent);
             if let Some(p) = &mut self.palette {
                 p.matches = matches;
                 p.selected = 0;
@@ -119,53 +120,64 @@ impl App {
     pub(super) fn palette_key(&mut self, event: &winit::event::KeyEvent, event_loop: &ActiveEventLoop) {
         let PhysicalKey::Code(code) = event.physical_key else { return };
         let rows = self.palette_layout().map_or(1, |l| l.rows);
-        let ctrl = self.mods.control_key();
+        let mods = self.mods;
+        let ctrl = mods.control_key();
+        // The clipboard, for Ctrl C, X and V in what is typed.
+        let pasted = if ctrl && code == KeyCode::KeyV { self.clip_get(false) } else { None };
+        let copied: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
         let Some(p) = &mut self.palette else { return };
-        match code {
+        let outcome = match code {
             KeyCode::Escape => return self.close_overlay(),
-            KeyCode::Enter | KeyCode::NumpadEnter => return self.palette_run(event_loop),
-            KeyCode::ArrowUp => p.step(-1, rows),
-            KeyCode::ArrowDown | KeyCode::Tab => p.step(1, rows),
-            KeyCode::KeyP if ctrl => p.step(-1, rows),
-            KeyCode::KeyN if ctrl => p.step(1, rows),
-            KeyCode::PageUp => p.step(-(rows as isize), rows),
-            KeyCode::PageDown => p.step(rows as isize, rows),
-            KeyCode::Backspace if ctrl => {
-                let t = p.typed.trim_end().to_string();
-                let keep = t.rfind(' ').map_or(0, |i| i + 1);
-                p.typed.truncate(keep);
-                return self.palette_changed();
+            KeyCode::Enter | KeyCode::NumpadEnter => {
+                return self.palette_run(event_loop);
             }
-            KeyCode::KeyU if ctrl => {
-                p.typed.clear();
-                return self.palette_changed();
+            KeyCode::ArrowUp => {
+                p.step(-1, rows);
+                Outcome::Moved
             }
-            KeyCode::Backspace => {
-                p.typed.pop();
-                return self.palette_changed();
+            KeyCode::ArrowDown | KeyCode::Tab => {
+                p.step(1, rows);
+                Outcome::Moved
+            }
+            KeyCode::KeyP if ctrl => {
+                p.step(-1, rows);
+                Outcome::Moved
+            }
+            KeyCode::KeyN if ctrl => {
+                p.step(1, rows);
+                Outcome::Moved
+            }
+            KeyCode::PageUp => {
+                p.step(-(rows as isize), rows);
+                Outcome::Moved
+            }
+            KeyCode::PageDown => {
+                p.step(rows as isize, rows);
+                Outcome::Moved
             }
             _ => {
-                if ctrl || self.mods.alt_key() || self.mods.super_key() {
-                    return;
-                }
-                match event.text.as_deref() {
-                    Some(t) if !t.chars().any(char::is_control) => {
-                        p.typed.push_str(t);
-                        return self.palette_changed();
-                    }
-                    _ => return,
-                }
+                let copied = &copied;
+                p.field.key(code, mods, event.text.as_deref(), &mut || pasted.clone(), &mut |s| *copied.borrow_mut() = Some(s))
             }
+        };
+        if let Some(s) = copied.into_inner() {
+            self.clip_set(s, false);
         }
-        self.full = true;
-        self.redraw();
+        match outcome {
+            Outcome::Changed => self.palette_changed(),
+            Outcome::Moved => {
+                self.full = true;
+                self.redraw();
+            }
+            Outcome::Ignored => {}
+        }
     }
 
     fn palette_run(&mut self, event_loop: &ActiveEventLoop) {
         let Some(p) = self.palette.take() else { return };
         self.full = true;
         if p.mode == Mode::Rename {
-            let name = p.typed.trim().to_string();
+            let name = p.typed().trim().to_string();
             if !name.is_empty() {
                 self.ws_mut().name = name;
                 self.unsaved = true;
@@ -217,7 +229,10 @@ impl App {
             }
             Action::Rename => {
                 let name = self.ws().name.clone();
-                self.palette = Some(Palette { mode: Mode::Rename, typed: name, matches: Vec::new(), selected: 0, first: 0 });
+                // The name is all selected, to type over or to change.
+                let mut field = TextField::new(&name);
+                field.anchor = Some(0);
+                self.palette = Some(Palette { mode: Mode::Rename, field, matches: Vec::new(), selected: 0, first: 0 });
             }
             Action::CloseWorkspace => {
                 let mut ids = Vec::new();
@@ -270,7 +285,7 @@ impl App {
         let c = self.theme.chrome();
         let Some(l) = self.palette_layout() else { return };
         let Some(p) = self.palette.as_ref() else { return };
-        let (label, typed, mode) = (p.label(), p.typed.clone(), p.mode);
+        let (label, field, mode) = (p.label(), p.field.clone(), p.mode);
         let note = match (mode, p.matches.len()) {
             (Mode::Rename, _) => "Enter to name it".to_string(),
             (_, 0) => "no match".to_string(),
@@ -284,9 +299,8 @@ impl App {
         let (x, y) = (r.x + l.pad, r.y + l.pad);
         let after_label = self.canvas.text(ui, label, x as f32, y, c.dim, r);
         let typed_x = after_label + l.pad;
-        let end = self.canvas.text(ui, &typed, typed_x as f32, y, c.text, r);
-        // The caret, after what is typed.
-        self.canvas.fill(Rect { x: end + 1, y, w: (l.pad / 6).max(2), h: ui.height }, c.text);
+        let selection = mix(self.accent, c.panel, 140);
+        field.draw(&mut self.canvas, ui, typed_x, y, c.text, selection, true, r);
         let note_w = ui.width(&note);
         self.canvas.text(ui, &note, (r.x + r.w - l.pad - note_w) as f32, y, c.dim, r);
         for (row, (at, item)) in shown.iter().enumerate() {

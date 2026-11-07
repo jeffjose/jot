@@ -48,7 +48,7 @@ pub enum Hit {
 pub struct Dropdown {
     pub key: Key,
     pub items: Vec<String>,
-    pub filter: String,
+    pub filter: crate::field::TextField,
     pub selected: usize,
     pub first: usize,
     pub anchor: Rect,
@@ -56,7 +56,7 @@ pub struct Dropdown {
 
 impl Dropdown {
     fn shown(&self) -> Vec<(usize, String)> {
-        let f = self.filter.to_lowercase();
+        let f = self.filter.string().to_lowercase();
         self.items.iter().enumerate().filter(|(_, n)| n.to_lowercase().contains(&f)).map(|(i, n)| (i, n.clone())).collect()
     }
 }
@@ -275,7 +275,7 @@ impl App {
                 if let Some(s) = &mut self.settings {
                     let items = if key == Key::Family { s.mono.get_or_insert_with(|| font::families(true)).clone() } else { s.all.get_or_insert_with(|| font::families(false)).clone() };
                     let selected = items.iter().position(|n| n.eq_ignore_ascii_case(&current)).unwrap_or(0);
-                    s.dropdown = Some(Dropdown { key, items, filter: String::new(), selected, first: selected.saturating_sub(4), anchor });
+                    s.dropdown = Some(Dropdown { key, items, filter: crate::field::TextField::default(), selected, first: selected.saturating_sub(4), anchor });
                 }
             }
             Hit::Item(i) => {
@@ -308,6 +308,8 @@ impl App {
         let list_open = self.settings.as_ref().is_some_and(|s| s.dropdown.is_some());
         if list_open {
             let mut pick = None;
+            let pasted = if self.mods.control_key() && code == KeyCode::KeyV { self.clip_get(false) } else { None };
+            let copied: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
             if let Some(s) = &mut self.settings {
                 let Some(d) = &mut s.dropdown else { return };
                 let n = d.shown().len();
@@ -318,17 +320,18 @@ impl App {
                     KeyCode::ArrowDown => d.selected = (d.selected + 1).min(n.saturating_sub(1)),
                     KeyCode::PageUp => d.selected = d.selected.saturating_sub(10),
                     KeyCode::PageDown => d.selected = (d.selected + 10).min(n.saturating_sub(1)),
-                    KeyCode::Backspace => {
-                        d.filter.pop();
-                        d.selected = 0;
-                    }
                     _ => {
-                        if let Some(t) = event.text.as_deref().filter(|t| !t.chars().any(char::is_control)) {
-                            d.filter.push_str(t);
+                        let mods = self.mods;
+                        let copied = &copied;
+                        let out = d.filter.key(code, mods, event.text.as_deref(), &mut || pasted.clone(), &mut |t| *copied.borrow_mut() = Some(t));
+                        if out == crate::field::Outcome::Changed {
                             d.selected = 0;
                         }
                     }
                 }
+            }
+            if let Some(s) = copied.into_inner() {
+                self.clip_set(s, false);
             }
             if let Some(i) = pick {
                 return self.settings_do(Hit::Item(i));
@@ -770,11 +773,11 @@ impl App {
             let filter = Rect { x: list.x + px(8.0), y: list.y + px(8.0), w: list.w - px(16.0), h: field_h };
             canvas.round_fill(filter, px(6.0), c.field, 255);
             let ty = filter.y + (field_h - uh) / 2;
-            if d.filter.is_empty() {
+            if d.filter.text.is_empty() {
                 canvas.text(&mut fonts.ui, "Type to filter", (filter.x + px(10.0)) as f32, ty, c.faint, filter);
+                canvas.fill(Rect { x: filter.x + px(10.0), y: ty, w: px(2.0).max(2), h: uh }, c.text);
             } else {
-                let end = canvas.text(&mut fonts.ui, &d.filter, (filter.x + px(10.0)) as f32, ty, c.text, filter);
-                canvas.fill(Rect { x: end + 1, y: ty, w: px(2.0).max(2), h: uh }, c.text);
+                d.filter.draw(canvas, &mut fonts.ui, filter.x + px(10.0), ty, c.text, mix(accent, c.panel, 140), true, filter);
             }
             let shown = d.shown();
             d.selected = d.selected.min(shown.len().saturating_sub(1));

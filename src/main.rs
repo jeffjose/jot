@@ -3,6 +3,7 @@
 
 mod app;
 mod canvas;
+mod field;
 mod font;
 mod keys;
 mod layout;
