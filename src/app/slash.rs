@@ -29,6 +29,9 @@ pub enum Does {
     /// The date, or the folder the shell is in, put on the line.
     Date,
     Cwd,
+    /// The pane's running job: Ctrl C to it, or killed.
+    Stop,
+    Kill,
 }
 
 #[derive(Clone, Debug)]
@@ -73,7 +76,7 @@ const SHOWN: usize = 8;
 
 impl App {
     /// The commands there are: jterm's, then the config's own.
-    fn slash_commands(&self) -> Vec<Command> {
+    pub(super) fn slash_commands(&self) -> Vec<Command> {
         let mut all = vec![
             Command::new("settings", "Open settings", Does::Act(Action::Settings)),
             Command::new("split", "Split right", Does::Act(Action::Split(Dir::Across))),
@@ -100,6 +103,11 @@ impl App {
             Command::new("date", "Insert today's date", Does::Date),
             Command::new("cwd", "Insert this folder's path", Does::Cwd),
         ];
+        // For a pane's own command line: its running job stopped or killed.
+        if self.bar.is_some() {
+            all.insert(0, Command::new("stop", "Ctrl C to the running job", Does::Stop));
+            all.insert(1, Command::new("kill", "Kill the running job (again: kill -9)", Does::Kill));
+        }
         // The config's: "name" = "text" puts the text on the line; a name
         // starting with ! runs it.
         for (name, text) in &self.config.slash {
@@ -380,11 +388,21 @@ impl App {
         self.full = true;
         let (name, arg) = label.split_once(' ').map(|(n, a)| (n.to_string(), a.to_string())).unwrap_or((label.clone(), String::new()));
         let Some(c) = self.slash_commands().into_iter().find(|c| c.name == name) else { return };
-        match c.does {
+        self.slash_apply(id, c.does, &arg, event_loop);
+    }
+
+    /// A slash command done, for pane `id`; `arg` is the word after it.
+    pub(super) fn slash_apply(&mut self, id: PaneId, does: Does, arg: &str, event_loop: &ActiveEventLoop) {
+        let write = |app: &mut App, bytes: &[u8]| {
+            if let Some(p) = app.panes.get(&id) {
+                p.pty.write(bytes);
+            }
+        };
+        match does {
             Does::Act(a) => self.run(a, event_loop),
             Does::Toggle(key) => self.settings_do(Hit::Toggle(key)),
             Does::Theme => {
-                if let Some(i) = THEMES.iter().position(|t| t.name.to_lowercase().replace(' ', "-") == arg) {
+                if let Some(i) = THEMES.iter().position(|t| t.name.to_lowercase().replace(' ', "-") == *arg) {
                     self.settings_do(Hit::Theme(i));
                 }
             }
@@ -401,6 +419,8 @@ impl App {
             }
             Does::Insert(text) => self.slash_insert(id, &text),
             Does::Run(cmd) => write(self, format!("{cmd}\r").as_bytes()),
+            Does::Stop => self.stop_job(id),
+            Does::Kill => self.kill_job(id),
             Does::Date => self.slash_insert(id, &date_today()),
             Does::Cwd => {
                 let cwd = self.panes.get(&id).and_then(|p| p.pty.cwd()).map(|d| d.display().to_string()).unwrap_or_default();
@@ -432,13 +452,24 @@ impl App {
         let (cw, ch) = (self.fonts.cell_w, self.fonts.cell_h);
         let content = p.content;
         let rows = self.slash_rows(&typed, mid);
+        // Its left at the slash, one column back from the cursor.
+        let x = content.x + (cur.x as i32 - 1 - typed.chars().count() as i32).max(0) * cw;
+        let below = content.y + (cur.y as i32 + 1) * ch + self.px(4.0);
+        let above = content.y + cur.y as i32 * ch - self.px(4.0);
+        self.draw_command_list(&rows, selected, first, x, below, above, false);
+    }
+
+    /// A list of slash commands at `x`: its top at `below`, or its bottom
+    /// at `above` when it is asked to rise or would not fit under.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn draw_command_list(&mut self, rows: &[Row], selected: usize, first: usize, x: i32, below: i32, above: i32, rise: bool) {
         let c = self.cur_theme.chrome();
         let accent = self.cur_accent;
         let scale = self.scale;
         let px = |v: f32| (v * scale).round() as i32;
         let (uh, sh) = (self.fonts.ui.height, self.fonts.small.height);
         let row_h = uh + px(10.0);
-        let shown: Vec<(usize, Row)> = rows.into_iter().enumerate().skip(first).take(SHOWN).collect();
+        let shown: Vec<(usize, Row)> = rows.iter().cloned().enumerate().skip(first).take(SHOWN).collect();
         if shown.is_empty() {
             return;
         }
@@ -447,11 +478,9 @@ impl App {
         let kind_w = shown.iter().map(|(_, r)| self.fonts.small.width(r.kind)).max().unwrap_or(0);
         let w = (px(12.0) + name_w + px(16.0) + what_w + px(16.0) + kind_w + px(12.0)).min(self.canvas.width - px(16.0));
         let h = shown.len() as i32 * row_h + px(8.0);
-        // Its left at the slash, one column back from the cursor.
-        let sx = content.x + (cur.x as i32 - 1 - typed.chars().count() as i32).max(0) * cw;
-        let x = sx.min(self.canvas.width - w - px(8.0)).max(px(8.0));
-        let below = content.y + (cur.y as i32 + 1) * ch + px(4.0);
-        let y = if below + h <= self.canvas.height - px(8.0) { below } else { content.y + cur.y as i32 * ch - px(4.0) - h };
+        let x = x.min(self.canvas.width - w - px(8.0)).max(px(8.0));
+        let fits_below = below + h <= self.canvas.height - px(8.0);
+        let y = if !rise && fits_below { below } else { (above - h).max(px(8.0)) };
         let r = Rect { x, y, w, h };
         self.canvas.panel(r, px(8.0), c.panel, c.edge);
         for (k, (i, row)) in shown.iter().enumerate() {
@@ -480,10 +509,11 @@ fn kind_of(d: &Does) -> &'static str {
         Does::Cd => "go",
         Does::Insert(_) | Does::Date | Does::Cwd => "insert",
         Does::Run(_) => "run",
+        Does::Stop | Does::Kill => "job",
     }
 }
 
 /// Today as YYYY-MM-DD, from the system's clock and zone.
-fn date_today() -> String {
+pub(super) fn date_today() -> String {
     std::process::Command::new("date").arg("+%F").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
 }

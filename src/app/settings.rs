@@ -131,6 +131,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Alt ,  Alt .", "Previous / next workspace"),
     ("Alt Shift N", "New workspace, in this pane's folder"),
     ("Alt Shift M", "Type into multiple panes; click a pane to skip it"),
+    ("Alt /", "Pane command line: run now, or queue behind the running command"),
     ("Alt P", "Copy mode: hjkl to move, v or V to select, y to copy"),
     ("Alt Shift O", "Move pane to a new window, and back"),
     ("Ctrl Shift ↑ ↓", "Previous / next prompt"),

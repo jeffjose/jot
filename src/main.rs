@@ -45,6 +45,7 @@ Keys:
   Ctrl Shift t         reopen closed pane
   Alt Shift f          focus pane / show all
   Alt Shift m          type into multiple panes
+  Alt /                pane command line: run, or queue behind what runs
   Alt Shift o          move pane to a new window, and back
   Alt arrows, Alt =    resize pane, equalize pane sizes
   Alt 1-9, Alt , .     go to workspace, previous / next workspace

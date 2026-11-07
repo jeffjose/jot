@@ -32,6 +32,20 @@ pub struct Shell {
     pub line: Option<String>,
     /// The line as it was when Enter was pressed, when it was known.
     pub entered: Option<String>,
+    /// Commands to run, in turn, as each before them ends; held when one
+    /// fails.
+    pub queue: Vec<String>,
+    pub paused: bool,
+    /// A prompt came: the next in the queue goes once the shell's line
+    /// editor is reading, so that it is not echoed twice.
+    pub queue_due: bool,
+    /// What was run from the pane's command line, oldest first.
+    pub history: Vec<String>,
+    /// A command run now, beside the shell: its line, what it printed so
+    /// far, and its exit status once it ended.
+    pub ran: Option<(String, String, Option<i32>)>,
+    /// When the running job was last sent SIGTERM, to send SIGKILL next.
+    pub killed_at: Option<Instant>,
     pub prompt_row: u64,
     pub running: Option<(Instant, u64, String)>,
     pub blocks: Vec<Block>,
@@ -62,10 +76,12 @@ impl App {
         }
         let (_, row) = Self::cursor_row(p);
         let mut notices: Vec<(String, String, u32)> = Vec::new();
+        let mut prompted = false;
         for e in events {
             match e {
                 ShellEvent::Prompt => {
                     p.shell.marked = true;
+                    prompted = true;
                     p.shell.at_prompt = true;
                     p.shell.input_at = None;
                     p.shell.line = Some(String::new());
@@ -85,6 +101,10 @@ impl App {
                 ShellEvent::End(exit) => {
                     let Some((started, start, line)) = p.shell.running.take() else { continue };
                     let took = started.elapsed();
+                    // A failed command holds what is queued behind it.
+                    if exit.is_some_and(|e| e != 0) && !p.shell.queue.is_empty() {
+                        p.shell.paused = true;
+                    }
                     // The new prompt is drawn by now: the command's rows end
                     // the row before it.
                     let end = row.saturating_sub(1).max(start);
@@ -107,6 +127,12 @@ impl App {
         }
         for (title, body, color) in notices {
             self.toast(&title, &body, Some(color), Some(id));
+        }
+        // Back at a prompt: the next queued command is due.
+        if prompted {
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.shell.queue_due = true;
+            }
         }
     }
 

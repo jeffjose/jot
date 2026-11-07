@@ -29,6 +29,7 @@ use crate::vt::{self, sys, Cell, Terminal};
 
 mod overlay;
 mod automate;
+mod bar;
 mod commands;
 mod copymode;
 mod dnd;
@@ -157,6 +158,11 @@ pub struct App {
     handle_hover: Option<PaneId>,
     /// Slash commands being typed at a prompt.
     slash: Option<slash::Slash>,
+    /// A pane's own command line, open, and where its buttons are.
+    bar: Option<bar::Bar>,
+    bar_hits: Vec<(Rect, PaneId, bar::BarHit)>,
+    /// Commands run now from a bar, as they end: pane, output, status.
+    ran: Arc<std::sync::Mutex<Vec<(PaneId, String, i32)>>>,
     last_click: Option<(Instant, (u16, u16), u8)>,
     clipboard: Option<arboard::Clipboard>,
     /// Workspace tabs on the status line, for clicks.
@@ -283,6 +289,9 @@ impl App {
             drag: None,
             handle_hover: None,
             slash: None,
+            bar: None,
+            bar_hits: Vec::new(),
+            ran: Default::default(),
             last_click: None,
             clipboard: None,
             tabs: Vec::new(),
@@ -479,8 +488,9 @@ impl App {
         // Room around the text, as VS Code's terminal leaves.
         let (cw, ch, cap, pad, top) = (self.fonts.cell_w, self.fonts.cell_h, self.caption_h(), self.px(12.0), self.px(8.0));
         for (id, rect) in shown {
+            let bar = self.bar_height(id);
             let Some(p) = self.panes.get_mut(&id) else { continue };
-            let content = Rect { x: rect.x + pad, y: rect.y + top, w: (rect.w - 2 * pad).max(0), h: (rect.h - cap - top).max(0) };
+            let content = Rect { x: rect.x + pad, y: rect.y + top, w: (rect.w - 2 * pad).max(0), h: (rect.h - cap - top - bar).max(0) };
             let cols = (content.w / cw).clamp(1, u16::MAX as i32) as u16;
             let rows = (content.h / ch).clamp(1, u16::MAX as i32) as u16;
             // Only a change of rows or columns is told to the program: a
@@ -877,6 +887,7 @@ impl App {
                 (KeyCode::KeyP, true) => self.paste(false),
                 (KeyCode::KeyP, false) => self.open_copy_mode(),
                 (KeyCode::Backquote, false) => self.toggle_roam(),
+                (KeyCode::Slash, false) => self.toggle_bar(),
                 _ => return false,
             }
             return true;
@@ -954,6 +965,18 @@ impl App {
                 self.palette_key(&event, event_loop);
             }
             return;
+        }
+        // A pane's command line open: the keys are its, all but its own key
+        // and the other bindings, which shut it or act over it.
+        if self.bar.is_some() && event.state == ElementState::Pressed {
+            if self.mods.alt_key() && code == KeyCode::Slash {
+                self.toggle_bar();
+                return;
+            }
+            if !(self.mods.alt_key() || self.mods.super_key()) {
+                self.bar_key(&event, event_loop);
+                return;
+            }
         }
         if self.editor.is_some() {
             if event.state == ElementState::Pressed {
@@ -1056,7 +1079,7 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
-        if (button == MouseButton::Left && (self.offer_click(event_loop) || self.toast_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
+        if (button == MouseButton::Left && (self.offer_click(event_loop) || self.toast_click() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
             return;
         }
         let (x, y) = self.pointer;
@@ -1303,6 +1326,7 @@ impl App {
                     }
                     self.check_triggers(id, &bytes);
                     self.shell_events(id);
+                    self.queue_tick(id);
                     if let Some(i) = self.popout_of(id) {
                         self.popouts[i].window.request_redraw();
                     }
@@ -1646,6 +1670,7 @@ impl App {
         }
         if full {
             self.draw_handle(id);
+            self.draw_bar(id);
         }
         self.draw_blocks(id);
     }
@@ -1823,6 +1848,7 @@ impl ApplicationHandler<()> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _: ()) {
         self.drain(event_loop);
+        self.collect_ran();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, wid: WindowId, event: WindowEvent) {
@@ -1916,7 +1942,14 @@ impl ApplicationHandler<()> for App {
         if self.saved_at.elapsed() > Duration::from_secs(30) {
             self.save();
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(1)));
+        // A queued command waiting for the shell's line editor: looked at
+        // again soon.
+        let due: Vec<PaneId> = self.panes.iter().filter(|(_, p)| p.shell.queue_due).map(|(id, _)| *id).collect();
+        for id in &due {
+            self.queue_tick(*id);
+        }
+        let soon = if due.is_empty() { Duration::from_secs(1) } else { Duration::from_millis(50) };
+        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + soon));
         if self.captions_at.elapsed() >= Duration::from_secs(1) {
             self.redraw();
         }

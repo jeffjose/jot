@@ -35,6 +35,7 @@ pub enum Action {
     PopOut,
     CopyOutput,
     CopyCommand,
+    CommandLine,
     Settings,
     Palette,
     /// Opens the n-th submenu of the right-click menu.
@@ -189,6 +190,7 @@ pub fn commands() -> Vec<Item> {
         c("Reset zoom", "Ctrl 0", Action::FontReset),
         c("Toggle status line", "", Action::StatusLine),
         c("Type into multiple panes", "Alt Shift M", Action::Broadcast),
+        c("Pane command line: run or queue", "Alt /", Action::CommandLine),
         c("Settings", "Ctrl ,", Action::Settings),
         c("Go to workspace, pane or folder", "Ctrl K", Action::Palette),
     ]
