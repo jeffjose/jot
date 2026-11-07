@@ -112,10 +112,8 @@ impl App {
         let Some(f) = &mut p.filter else { return bytes };
         let (shown, ended) = f.pass(&bytes);
         if ended {
-            let (text, hidden) = (f.text.clone(), f.hidden);
             p.filter = None;
             p.full = true;
-            self.toast("Filter ended", &format!("\"{text}\" · {hidden} line{} hidden", if hidden == 1 { "" } else { "s" }), None, Some(id));
         }
         shown
     }
