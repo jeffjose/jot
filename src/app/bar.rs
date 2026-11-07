@@ -1,4 +1,4 @@
-//! A pane's own command line, on Alt /: a slim box at the bottom of the
+//! A pane's own command line, on Alt ;: a slim box at the bottom of the
 //! pane, pushing its text up, that works whatever the pane is running.
 //! A command typed in it runs at the prompt when the shell is waiting,
 //! or waits its turn behind the command running; each in the queue can
@@ -70,7 +70,7 @@ impl App {
         }
     }
 
-    /// Alt /: the focused pane's command line, open; open already, shut.
+    /// Alt ;: the focused pane's command line, open; open already, shut.
     pub(super) fn toggle_bar(&mut self) {
         if let Some(b) = self.bar.take() {
             self.forget_ran(b.pane);
@@ -155,6 +155,9 @@ impl App {
                     b.field = TextField::new(back.and_then(|i| history.get(i)).map_or("", String::as_str));
                 }
             }
+            // A space after !!, !str, !?str or !$: the word made what it
+            // stands for, from what the pane ran, as tcsh's magic space.
+            KeyCode::Space if !self.mods.control_key() && !self.mods.alt_key() && self.bar_expand() => {}
             _ => {
                 let pasted = if self.mods.control_key() && code == KeyCode::KeyV { self.clip_get(false) } else { None };
                 let copied: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
@@ -574,5 +577,65 @@ impl App {
             }
         }
         at.is_some()
+    }
+}
+
+/// What a history word stands for: `!!` the last command, `!$` its last
+/// word, `!?str` the latest with str in it, `!str` the latest starting
+/// with str. None when it is not one, or nothing matches.
+pub fn expand_bang(word: &str, history: &[String]) -> Option<String> {
+    let rest = word.strip_prefix('!')?;
+    let last = history.last();
+    match rest {
+        "" => None,
+        "!" => last.cloned(),
+        "$" => last.and_then(|l| l.split_whitespace().last()).map(str::to_string),
+        _ => match rest.strip_prefix('?') {
+            Some(s) => {
+                let s = s.trim_end_matches('?');
+                history.iter().rev().find(|h| h.contains(s)).cloned()
+            }
+            None => history.iter().rev().find(|h| h.starts_with(rest)).cloned(),
+        },
+    }
+}
+
+impl App {
+    /// The word before the cursor expanded, if it is a history word that
+    /// matches, and a space after it. True when it was.
+    fn bar_expand(&mut self) -> bool {
+        let Some(b) = &self.bar else { return false };
+        let history = self.panes.get(&b.pane).map(|p| p.shell.history.clone()).unwrap_or_default();
+        let Some(b) = &mut self.bar else { return false };
+        let before: String = b.field.text[..b.field.cursor].iter().collect();
+        let start = before.rfind(char::is_whitespace).map_or(0, |i| i + 1);
+        let Some(with) = expand_bang(&before[start..], &history) else { return false };
+        let from = before[..start].chars().count();
+        let mut text: Vec<char> = b.field.text[..from].to_vec();
+        text.extend(with.chars());
+        text.push(' ');
+        let cursor = text.len();
+        text.extend_from_slice(&b.field.text[b.field.cursor..]);
+        b.field.text = text;
+        b.field.cursor = cursor;
+        b.field.anchor = None;
+        b.selected = 0;
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_bang;
+
+    #[test]
+    fn bangs() {
+        let h: Vec<String> = ["cargo build --release", "git status", "ls -la /tmp"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(expand_bang("!!", &h).as_deref(), Some("ls -la /tmp"));
+        assert_eq!(expand_bang("!$", &h).as_deref(), Some("/tmp"));
+        assert_eq!(expand_bang("!car", &h).as_deref(), Some("cargo build --release"));
+        assert_eq!(expand_bang("!?stat", &h).as_deref(), Some("git status"));
+        assert_eq!(expand_bang("!nope", &h), None);
+        assert_eq!(expand_bang("hello", &h), None);
     }
 }

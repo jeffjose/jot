@@ -399,7 +399,7 @@ impl App {
                 c("New pane", "Ctrl T", Action::NewPane),
                 c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
                 c("Move to new window", "Alt Shift O", Action::PopOut),
-                c("Command line", "Alt /", Action::CommandLine),
+                c("Command line", "Alt ;", Action::CommandLine),
                 c("Type into multiple panes", "Alt Shift M", Action::Broadcast),
                 None,
                 c("Clear terminal", "", Action::Clear),

@@ -893,7 +893,7 @@ impl App {
                 (KeyCode::KeyP, true) => self.paste(false),
                 (KeyCode::KeyP, false) => self.open_copy_mode(),
                 (KeyCode::Backquote, false) => self.toggle_roam(),
-                (KeyCode::Slash, false) => self.toggle_bar(),
+                (KeyCode::Semicolon, false) => self.toggle_bar(),
                 _ => return false,
             }
             return true;
@@ -975,7 +975,7 @@ impl App {
         // A pane's command line open: the keys are its, all but its own key
         // and the other bindings, which shut it or act over it.
         if self.bar.is_some() && event.state == ElementState::Pressed {
-            if self.mods.alt_key() && code == KeyCode::Slash {
+            if self.mods.alt_key() && code == KeyCode::Semicolon {
                 self.toggle_bar();
                 return;
             }
