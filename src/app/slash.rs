@@ -334,11 +334,20 @@ impl App {
             p.shell.entered = line.clone();
         }
         let next = match code {
-            KeyCode::KeyU | KeyCode::KeyC if ctrl => Some(String::new()),
+            KeyCode::KeyU | KeyCode::KeyC if ctrl => {
+                p.shell.expanded = false;
+                Some(String::new())
+            }
             KeyCode::Backspace if plain => line.take().map(|mut l| {
                 l.pop();
                 l
             }),
+            // A space after a history word (!!, !str, ^old^new): the shell has
+            // put what it stands for on the line, which only the screen shows.
+            _ if plain && text == " " && line.as_deref().is_some_and(history_word) => {
+                p.shell.expanded = true;
+                line.take().map(|l| l + text)
+            }
             _ if plain && !text.is_empty() && !text.chars().any(char::is_control) => line.take().map(|l| l + text),
             KeyCode::ShiftLeft | KeyCode::ShiftRight | KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::AltLeft | KeyCode::AltRight => line.take(),
             _ => None,
@@ -473,7 +482,14 @@ impl App {
                 }
             },
             Does::Edit => {
-                let text = self.prompt_line(id);
+                // Read off the screen, the slash command may still be there,
+                // the shell not having rubbed it out yet.
+                let mut text = self.prompt_line(id);
+                if let Some(at) = text.trim_end().rfind(char::is_whitespace) {
+                    if text[at..].trim().starts_with("/e") {
+                        text.truncate(at);
+                    }
+                }
                 self.open_editor_with(id, &text, false);
             }
             Does::Kill => self.kill_job(id),
@@ -569,4 +585,11 @@ fn kind_of(d: &Does) -> &'static str {
         Does::Run(_) => "run",
         Does::Stop | Does::Kill | Does::Info | Does::Notify | Does::Tree | Does::Ports | Does::Files => "job",
     }
+}
+
+/// Whether a command line ends in a word the shell's history expands:
+/// !!, !str, !?str, !$, !n, or ^old^new.
+fn history_word(line: &str) -> bool {
+    let word = line.rsplit(char::is_whitespace).next().unwrap_or("");
+    (word.starts_with('!') && word.len() > 1 && !word.starts_with("!=")) || (word.starts_with('^') && word[1..].contains('^'))
 }

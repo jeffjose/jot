@@ -32,6 +32,9 @@ pub struct Shell {
     pub line: Option<String>,
     /// The line as it was when Enter was pressed, when it was known.
     pub entered: Option<String>,
+    /// The shell expanded a history word on the line (!!, !str): what is
+    /// on it is what the screen shows, not what was typed.
+    pub expanded: bool,
     /// Commands to run, in turn, as each before them ends; held when one
     /// fails.
     pub queue: Vec<String>,
@@ -107,6 +110,7 @@ impl App {
                     p.shell.at_prompt = true;
                     p.shell.input_at = None;
                     p.shell.line = Some(String::new());
+                    p.shell.expanded = false;
                     p.shell.prompt_row = row;
                 }
                 ShellEvent::Input => {}
@@ -302,7 +306,7 @@ impl App {
     /// as it reads on the screen.
     pub(super) fn prompt_line(&mut self, id: PaneId) -> String {
         let Some(p) = self.panes.get_mut(&id) else { return String::new() };
-        if let Some(line) = p.shell.line.clone() {
+        if let Some(line) = p.shell.line.clone().filter(|_| !p.shell.expanded) {
             return line;
         }
         match p.shell.input_at {
@@ -420,7 +424,8 @@ impl App {
         let (lines, row, col, sel) = (e.lines.clone(), e.row, e.col, e.selection());
         let pad = px(14.0);
         let head = self.fonts.ui.height + px(18.0);
-        let foot = self.fonts.small.height + px(18.0);
+        // The footer holds the Run button, with room above and below it.
+        let foot = self.fonts.ui.height + px(10.0) + 2 * px(12.0);
         let w = (prect.w - px(40.0)).min(cw * 100 + 2 * pad + px(28.0)).max(px(300.0));
         let h = (head + lines.len() as i32 * ch + 2 * pad + foot).min(prect.h - px(20.0));
         let r = Rect { x: prect.x + (prect.w - w) / 2, y: prect.y + (prect.h - h) / 3, w, h };
@@ -485,7 +490,8 @@ impl App {
         if let Some(e) = &mut self.editor {
             e.run_at = run;
         }
-        self.canvas.text(&mut self.fonts.small, hint, (r.x + pad) as f32, r.y + r.h - foot + px(9.0), c.dim, r);
+        let hint_h = self.fonts.small.height;
+        self.canvas.text(&mut self.fonts.small, hint, (r.x + pad) as f32, r.y + r.h - foot + (foot - hint_h) / 2, c.dim, r);
         self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
     }
 }
