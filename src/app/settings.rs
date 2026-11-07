@@ -197,7 +197,7 @@ impl App {
             Key::Ligatures => !c.ligatures,
             Key::CommandBars => c.command_bars,
             Key::WsColors => !c.workspace_colors,
-            Key::Bold => c.bold_text,
+            Key::Bold => !c.bold_text,
         }
     }
 
@@ -261,7 +261,7 @@ impl App {
             }
             Key::WsTheme => {}
             Key::Bold => {
-                self.config.bold_text = false;
+                self.config.bold_text = true;
                 self.reload_fonts();
             }
             Key::WsColors => {
@@ -1090,7 +1090,7 @@ impl App {
             ("Terminal font size", "In points. Ctrl = and Ctrl - change it too.", Key::Size),
             ("Line height", "Room between lines, as a share of the font's own. VS Code's is 1.10.", Key::LineHeight),
             ("Ligatures", "Characters joined as the font draws them: => and != in Fira Code.", Key::Ligatures),
-            ("Bold text", "In the font's bold. Off keeps one weight, as VS Code does with Fira Code Medium.", Key::Bold),
+            ("Bold text", "In the font's bold. Off keeps all text one weight.", Key::Bold),
             ("Interface font", "For jterm's own words: captions, menus, these settings.", Key::UiFamily),
             ("Interface font size", "In points.", Key::UiSize),
         ];

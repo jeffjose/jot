@@ -178,10 +178,12 @@ pub struct Config {
     /// ended, with its time when it failed or was slow.
     #[serde(default)]
     pub command_bars: bool,
-    /// Bold text drawn in the font's bold; off, in its usual weight, as
-    /// VS Code draws Fira Code Medium.
-    #[serde(default)]
+    /// Bold text drawn in the font's bold; off, in its usual weight.
+    #[serde(default = "yes")]
     pub bold_text: bool,
+    /// Subpixel text: "auto" as the desktop has it, "rgb", "bgr" or "none".
+    #[serde(default = "default_subpixel")]
+    pub subpixel: String,
     /// Workspaces without an accent of their own are each given a
     /// different one, all but the first.
     #[serde(default = "yes")]
@@ -255,6 +257,10 @@ pub fn default_ui_font_size() -> f32 {
     13.0
 }
 
+pub fn default_subpixel() -> String {
+    "auto".into()
+}
+
 pub fn default_theme() -> String {
     "Dark 2026".into()
 }
@@ -265,7 +271,7 @@ fn default_projects() -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), restore: default_restore(), status_line: false, captions: true, ligatures: true, command_bars: false, bold_text: false, workspace_colors: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), restore: default_restore(), status_line: false, captions: true, ligatures: true, command_bars: false, bold_text: true, subpixel: default_subpixel(), workspace_colors: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), workspaces: Vec::new() }
     }
 }
 

@@ -207,17 +207,20 @@ impl Canvas {
             }
             return;
         }
-        self.coverage(&g.coverage, g.width, g.height, x + g.left, y + g.top, color, clip);
+        self.coverage(&g.coverage, g.width, g.height, x + g.left, y + g.top, color, clip, g.lcd);
     }
 
+    /// Text's coverage laid on in `color`: one coverage a pixel, or with
+    /// `lcd` three, one for each of its red, green and blue stripes.
     #[allow(clippy::too_many_arguments)]
-    fn coverage(&mut self, cov: &[u8], w: usize, h: usize, x: i32, y: i32, color: u32, clip: Rect) {
+    fn coverage(&mut self, cov: &[u8], w: usize, h: usize, x: i32, y: i32, color: u32, clip: Rect, lcd: bool) {
         let (cx0, cy0, cx1, cy1) = self.bounds(clip);
         // Blended as sRGB, as browsers and editors blend text; light text
         // has its edges filled a little more, as Skia does, so that on a
         // dark ground it is not thinner than the same text dark on light.
         let (lift, text_l) = (text_lift(), luminance(color));
         let mut ground = (u32::MAX, false);
+        let n = if lcd { 3 } else { 1 };
         for gy in 0..h as i32 {
             let py = y + gy;
             if py < cy0 || py >= cy1 {
@@ -229,34 +232,45 @@ impl Canvas {
                 if px < cx0 || px >= cx1 {
                     continue;
                 }
-                let mut a = cov[(gy * w as i32 + gx) as usize] as u32;
-                if a > 0 {
-                    let p = &mut self.pixels[row + px as usize];
-                    if a < 255 {
-                        // Whether the text is lighter than its ground, kept
-                        // while the ground stays the same color.
-                        if ground.0 != *p {
-                            ground = (*p, text_l > luminance(*p));
-                        }
-                        if ground.1 {
-                            a = lift[a as usize] as u32;
-                        }
-                    }
-                    *p = blend(*p, color, a);
+                let at = (gy as usize * w + gx as usize) * n;
+                let a = &cov[at..at + n];
+                if a.iter().all(|&v| v == 0) {
+                    continue;
                 }
+                let p = &mut self.pixels[row + px as usize];
+                if a.iter().all(|&v| v == 255) {
+                    *p = color;
+                    continue;
+                }
+                // Whether the text is lighter than its ground, kept while
+                // the ground stays the same color.
+                if ground.0 != *p {
+                    ground = (*p, text_l > luminance(*p));
+                }
+                let take = |v: u8| if ground.1 { lift[v as usize] as u32 } else { v as u32 };
+                *p = if lcd {
+                    let ch = |shift: u32, v: u8| {
+                        let (s, d, k) = ((color >> shift) & 0xff, (*p >> shift) & 0xff, take(v));
+                        ((s * k + d * (255 - k) + 127) / 255) << shift
+                    };
+                    ch(16, a[0]) | ch(8, a[1]) | ch(0, a[2])
+                } else {
+                    blend(*p, color, take(a[0]))
+                };
             }
         }
     }
 
+
     /// Text in an interface font, its top at `y`. Returns where it ends.
     pub fn text(&mut self, font: &mut UiFont, text: &str, mut x: f32, y: i32, color: u32, clip: Rect) -> i32 {
-        let ascent = font.ascent;
+        let (ascent, lcd) = (font.ascent, font.lcd.is_some());
         for c in text.chars() {
             let (m, cov) = font.glyph(c);
             let (gx, gy) = (x.round() as i32 + m.xmin, y + ascent - (m.height as i32 + m.ymin));
             let (w, h, adv) = (m.width, m.height, m.advance_width);
             let cov = cov.clone();
-            self.coverage(&cov, w, h, gx, gy, color, clip);
+            self.coverage(&cov, w, h, gx, gy, color, clip, lcd);
             x += adv;
         }
         x.round() as i32

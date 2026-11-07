@@ -32,6 +32,8 @@ pub struct Choice {
     /// Bold text in the font's bold; else in its usual weight, as VS Code
     /// draws it with a family that has no bold, like Fira Code Medium.
     pub bold: bool,
+    /// Subpixel text, and the order of the screen's stripes; None for gray.
+    pub lcd: Option<Lcd>,
     /// The height of a line, as a share of the font's own.
     pub line_height: f32,
 }
@@ -46,6 +48,8 @@ pub struct Glyph {
     /// For an emoji, its own colors, alpha in the top byte; then the
     /// coverage is not used.
     pub color: Option<Vec<u32>>,
+    /// Three coverages a pixel, red green blue, for subpixel text.
+    pub lcd: bool,
 }
 
 pub struct Fonts {
@@ -71,6 +75,7 @@ pub struct Fonts {
     /// Rasterizes the terminal's glyphs, hinted: outlines snapped to the
     /// pixel grid up and down, as FreeType's light hinting does.
     scaler: ScaleContext,
+    lcd: Option<Lcd>,
     /// The interface: its text, headings, and the smaller words under
     /// a setting.
     pub ui: UiFont,
@@ -108,17 +113,61 @@ impl Face {
     }
 
     /// A glyph by number, hinted, as coverage: where its box starts right
-    /// of the pen and above the baseline.
-    fn raster(&self, ctx: &mut ScaleContext, id: u16, px: f32) -> Raster {
+    /// of the pen and above the baseline. With `lcd`, three coverages a
+    /// pixel, one for each of its stripes, red first (or blue, for BGR).
+    fn raster(&self, ctx: &mut ScaleContext, id: u16, px: f32, lcd: Option<Lcd>) -> Raster {
+        let wide = if lcd.is_some() { 3.0 } else { 1.0 };
         let image = swash::FontRef::from_index(&self.bytes, self.index as usize).and_then(|font| {
             let mut scaler = ctx.builder(font).size(px).hint(true).build();
-            Render::new(&[Source::Outline]).format(Format::Alpha).render(&mut scaler, id)
+            Render::new(&[Source::Outline]).format(Format::Alpha).transform(Some(swash::zeno::Transform::scale(wide, 1.0))).render(&mut scaler, id)
         });
-        match image {
-            Some(img) => Raster { left: img.placement.left, top: img.placement.top, width: img.placement.width as usize, height: img.placement.height as usize, coverage: img.data },
-            None => Raster { left: 0, top: 0, width: 0, height: 0, coverage: Vec::new() },
+        let Some(img) = image else {
+            return Raster { left: 0, top: 0, width: 0, height: 0, coverage: Vec::new(), lcd: false };
+        };
+        let (left, top, width, height) = (img.placement.left, img.placement.top, img.placement.width as usize, img.placement.height as usize);
+        match lcd {
+            None => Raster { left, top, width, height, coverage: img.data, lcd: false },
+            Some(order) => {
+                let (px0, w, coverage) = lcd_filter(&img.data, left, width, height, order);
+                Raster { left: px0, top, width: w, height, coverage, lcd: true }
+            }
         }
     }
+}
+
+/// The order of a screen's stripes, for subpixel text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Lcd {
+    Rgb,
+    Bgr,
+}
+
+/// Coverage at three times the width made into a pixel's three stripes,
+/// smoothed across its neighbours by FreeType's default LCD filter so
+/// that edges are not fringed with color. Returns the first pixel, the
+/// width in pixels, and the coverages, three a pixel.
+fn lcd_filter(data: &[u8], left3: i32, w3: usize, h: usize, order: Lcd) -> (i32, usize, Vec<u8>) {
+    const TAPS: [u32; 5] = [0x08, 0x4D, 0x56, 0x4D, 0x08];
+    let first = (left3 - 2).div_euclid(3);
+    let last = (left3 + w3 as i32 + 2 + 2).div_euclid(3);
+    let w = (last - first).max(0) as usize;
+    let mut out = vec![0u8; w * 3 * h];
+    for y in 0..h {
+        let row = &data[y * w3..(y + 1) * w3];
+        let at = |sub: i32| -> u32 {
+            let i = sub - left3;
+            if i < 0 || i >= w3 as i32 { 0 } else { row[i as usize] as u32 }
+        };
+        for p in 0..w {
+            for s in 0..3 {
+                let sub = (first + p as i32) * 3 + s as i32;
+                let v: u32 = (0..5).map(|k| TAPS[k] * at(sub - 2 + k as i32)).sum::<u32>() / 256;
+                let ch = if order == Lcd::Bgr { 2 - s } else { s };
+                out[(y * w + p) * 3 + ch] = v.min(255) as u8;
+            }
+        }
+    }
+    (first, w, out)
 }
 
 /// A glyph's coverage as rasterized, before it is placed in a cell.
@@ -129,6 +178,8 @@ struct Raster {
     width: usize,
     height: usize,
     coverage: Vec<u8>,
+    /// Three coverages a pixel, red green blue, rather than one.
+    lcd: bool,
 }
 
 /// The terminal's font, regular and bold.
@@ -199,9 +250,10 @@ impl Fonts {
             shaped: [HashMap::new(), HashMap::new()],
             ligatures: choice.ligatures,
             scaler: ScaleContext::new(),
-            heading: UiFont::new(&ui, ui_px * 1.3),
-            small: UiFont::new(&ui, ui_px * 0.88),
-            ui: UiFont::new(&ui, ui_px),
+            lcd: choice.lcd,
+            heading: UiFont::new(&ui, ui_px * 1.3, choice.lcd),
+            small: UiFont::new(&ui, ui_px * 0.88, choice.lcd),
+            ui: UiFont::new(&ui, ui_px, choice.lcd),
         }
     }
 
@@ -241,7 +293,7 @@ impl Fonts {
         let cells = if narrow { 1 } else { 2 };
         let side = self.cell_h.min(cells * self.cell_w) as u32;
         let (w, h, pixels) = crate::emoji::twemoji(&c.to_string(), side)?;
-        Some(Glyph { left: (cells * self.cell_w - w) / 2, top: (self.cell_h - h) / 2, width: w as usize, height: h as usize, coverage: Vec::new(), color: Some(pixels) })
+        Some(Glyph { left: (cells * self.cell_w - w) / 2, top: (self.cell_h - h) / 2, width: w as usize, height: h as usize, coverage: Vec::new(), color: Some(pixels), lcd: false })
     }
 
     pub fn glyph(&mut self, c: char, style: u8) -> &Glyph {
@@ -255,7 +307,7 @@ impl Fonts {
                         None if style & 1 != 0 => &self.bold,
                         None => &self.regular,
                     };
-                    let r = face.raster(&mut self.scaler, face.font.lookup_glyph_index(c), self.px);
+                    let r = face.raster(&mut self.scaler, face.font.lookup_glyph_index(c), self.px, self.lcd);
                     self.place(r, style)
                 }
             };
@@ -268,7 +320,7 @@ impl Fonts {
     pub fn glyph_id(&mut self, id: u16, style: u8) -> &Glyph {
         if !self.by_id.contains_key(&(id, style)) {
             let face = if style & 1 != 0 { &self.bold } else { &self.regular };
-            let r = face.raster(&mut self.scaler, id, self.px);
+            let r = face.raster(&mut self.scaler, id, self.px, self.lcd);
             let g = self.place(r, style);
             self.by_id.insert((id, style), g);
         }
@@ -280,12 +332,13 @@ impl Fonts {
     fn place(&self, r: Raster, style: u8) -> Glyph {
         let top = self.baseline - r.top;
         if style & 2 == 0 || r.width == 0 {
-            return Glyph { left: r.left, top, width: r.width, height: r.height, coverage: r.coverage, color: None };
+            return Glyph { left: r.left, top, width: r.width, height: r.height, coverage: r.coverage, color: None, lcd: r.lcd };
         }
+        let n = if r.lcd { 3 } else { 1 };
         let slant = 0.2;
         let extra = (r.height as f32 * slant).ceil() as usize;
         let w = r.width + extra;
-        let mut out = vec![0u8; w * r.height];
+        let mut out = vec![0u8; w * r.height * n];
         // The shift is measured from the baseline, so the glyph leans
         // about where it stands.
         let base = r.top as f32;
@@ -293,17 +346,21 @@ impl Fonts {
             let shift = ((base - y as f32) * slant).max(0.0);
             let (whole, frac) = (shift.floor() as usize, shift.fract());
             for x in 0..r.width {
-                let v = r.coverage[y * r.width + x] as f32;
-                let at = x + whole;
-                if at < w {
-                    out[y * w + at] = (out[y * w + at] as f32 + v * (1.0 - frac)).min(255.0) as u8;
-                }
-                if at + 1 < w {
-                    out[y * w + at + 1] = (out[y * w + at + 1] as f32 + v * frac).min(255.0) as u8;
+                for ch in 0..n {
+                    let v = r.coverage[(y * r.width + x) * n + ch] as f32;
+                    let at = x + whole;
+                    if at < w {
+                        let o = &mut out[(y * w + at) * n + ch];
+                        *o = (*o as f32 + v * (1.0 - frac)).min(255.0) as u8;
+                    }
+                    if at + 1 < w {
+                        let o = &mut out[(y * w + at + 1) * n + ch];
+                        *o = (*o as f32 + v * frac).min(255.0) as u8;
+                    }
                 }
             }
         }
-        Glyph { left: r.left, top, width: w, height: r.height, coverage: out, color: None }
+        Glyph { left: r.left, top, width: w, height: r.height, coverage: out, color: None, lcd: r.lcd }
     }
 
     /// The glyph numbers for a run of text as the font's ligatures draw
@@ -343,6 +400,7 @@ impl Fonts {
 pub struct UiFont {
     face: Face,
     scaler: ScaleContext,
+    pub lcd: Option<Lcd>,
     pub px: f32,
     pub ascent: i32,
     pub height: i32,
@@ -350,11 +408,11 @@ pub struct UiFont {
 }
 
 impl UiFont {
-    fn new(face: &Face, px: f32) -> UiFont {
+    fn new(face: &Face, px: f32, lcd: Option<Lcd>) -> UiFont {
         let face = Face::new(face.bytes.clone(), face.index).expect("interface font");
         let m = face.font.horizontal_line_metrics(px).expect("line metrics");
         // The ascent on a whole pixel, as hinting puts the tops of letters.
-        UiFont { face, scaler: ScaleContext::new(), px, ascent: m.ascent.round() as i32, height: (m.ascent - m.descent).ceil() as i32, cache: HashMap::new() }
+        UiFont { face, scaler: ScaleContext::new(), lcd, px, ascent: m.ascent.round() as i32, height: (m.ascent - m.descent).ceil() as i32, cache: HashMap::new() }
     }
 
     /// A character's coverage, hinted as the terminal's are, with the
@@ -362,7 +420,7 @@ impl UiFont {
     pub fn glyph(&mut self, c: char) -> &(fontdue::Metrics, Vec<u8>) {
         if !self.cache.contains_key(&c) {
             let mut m = self.face.font.metrics(c, self.px);
-            let r = self.face.raster(&mut self.scaler, self.face.font.lookup_glyph_index(c), self.px);
+            let r = self.face.raster(&mut self.scaler, self.face.font.lookup_glyph_index(c), self.px, self.lcd);
             m.xmin = r.left;
             m.width = r.width;
             m.height = r.height;
@@ -494,7 +552,7 @@ mod shapes {
                     }
                 }
             }
-            return Some(Glyph { left: 0, top: 0, width: wu, height: hu, coverage: b.cov, color: None });
+            return Some(Glyph { left: 0, top: 0, width: wu, height: hu, coverage: b.cov, color: None, lcd: false });
         }
         // Rounded corners: a quarter of a circle from the middle of one
         // edge to the middle of the other, smoothed.
@@ -537,7 +595,7 @@ mod shapes {
             } else {
                 b.fill(0, ly, ox.ceil() as i32, ly + light, 255);
             }
-            return Some(Glyph { left: 0, top: 0, width: wu, height: hu, coverage: b.cov, color: None });
+            return Some(Glyph { left: 0, top: 0, width: wu, height: hu, coverage: b.cov, color: None, lcd: false });
         }
         let eighth_h = |n: i32| (h * n + 4) / 8;
         let eighth_w = |n: i32| (w * n + 4) / 8;
@@ -584,7 +642,7 @@ mod shapes {
             '▟' => quad(&mut b, [false, true, true, true]),
             _ => return None,
         }
-        Some(Glyph { left: 0, top: 0, width: wu, height: hu, coverage: b.cov, color: None })
+        Some(Glyph { left: 0, top: 0, width: wu, height: hu, coverage: b.cov, color: None, lcd: false })
     }
 }
 
@@ -603,4 +661,37 @@ fn emoji_by_default(c: char) -> bool {
         | 0x26AA..=0x26AB | 0x26BD..=0x26BE | 0x26C4..=0x26C5 | 0x26CE | 0x26D4 | 0x26EA | 0x26F2..=0x26F3 | 0x26F5 | 0x26FA | 0x26FD
         | 0x2705 | 0x270A..=0x270B | 0x2728 | 0x274C | 0x274E | 0x2753..=0x2755 | 0x2757 | 0x2795..=0x2797 | 0x27B0 | 0x27BF
         | 0x2B1B..=0x2B1C | 0x2B50 | 0x2B55)
+}
+
+/// Subpixel text as the setting asks: "rgb", "bgr" or "none", or "auto"
+/// to do as the desktop does. Chrome and other X11 programs follow
+/// Xft.rgba; on Wayland, GNOME's own setting says.
+pub fn lcd_for(setting: &str) -> Option<Lcd> {
+    match setting.trim().to_lowercase().as_str() {
+        "rgb" => return Some(Lcd::Rgb),
+        "bgr" => return Some(Lcd::Bgr),
+        "none" | "gray" | "grayscale" | "off" => return None,
+        _ => {}
+    }
+    static FOUND: std::sync::OnceLock<Option<Lcd>> = std::sync::OnceLock::new();
+    *FOUND.get_or_init(|| {
+        let run = |cmd: &str, args: &[&str]| Command::new(cmd).args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        let from = |order: &str| match order.trim().trim_matches('\'') {
+            "rgb" => Some(Lcd::Rgb),
+            "bgr" => Some(Lcd::Bgr),
+            _ => None,
+        };
+        if std::env::var_os("DISPLAY").is_some() {
+            if let Some(out) = run("xrdb", &["-query"]) {
+                if let Some(line) = out.lines().find(|l| l.starts_with("Xft.rgba:")) {
+                    return from(line.trim_start_matches("Xft.rgba:"));
+                }
+            }
+        }
+        let aa = run("gsettings", &["get", "org.gnome.desktop.interface", "font-antialiasing"])?;
+        if aa.trim().trim_matches('\'') != "rgba" {
+            return None;
+        }
+        from(&run("gsettings", &["get", "org.gnome.desktop.interface", "font-rgba-order"])?)
+    })
 }
