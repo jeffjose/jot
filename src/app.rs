@@ -376,12 +376,10 @@ impl App {
         self.changed();
     }
 
-    /// A new pane beside the one you are in, as a new tab is: split along
-    /// its longer side, in its folder.
+    /// A new pane to the right of the one you are in, as a new tab opens
+    /// beside the last, in its folder.
     fn new_pane(&mut self) {
-        let Some(p) = self.focused().and_then(|f| self.panes.get(&f)) else { return };
-        let dir = if p.rect.w >= p.rect.h * 2 { Dir::Across } else { Dir::Down };
-        self.split(dir);
+        self.split(Dir::Across);
     }
 
     /// Closes the pane you are in, as Ctrl W closes a tab, remembering

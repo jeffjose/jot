@@ -88,7 +88,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Alt V", "Split side by side"),
     ("Alt S", "Split one above another"),
     ("Alt H J K L", "Move to the pane left, down, up, right"),
-    ("Ctrl T", "New pane beside this one"),
+    ("Ctrl T", "New pane to the right of this one"),
     ("Ctrl W  Alt X", "Close the pane"),
     ("Ctrl Shift T", "Bring back the pane closed last"),
     ("Alt Shift M", "The pane alone, and back"),
