@@ -65,6 +65,16 @@ pub struct Editor {
     pub col: usize,
     /// What is made goes to the pane's command line, not its prompt.
     pub into_bar: bool,
+    /// Where a selection starts, row and column; it ends at the cursor.
+    pub anchor: Option<(usize, usize)>,
+    /// Where its text was drawn: the top left of row 0, column 0.
+    pub origin: (i32, i32),
+    /// A drag selecting; its last clicks, for double and triple ones.
+    pub drag: bool,
+    pub clicks: Option<(Instant, u8)>,
+    /// Its Run button, where it was drawn, and whether the pointer is on it.
+    pub run_at: Rect,
+    pub run_lit: bool,
 }
 
 impl App {
@@ -331,14 +341,14 @@ impl App {
         }
         let row = lines.len() - 1;
         let col = lines[row].len();
-        self.editor = Some(Editor { pane: id, lines, row, col, into_bar });
+        self.editor = Some(Editor { pane: id, lines, row, col, into_bar, anchor: None, origin: (0, 0), drag: false, clicks: None, run_at: Rect::default(), run_lit: false });
         self.full = true;
         self.redraw();
     }
 
     /// The edited line back where it came from: at the prompt, in place of
     /// what was there, or in the pane's command line. Run, with `run`.
-    fn submit_editor(&mut self, run: bool) {
+    pub(super) fn submit_editor(&mut self, run: bool) {
         let Some(e) = self.editor.take() else { return };
         let line = e.lines.iter().map(|l| l.iter().collect::<String>().trim().to_string()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
         if e.into_bar {
@@ -376,81 +386,25 @@ impl App {
     pub(super) fn editor_key(&mut self, event: &winit::event::KeyEvent) {
         let PhysicalKey::Code(code) = event.physical_key else { return };
         let (ctrl, shift) = (self.mods.control_key(), self.mods.shift_key());
-        let pasted = if ctrl && code == KeyCode::KeyV { self.clip_get(false) } else { None };
-        let Some(e) = &mut self.editor else { return };
         match code {
-            KeyCode::Escape => self.editor = None,
+            KeyCode::Escape => {
+                self.editor = None;
+                self.full = true;
+                return self.redraw();
+            }
             KeyCode::Enter | KeyCode::NumpadEnter if ctrl => return self.submit_editor(true),
             KeyCode::Enter | KeyCode::NumpadEnter if shift => return self.submit_editor(false),
-            KeyCode::Enter | KeyCode::NumpadEnter => {
-                let rest = e.lines[e.row].split_off(e.col);
-                e.lines.insert(e.row + 1, rest);
-                e.row += 1;
-                e.col = 0;
-            }
-            KeyCode::Backspace => {
-                if e.col > 0 {
-                    e.col -= 1;
-                    e.lines[e.row].remove(e.col);
-                } else if e.row > 0 {
-                    let line = e.lines.remove(e.row);
-                    e.row -= 1;
-                    e.col = e.lines[e.row].len();
-                    e.lines[e.row].extend(line);
-                }
-            }
-            KeyCode::Delete => {
-                if e.col < e.lines[e.row].len() {
-                    e.lines[e.row].remove(e.col);
-                } else if e.row + 1 < e.lines.len() {
-                    let line = e.lines.remove(e.row + 1);
-                    e.lines[e.row].extend(line);
-                }
-            }
-            KeyCode::ArrowLeft => {
-                if e.col > 0 {
-                    e.col -= 1;
-                } else if e.row > 0 {
-                    e.row -= 1;
-                    e.col = e.lines[e.row].len();
-                }
-            }
-            KeyCode::ArrowRight => {
-                if e.col < e.lines[e.row].len() {
-                    e.col += 1;
-                } else if e.row + 1 < e.lines.len() {
-                    e.row += 1;
-                    e.col = 0;
-                }
-            }
-            KeyCode::ArrowUp if e.row > 0 => {
-                e.row -= 1;
-                e.col = e.col.min(e.lines[e.row].len());
-            }
-            KeyCode::ArrowDown if e.row + 1 < e.lines.len() => {
-                e.row += 1;
-                e.col = e.col.min(e.lines[e.row].len());
-            }
-            KeyCode::Home => e.col = 0,
-            KeyCode::End => e.col = e.lines[e.row].len(),
-            KeyCode::KeyV if ctrl => {
-                if let Some(t) = pasted {
-                    for c in t.chars().filter(|c| !c.is_control()) {
-                        e.lines[e.row].insert(e.col, c);
-                        e.col += 1;
-                    }
-                }
-            }
-            _ => {
-                if !ctrl && !self.mods.alt_key() {
-                    if let Some(t) = event.text.as_deref().filter(|t| !t.chars().any(char::is_control)) {
-                        for c in t.chars() {
-                            e.lines[e.row].insert(e.col, c);
-                            e.col += 1;
-                        }
-                    }
-                }
-            }
+            _ => {}
+        }
+        let pasted = if ctrl && code == KeyCode::KeyV { self.clip_get(false) } else { None };
+        let copied: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+        let mods = self.mods;
+        if let Some(e) = &mut self.editor {
+            let copied = &copied;
+            e.key(code, mods, event.text.as_deref(), &mut || pasted.clone(), &mut |t| *copied.borrow_mut() = Some(t));
+        }
+        if let Some(t) = copied.into_inner() {
+            self.clip_set(t, false);
         }
         self.full = true;
         self.redraw();
@@ -463,7 +417,7 @@ impl App {
         let (cw, ch) = (self.fonts.cell_w, self.fonts.cell_h);
         let scale = self.scale;
         let px = |v: f32| (v * scale).round() as i32;
-        let (lines, row, col) = (e.lines.clone(), e.row, e.col);
+        let (lines, row, col, sel) = (e.lines.clone(), e.row, e.col, e.selection());
         let pad = px(14.0);
         let head = self.fonts.ui.height + px(18.0);
         let foot = self.fonts.small.height + px(18.0);
@@ -475,6 +429,11 @@ impl App {
         let body = Rect { x: r.x + 1, y: r.y + head, w: r.w - 2, h: r.h - head - foot };
         self.canvas.fill(body, self.cur_theme.bg);
         let gutter = px(28.0);
+        let origin = (body.x + pad + gutter, body.y + pad);
+        if let Some(e) = &mut self.editor {
+            e.origin = origin;
+        }
+        let sel_color = mix(self.cur_accent, self.cur_theme.bg, 150);
         for (i, line) in lines.iter().enumerate() {
             let y = body.y + pad + i as i32 * ch;
             if y + ch > body.y + body.h {
@@ -482,6 +441,18 @@ impl App {
             }
             let n = format!("{}", i + 1);
             let sh = self.fonts.small.height;
+            // The part of this line selected, lit under its text.
+            if let Some(((r0, c0), (r1, c1))) = sel {
+                if (r0..=r1).contains(&i) {
+                    let from = if i == r0 { c0 } else { 0 };
+                    let to = if i == r1 { c1 } else { line.len() + 1 };
+                    let x0 = origin.0 + from as i32 * cw;
+                    let w = ((to.saturating_sub(from)) as i32 * cw).min(body.x + body.w - pad - x0);
+                    if w > 0 {
+                        self.canvas.fill(Rect { x: x0, y, w, h: ch }, sel_color);
+                    }
+                }
+            }
             self.canvas.text(&mut self.fonts.small, &n, (body.x + pad) as f32, y + (ch - sh) / 2, c.faint, body);
             for (k, chr) in line.iter().enumerate() {
                 let x = body.x + pad + gutter + k as i32 * cw;
@@ -497,7 +468,23 @@ impl App {
                 self.canvas.fill(Rect { x: body.x + pad + gutter + col as i32 * cw, y, w: px(2.0).max(2), h: ch }, self.cur_accent);
             }
         }
-        let hint = "Enter  new line      Ctrl Enter  run      Shift Enter  back to the prompt      Esc  cancel";
+        let hint = "Enter  new line      Shift Enter  back to the prompt      Esc  cancel";
+        // Run, at the bottom right, as Ctrl Enter.
+        let lit = self.editor.as_ref().is_some_and(|e| e.run_lit);
+        let label = "Run";
+        let keys = "Ctrl Enter";
+        let (uh, smh) = (self.fonts.ui.height, self.fonts.small.height);
+        let bh = uh + px(10.0);
+        let bw = self.fonts.ui.width(label) + px(14.0) + self.fonts.small.width(keys) + px(24.0);
+        let run = Rect { x: r.x + r.w - pad - bw, y: r.y + r.h - foot + (foot - bh) / 2, w: bw, h: bh };
+        let accent = self.cur_accent;
+        self.canvas.round_fill(run, px(7.0), if lit { mix(accent, 0xFFFFFF, 30) } else { accent }, 255);
+        let fg = crate::canvas::on(accent);
+        let tx = self.canvas.text(&mut self.fonts.ui, label, (run.x + px(12.0)) as f32, run.y + (bh - uh) / 2, fg, run);
+        self.canvas.text(&mut self.fonts.small, keys, (tx + px(10.0)) as f32, run.y + (bh - smh) / 2, mix(accent, fg, 170), run);
+        if let Some(e) = &mut self.editor {
+            e.run_at = run;
+        }
         self.canvas.text(&mut self.fonts.small, hint, (r.x + pad) as f32, r.y + r.h - foot + px(9.0), c.dim, r);
         self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
     }

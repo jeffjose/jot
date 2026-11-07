@@ -326,6 +326,7 @@ impl App {
             }
             Action::FilterStop(id) => self.stop_filter(id),
             Action::NotifyOff(id) => self.set_notify(id, false),
+            Action::FieldCut | Action::FieldCopy | Action::FieldPaste | Action::FieldSelectAll if self.editor.is_some() => self.editor_menu_do(&action),
             Action::FieldCut | Action::FieldCopy | Action::FieldPaste | Action::FieldSelectAll => self.bar_field_do(&action),
             Action::Palette => self.open_palette(),
             Action::Submenu(_) => {}

@@ -32,6 +32,7 @@ mod automate;
 mod bar;
 mod commands;
 mod copymode;
+mod editor;
 mod info;
 mod dnd;
 mod find;
@@ -1145,7 +1146,7 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
-        if (button == MouseButton::Left && (self.offer_click(event_loop) || self.toast_click() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
+        if (button == MouseButton::Left && (self.offer_click(event_loop) || self.toast_click() || self.editor_run_click() || self.editor_press() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
             return;
         }
         let (x, y) = self.pointer;
@@ -1190,7 +1191,7 @@ impl App {
             }
         }
         // The command line's text, right clicked: a text box's menu.
-        if button == MouseButton::Right && self.bar_field_menu() {
+        if button == MouseButton::Right && (self.editor_menu() || self.bar_field_menu()) {
             return;
         }
         // A tag on a caption, right clicked: what can be done with it.
@@ -1294,7 +1295,7 @@ impl App {
                 }
             }
             None => {
-                if self.bar_field_drag(x, y) || self.bar_field_hover(x, y) || self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
+                if self.editor_drag(x, y) || self.editor_run_hover(x, y) || self.editor_hover(x, y) || self.bar_field_drag(x, y) || self.bar_field_hover(x, y) || self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
                     return;
                 }
                 self.update_link();
@@ -1324,6 +1325,7 @@ impl App {
 
     fn mouse_release(&mut self) {
         self.bar_field_release();
+        self.editor_release();
         if let Some((id, b)) = self.mouse_held.take() {
             self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_RELEASE, Some(b));
             return;
