@@ -114,7 +114,7 @@ impl App {
         }
     }
 
-    /// The colours of a cell in a match: the picked one's, or any match's.
+    /// The colors of a cell in a match: the picked one's, or any match's.
     pub(super) fn match_colors(all: &[Span], picked: &[Span], x: u16, y: u16, fg: u32, bg: u32) -> (u32, u32) {
         let inside = |s: &&Span| s.y == y && x >= s.x0 && x <= s.x1;
         if picked.iter().any(|s| inside(&s)) {

@@ -40,7 +40,7 @@ mod restore;
 mod settings;
 mod toast;
 
-// Colours from Radix, as the screen setup has them.
+// Colors from Radix, as the screen setup has them.
 const STATUS_BG: u32 = 0x111111;
 const STATUS_FG: u32 = 0xB4B4B4;
 const CURRENT_BG: u32 = 0x30A46C; // green 9
@@ -129,7 +129,7 @@ pub struct App {
     font_size: f32,
     scale: f32,
     theme: &'static Theme,
-    /// The colour of what is picked out: the pane you are in, menus.
+    /// The color of what is picked out: the pane you are in, menus.
     accent: u32,
     /// The accent and theme now: the current workspace's own, else the
     /// settings'. What is drawn takes these.

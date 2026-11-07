@@ -6,7 +6,7 @@
 
 # ---- Look -----------------------------------------------------------
 
-# The colours, by name:
+# The colors, by name:
 #   Dark 2026  Light 2026  Dark Modern  Light Modern  Catppuccin Mocha
 #   Catppuccin Latte
 #   Tokyo Night  Dracula  One Dark  GitHub Dark  Nord  Gruvbox Dark
@@ -18,8 +18,8 @@
 # for this run).
 # font-size = 14
 
-# The colour of what is picked out: the pane you are in, menus,
-# switches. A Radix colour by name, or any colour as "RRGGBB":
+# The color of what is picked out: the pane you are in, menus,
+# switches. A Radix color by name, or any color as "RRGGBB":
 #   indigo  blue  iris  violet  purple  plum  pink  crimson  ruby  red
 #   tomato  orange  amber  gold  brown  grass  green  jade  teal  cyan
 # accent = "indigo"
@@ -31,7 +31,7 @@
 
 # Text is made darker or lighter until it has this much contrast with
 # its ground, as VS Code's terminal does (its 4.5), so a prompt made for
-# a dark theme can still be read on a light one. 1 leaves colours alone.
+# a dark theme can still be read on a light one. 1 leaves colors alone.
 # min-contrast = 4.5
 
 # The height of a line, as a share of the font's own: 1.1 is VS Code's.

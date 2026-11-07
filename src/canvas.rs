@@ -27,7 +27,7 @@ pub fn mix(a: u32, b: u32, share: u32) -> u32 {
     blend(a, b, share)
 }
 
-/// The colour for words on `color`: white, or near black on one light
+/// The color for words on `color`: white, or near black on one light
 /// enough that white would be lost on it.
 pub fn on(color: u32) -> u32 {
     let c = |shift: u32| f64::from(color >> shift & 0xFF);
@@ -192,7 +192,7 @@ impl Canvas {
     /// left at `(x, y)`, kept inside `clip`.
     pub fn glyph(&mut self, g: &Glyph, x: i32, y: i32, color: u32, clip: Rect) {
         if let Some(px) = &g.color {
-            // An emoji: its own colours, laid over by their alpha.
+            // An emoji: its own colors, laid over by their alpha.
             let (x0, y0, x1, y1) = self.bounds(clip);
             let (gx, gy) = (x + g.left, y + g.top);
             for py in gy.max(y0)..(gy + g.height as i32).min(y1) {
@@ -293,14 +293,14 @@ fn blend_linear(dst: u32, src: u32, a: u32) -> u32 {
     ch(16) | ch(8) | ch(0)
 }
 
-/// How light a colour is to the eye, 0 to 1, as WCAG reckons it.
+/// How light a color is to the eye, 0 to 1, as WCAG reckons it.
 fn luminance(c: u32) -> f32 {
     let (lin, _) = tables();
     let l = |shift: u32| lin[(c >> shift & 0xff) as usize] as f32 / 4095.0;
     0.2126 * l(16) + 0.7152 * l(8) + 0.0722 * l(0)
 }
 
-/// The contrast between two colours, 1 to 21.
+/// The contrast between two colors, 1 to 21.
 pub fn contrast(a: u32, b: u32) -> f32 {
     let (la, lb) = (luminance(a), luminance(b));
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)

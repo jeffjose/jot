@@ -1,4 +1,4 @@
-//! Colour themes: the terminal's sixteen colours, its ground, text,
+//! Color themes: the terminal's sixteen colors, its ground, text,
 //! cursor and selection, and jterm's own chrome made from them. The
 //! default is VS Code's 2026 Dark, as its terminal shows it.
 
@@ -43,7 +43,7 @@ const fn t(name: &'static str, dark: bool, bg: u32, fg: u32, cursor: u32, select
 pub static THEMES: &[Theme] = &[
     // VS Code's 2026 themes, from theme-defaults/themes/2026-*.json: their
     // terminal ground, text, cursor and selection (its translucent blue
-    // laid over the ground), and VS Code's own sixteen colours, which
+    // laid over the ground), and VS Code's own sixteen colors, which
     // neither changes.
     t("Dark 2026", true, 0x191A1B, 0xCCCCCC, 0xBFBFBF, 0x1F323B, [
         0x000000, 0xCD3131, 0x0DBC79, 0xE5E510, 0x2472C8, 0xBC3FBC, 0x11A8CD, 0xE5E5E5,
@@ -119,7 +119,7 @@ pub static THEMES: &[Theme] = &[
     ]),
 ];
 
-/// The colours the accent can be, by name: Radix's ninth step, as jog
+/// The colors the accent can be, by name: Radix's ninth step, as jog
 /// names them. Indigo is jog's, and the menus'.
 pub static ACCENTS: &[(&str, u32)] = &[
     ("indigo", 0x3E63DD),
@@ -155,7 +155,7 @@ pub fn accent(name: &str) -> u32 {
         .unwrap_or(ACCENTS[0].1)
 }
 
-/// The colours of jterm's own windows (settings, the palette, menus),
+/// The colors of jterm's own windows (settings, the palette, menus),
 /// made from a theme so they sit with it: light on a light theme.
 #[derive(Clone, Copy)]
 pub struct Chrome {

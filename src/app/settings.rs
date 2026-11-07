@@ -51,7 +51,7 @@ pub enum Hit {
     /// A workspace's accent: an index into the accents, or none for the settings'.
     WsAccent(usize, usize),
     WsTheme(usize),
-    /// A workspace's accent swatch, which opens its colours.
+    /// A workspace's accent swatch, which opens its colors.
     WsAccentOpen(usize),
     /// A workspace's name, which a click lets you change.
     WsName(usize),
@@ -59,6 +59,8 @@ pub enum Hit {
     /// Closing a workspace: once to ask, again to do it.
     WsClose(usize),
     WsNew,
+    /// Not closing the workspace after all.
+    WsKeep,
 }
 
 pub struct Dropdown {
@@ -92,12 +94,14 @@ pub struct Settings {
     /// The page shown: Appearance, Fonts, Keys or About.
     pub section: usize,
     pub dropdown: Option<Dropdown>,
-    /// A workspace's colours open, under its swatch.
+    /// A workspace's colors open, under its swatch.
     pub accent_pop: Option<(usize, Rect)>,
     /// A workspace being renamed, and its name so far.
     pub renaming: Option<(usize, crate::field::TextField)>,
     /// A workspace whose close button has been clicked once.
     pub closing: Option<usize>,
+    /// A color typed as hex in a workspace's colors.
+    pub hex: crate::field::TextField,
     /// The scrollbar's thumb being dragged: where from, and the scroll then.
     pub drag: Option<(i32, i32)>,
     /// The installed fonts, read once: monospaced, and all.
@@ -160,7 +164,7 @@ impl App {
     pub(super) fn open_settings(&mut self) {
         self.palette = None;
         self.menu = None;
-        self.settings = Some(Settings { scroll: 0, hover: None, hits: Vec::new(), content_h: 0, view_h: 1, tops: Vec::new(), section: 0, dropdown: None, accent_pop: None, renaming: None, closing: None, drag: None, mono: None, all: None });
+        self.settings = Some(Settings { scroll: 0, hover: None, hits: Vec::new(), content_h: 0, view_h: 1, tops: Vec::new(), section: 0, dropdown: None, accent_pop: None, renaming: None, closing: None, hex: crate::field::TextField::default(), drag: None, mono: None, all: None });
         self.full = true;
         self.redraw();
     }
@@ -399,9 +403,12 @@ impl App {
             Hit::Reset(key) => self.reset(key),
             Hit::Close => return self.close_settings(),
             Hit::WsAccentOpen(wi) => {
+                let typed = self.workspaces.get(wi).and_then(|w| w.accent.clone()).filter(|a| a.starts_with('#')).map(|a| a[1..].to_string()).unwrap_or_default();
                 let anchor = self.settings.as_ref().and_then(|s| s.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r)).unwrap_or_default();
                 if let Some(s) = &mut self.settings {
                     s.accent_pop = if s.accent_pop.is_some_and(|(w, _)| w == wi) { None } else { Some((wi, anchor)) };
+                    s.hex = crate::field::TextField::new(&typed);
+                    s.hex.anchor = Some(0);
                 }
             }
             Hit::WsAccent(wi, i) => {
@@ -420,6 +427,7 @@ impl App {
                 self.start_rename(wi);
             }
             Hit::WsGo(wi) => self.go_to(wi),
+            Hit::WsKeep => {}
             // The first click asks; the second, in settings_click, closes.
             Hit::WsClose(wi) => {
                 if let Some(s) = &mut self.settings {
@@ -474,6 +482,37 @@ impl App {
             }
             if let Some(s) = copied.into_inner() {
                 self.clip_set(s, false);
+            }
+            self.full = true;
+            return self.redraw();
+        }
+        // With a workspace's colors open, the keys go to the hex box.
+        if let Some((wi, _)) = self.settings.as_ref().and_then(|s| s.accent_pop) {
+            match code {
+                KeyCode::Escape => {
+                    if let Some(s) = &mut self.settings {
+                        s.accent_pop = None;
+                    }
+                }
+                KeyCode::Enter | KeyCode::NumpadEnter => {
+                    let typed = self.settings.as_ref().map(|s| s.hex.string()).unwrap_or_default();
+                    if let Some(color) = hex_color(&typed) {
+                        if let Some(ws) = self.workspaces.get_mut(wi) {
+                            ws.accent = Some(format!("#{color:06x}"));
+                        }
+                        if let Some(s) = &mut self.settings {
+                            s.accent_pop = None;
+                        }
+                        self.unsaved = true;
+                    }
+                }
+                _ => {
+                    let pasted = if self.mods.control_key() && code == KeyCode::KeyV { self.clip_get(false) } else { None };
+                    let mods = self.mods;
+                    if let Some(s) = &mut self.settings {
+                        s.hex.key(code, mods, event.text.as_deref(), &mut || pasted.clone(), &mut |_| {});
+                    }
+                }
             }
             self.full = true;
             return self.redraw();
@@ -581,7 +620,7 @@ impl App {
             self.redraw();
         }
         let list_open = self.settings.as_ref().is_some_and(|s| s.dropdown.is_some());
-        // With the colours open, a click picks one, or closes them.
+        // With the colors open, a click picks one, or closes them.
         if self.settings.as_ref().is_some_and(|s| s.accent_pop.is_some()) {
             match hit {
                 Some(h @ Hit::WsAccent(..)) => self.settings_do(h),
@@ -753,7 +792,6 @@ impl App {
         let field_h = uh + px(14.0);
         let row_h = uh + px(4.0) + sh_ + 2 * row_pad;
         let rule = mix(c.panel, c.edge, 160);
-        let field_w = px(260.0).min(body.w / 2);
         let scroll = st.scroll;
 
         // A heading for each section.
@@ -797,7 +835,7 @@ impl App {
         if section == 0 {
         // ---- Appearance ----
         heading(canvas, fonts, &mut y, &mut tops, "Appearance");
-        title(canvas, fonts, &mut page, y, "Color theme", "The terminal's colours, and the panes' around them.", Key::Theme);
+        title(canvas, fonts, &mut page, y, "Color theme", "The terminal's colors, and the panes' around them.", Key::Theme);
         y += row_h - row_pad / 2;
         for dark in [true, false] {
             canvas.text(&mut fonts.small, if dark { "DARK" } else { "LIGHT" }, body.x as f32, y, c.faint, view);
@@ -811,7 +849,7 @@ impl App {
                 let (col, rowi) = (k as i32 % cols, k as i32 / cols);
                 let card = Rect { x: body.x + col * (card_w + gap), y: y + rowi * (card_h + gap), w: card_w, h: card_h };
                 canvas.round_fill(card, px(8.0), t.bg, 255);
-                // A few lines of code in the theme's colours.
+                // A few lines of code in the theme's colors.
                 let bar_h = px(5.0);
                 let lines: [&[(u32, f32)]; 3] = [&[(t.ansi[4], 26.0), (t.fg, 46.0)], &[(t.ansi[2], 18.0), (t.ansi[3], 34.0), (t.fg, 14.0)], &[(t.ansi[5], 14.0), (t.fg, 40.0), (t.ansi[1], 16.0)]];
                 for (li, segs) in lines.iter().enumerate() {
@@ -887,10 +925,10 @@ impl App {
         }
         if section == 1 {
         heading(canvas, fonts, &mut y, &mut tops, "Workspaces");
-        canvas.text(&mut fonts.small, "Each can have its own accent and theme; Default is the one under Appearance. Click a name to rename it.", body.x as f32, y - px(8.0), c.dim, view);
+        canvas.text(&mut fonts.small, "Click a name to rename it. Default is the accent or theme under Appearance.", body.x as f32, y - px(8.0), c.dim, view);
         y += sh_ + px(12.0);
         {
-            let mid = title(canvas, fonts, &mut page, y, "A colour for each", "All but the first get an accent of their own, kept by name, unless you pick one.", Key::WsColors);
+            let mid = title(canvas, fonts, &mut page, y, "A color for each", "All but the first get an accent of their own, kept by name, unless you pick one.", Key::WsColors);
             let (sw, sh) = (px(40.0), px(22.0));
             let pill = Rect { x: right - sw, y: mid - sh / 2, w: sw, h: sh };
             canvas.round_fill(pill, sh / 2, if ws_colors { accent } else { c.hover }, 255);
@@ -898,19 +936,43 @@ impl App {
             let kx = if ws_colors { pill.x + sw - k - px(3.0) } else { pill.x + px(3.0) };
             canvas.round_fill(Rect { x: kx, y: pill.y + px(3.0), w: k, h: k }, k / 2, 0xFFFFFF, 255);
             page.push((Rect { x: pill.x - px(4.0), y: pill.y - px(4.0), w: sw + px(8.0), h: sh + px(8.0) }, Hit::Toggle(Key::WsColors)));
-            y += row_h;
-            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
-            y += px(16.0);
+            y += row_h + px(16.0);
         }
+        // The workspaces as a list in a box, a row each, its controls in
+        // columns at the right, and a row at the end for a new one.
         let many = ws_rows.len() > 1;
+        let rh = px(52.0);
+        let group = Rect { x: body.x, y, w: body.w, h: rh * (ws_rows.len() as i32 + 1) };
+        canvas.round_fill(group, px(10.0), c.side, 255);
+        let (gap, ib) = (px(10.0), px(30.0));
+        let x_close = group.x + group.w - gap - ib;
+        let x_go = x_close - px(4.0) - ib;
+        let tw = px(180.0).min(body.w / 4);
+        let x_theme = x_go - px(10.0) - tw;
+        let aw = px(110.0);
+        let x_acc = x_theme - px(8.0) - aw;
+        let dot = px(2.0).max(2);
         for (wi, (name, accent_name, theme_name, here)) in ws_rows.iter().enumerate() {
-            // The workspace's name, its accent as a dot.
+            let top = group.y + wi as i32 * rh;
+            if wi > 0 {
+                canvas.fill(Rect { x: group.x + px(14.0), y: top, w: group.w - px(28.0), h: 1 }, c.edge);
+            }
+            let cy = top + rh / 2;
+            let ctl = |x: i32, w: i32| Rect { x, y: cy - field_h / 2, w, h: field_h };
             let (its, auto) = ws_given.get(wi).copied().unwrap_or((accent, false));
-            canvas.round_fill(Rect { x: body.x, y: y + (field_h - px(10.0)) / 2, w: px(10.0), h: px(10.0) }, px(5.0), its, 255);
-            let ty = y + (field_h - uh) / 2;
+            // Its number on its color.
+            let d = px(24.0);
+            let badge = Rect { x: group.x + px(14.0), y: cy - d / 2, w: d, h: d };
+            canvas.round_fill(badge, d / 2, its, 255);
+            let num = format!("{}", wi + 1);
+            let nw = fonts.small.width(&num);
+            canvas.text(&mut fonts.small, &num, (badge.x + (d - nw) / 2) as f32, cy - sh_ / 2, on(its), badge);
+            // Its name, which a click makes a field.
+            let nx = badge.x + d + px(10.0);
+            let ty = cy - uh / 2;
             let end = match renaming.as_ref().filter(|(rw, _)| *rw == wi) {
                 Some((_, field)) => {
-                    let b = Rect { x: body.x + px(12.0), y, w: px(200.0).min(body.w / 4), h: field_h };
+                    let b = ctl(nx, px(220.0).min(x_acc - px(16.0) - nx));
                     canvas.round_fill(b, px(7.0), c.field, 255);
                     canvas.ring(b, px(7.0), 1, accent);
                     field.draw(canvas, &mut fonts.ui, b.x + px(8.0), ty, c.text, mix(accent, c.panel, 140), true, b);
@@ -918,77 +980,94 @@ impl App {
                     b.x + b.w
                 }
                 None => {
-                    let b = Rect { x: body.x + px(12.0), y, w: fonts.ui.width(name) + px(16.0), h: field_h };
+                    let room = x_acc - px(90.0) - nx;
+                    let b = ctl(nx, (fonts.ui.width(name) + px(16.0)).min(room));
                     if hover == Some(Hit::WsName(wi)) {
                         canvas.round_fill(b, px(7.0), c.hover, 255);
                     }
-                    canvas.text(&mut fonts.ui, name, (b.x + px(8.0)) as f32, ty, c.text, view);
+                    canvas.text_fit(&mut fonts.ui, name, b.x + px(8.0), ty, b.w - px(16.0), c.text, b);
                     page.push((b, Hit::WsName(wi)));
                     b.x + b.w
                 }
             };
             if *here {
-                canvas.text(&mut fonts.small, "you are here", (end + px(6.0)) as f32, y + (field_h - sh_) / 2, c.faint, view);
-            } else {
-                let b = Rect { x: end + px(2.0), y: y + (field_h - sh_ - px(8.0)) / 2, w: fonts.small.width("Go to") + px(12.0), h: sh_ + px(8.0) };
-                if hover == Some(Hit::WsGo(wi)) {
-                    canvas.round_fill(b, px(5.0), c.hover, 255);
+                let t = "current";
+                let pw = fonts.small.width(t) + px(14.0);
+                let pill = Rect { x: end + px(6.0), y: cy - (sh_ + px(6.0)) / 2, w: pw, h: sh_ + px(6.0) };
+                canvas.round_fill(pill, pill.h / 2, c.hover, 255);
+                canvas.text(&mut fonts.small, t, (pill.x + px(7.0)) as f32, pill.y + px(3.0), c.dim, pill);
+            }
+            if closing == Some(wi) {
+                // Asked to close: what it means, and the two ways out.
+                let bw = fonts.ui.width("Close") + px(28.0);
+                let kw = fonts.ui.width("Keep") + px(28.0);
+                let close = ctl(group.x + group.w - gap - bw, bw);
+                let keep = ctl(close.x - px(8.0) - kw, kw);
+                canvas.round_fill(close, px(7.0), if hover == Some(Hit::WsClose(wi)) { mix(DANGER, 0xFFFFFF, 30) } else { DANGER }, 255);
+                canvas.text(&mut fonts.ui, "Close", (close.x + px(14.0)) as f32, ty, 0xFFFFFF, close);
+                canvas.round_fill(keep, px(7.0), if hover == Some(Hit::WsKeep) { c.hover } else { c.field }, 255);
+                canvas.ring(keep, px(7.0), 1, c.edge);
+                canvas.text(&mut fonts.ui, "Keep", (keep.x + px(14.0)) as f32, ty, c.text, keep);
+                let ask = "Its panes close too.";
+                let qw = fonts.small.width(ask);
+                canvas.text(&mut fonts.small, ask, (keep.x - px(12.0) - qw) as f32, cy - sh_ / 2, c.dim, view);
+                page.push((close, Hit::WsClose(wi)));
+                page.push((keep, Hit::WsKeep));
+                continue;
+            }
+            // Its accent: the color and what it is, opening the colors.
+            let ab = ctl(x_acc, aw);
+            canvas.round_fill(ab, px(7.0), if hover == Some(Hit::WsAccentOpen(wi)) { c.hover } else { c.field }, 255);
+            canvas.ring(ab, px(7.0), 1, c.edge);
+            let sd = px(14.0);
+            canvas.round_fill(Rect { x: ab.x + px(10.0), y: cy - sd / 2, w: sd, h: sd }, sd / 2, its, 255);
+            let its_name = accent_name.clone().map(|n| if n.starts_with('#') { n } else { capitalize(&n) }).unwrap_or_else(|| if auto { "Auto" } else { "Default" }.into());
+            canvas.text_fit(&mut fonts.ui, &its_name, ab.x + px(32.0), ty, aw - px(56.0), if accent_name.is_some() { c.text } else { c.dim }, ab);
+            chevron(canvas, ab.x + ab.w - px(16.0), cy, px(4.0), c.dim);
+            page.push((ab, Hit::WsAccentOpen(wi)));
+            // Its theme.
+            let tb = ctl(x_theme, tw);
+            canvas.round_fill(tb, px(7.0), if hover == Some(Hit::WsTheme(wi)) { c.hover } else { c.field }, 255);
+            canvas.ring(tb, px(7.0), 1, c.edge);
+            let shown = theme_name.clone().unwrap_or_else(|| "Default theme".into());
+            canvas.text_fit(&mut fonts.ui, &shown, tb.x + px(12.0), ty, tw - px(40.0), if theme_name.is_some() { c.text } else { c.dim }, tb);
+            chevron(canvas, tb.x + tb.w - px(16.0), cy, px(4.0), c.dim);
+            page.push((tb, Hit::WsTheme(wi)));
+            // Go there, and close it: icons.
+            if !*here {
+                let b = ctl(x_go, ib);
+                let lit = hover == Some(Hit::WsGo(wi));
+                if lit {
+                    canvas.round_fill(b, px(7.0), c.hover, 255);
                 }
-                canvas.text(&mut fonts.small, "Go to", (b.x + px(6.0)) as f32, b.y + px(4.0), accent_text, view);
+                arrow(canvas, b.x + ib / 2, cy, px(5.0), dot, if lit { c.text } else { c.dim });
                 page.push((b, Hit::WsGo(wi)));
             }
-            // Close, at the right: once shows what it will do, again does it.
-            let mut edge = right;
             if many {
-                let asking = closing == Some(wi);
-                let cw = if asking { fonts.ui.width("Close it") + px(24.0) } else { field_h };
-                let b = Rect { x: right - cw, y, w: cw, h: field_h };
+                let b = ctl(x_close, ib);
                 let lit = hover == Some(Hit::WsClose(wi));
-                if asking {
-                    canvas.round_fill(b, px(7.0), if lit { mix(DANGER, 0xFFFFFF, 30) } else { DANGER }, 255);
-                    canvas.text(&mut fonts.ui, "Close it", (b.x + px(12.0)) as f32, ty, 0xFFFFFF, b);
-                } else {
-                    if lit {
-                        canvas.round_fill(b, px(7.0), c.hover, 255);
-                    }
-                    let (cx, cy, arm, dot) = (b.x + cw / 2, b.y + field_h / 2, px(4.0), px(2.0).max(2));
-                    for t in -arm..=arm {
-                        canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy + t - dot / 2, w: dot, h: dot }, dot / 2, c.dim, 255);
-                        canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy - t - dot / 2, w: dot, h: dot }, dot / 2, c.dim, 255);
-                    }
+                if lit {
+                    canvas.round_fill(b, px(7.0), c.hover, 255);
                 }
+                cross(canvas, b.x + ib / 2, cy, px(4.0), dot, if lit { DANGER } else { c.dim });
                 page.push((b, Hit::WsClose(wi)));
-                edge = b.x - px(8.0);
             }
-            // Its theme.
-            let field = Rect { x: edge - field_w, y, w: field_w, h: field_h };
-            canvas.round_fill(field, px(7.0), if hover == Some(Hit::WsTheme(wi)) { c.hover } else { c.field }, 255);
-            canvas.ring(field, px(7.0), 1, c.edge);
-            let shown = theme_name.clone().unwrap_or_else(|| "Default theme".into());
-            canvas.text_fit(&mut fonts.ui, &shown, field.x + px(12.0), field.y + (field_h - uh) / 2, field_w - px(44.0), if theme_name.is_some() { c.text } else { c.dim }, field);
-            page.push((field, Hit::WsTheme(wi)));
-            // Its accent, beside: a swatch of it, which opens the colours.
-            let its_name = accent_name.clone().unwrap_or_else(|| if auto { "Auto" } else { "Default" }.into());
-            let sw = fonts.ui.width(&its_name) + px(52.0);
-            let swatch = Rect { x: field.x - px(10.0) - sw, y, w: sw, h: field_h };
-            canvas.round_fill(swatch, px(7.0), if hover == Some(Hit::WsAccentOpen(wi)) { c.hover } else { c.field }, 255);
-            canvas.ring(swatch, px(7.0), 1, c.edge);
-            let d = px(14.0);
-            canvas.round_fill(Rect { x: swatch.x + px(10.0), y: swatch.y + (field_h - d) / 2, w: d, h: d }, d / 2, its, 255);
-            canvas.text(&mut fonts.ui, &its_name, (swatch.x + px(32.0)) as f32, swatch.y + (field_h - uh) / 2, if accent_name.is_some() { c.text } else { c.dim }, swatch);
-            page.push((swatch, Hit::WsAccentOpen(wi)));
-            y += field_h + px(10.0);
-            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
-            y += px(16.0);
         }
         // A new one, in the focused pane's folder, named as you like.
-        let label = "+  New workspace";
-        let b = Rect { x: body.x, y, w: fonts.ui.width(label) + px(28.0), h: field_h };
-        canvas.round_fill(b, px(7.0), if hover == Some(Hit::WsNew) { c.hover } else { c.field }, 255);
-        canvas.ring(b, px(7.0), 1, c.edge);
-        canvas.text(&mut fonts.ui, label, (b.x + px(14.0)) as f32, y + (field_h - uh) / 2, c.text, b);
-        page.push((b, Hit::WsNew));
-        y += field_h + px(16.0);
+        let nb = Rect { x: group.x + px(4.0), y: group.y + group.h - rh + px(4.0), w: group.w - px(8.0), h: rh - px(8.0) };
+        canvas.fill(Rect { x: group.x + px(14.0), y: group.y + group.h - rh, w: group.w - px(28.0), h: 1 }, c.edge);
+        let lit = hover == Some(Hit::WsNew);
+        if lit {
+            canvas.round_fill(nb, px(7.0), c.hover, 255);
+        }
+        let pc = (group.x + px(14.0) + px(12.0), nb.y + nb.h / 2);
+        let arm = px(6.0);
+        canvas.fill(Rect { x: pc.0 - arm, y: pc.1 - dot / 2, w: 2 * arm, h: dot }, accent_text);
+        canvas.fill(Rect { x: pc.0 - dot / 2, y: pc.1 - arm, w: dot, h: 2 * arm }, accent_text);
+        canvas.text(&mut fonts.ui, "New workspace", (group.x + px(14.0) + px(34.0)) as f32, nb.y + (nb.h - uh) / 2, if lit { c.text } else { accent_text }, nb);
+        page.push((nb, Hit::WsNew));
+        canvas.ring(group, px(10.0), 1, c.edge);
+        y = group.y + group.h + px(24.0);
         }
         if section == 2 {
         // ---- Fonts ----
@@ -1100,20 +1179,20 @@ impl App {
             hits.push((Rect { x: track.x - px(4.0), y: thumb.y, w: track.w + px(8.0), h: thumb.h }, Hit::Thumb));
         }
 
-        // A workspace's colours, over everything, under its swatch.
+        // A workspace's colors, over everything, under its swatch.
         if let Some((wi, anchor)) = st.accent_pop {
             let current = ws_rows.get(wi).and_then(|w| w.1.clone());
             let (d, gap, cols) = (px(22.0), px(10.0), 5);
             let rows = (ACCENTS.len() as i32 + cols - 1) / cols;
             let chip_h = uh + px(12.0);
             let w = cols * (d + gap) - gap + 2 * px(14.0);
-            let h = px(12.0) + chip_h + px(10.0) + rows * (d + gap) - gap + px(14.0);
+            let h = px(12.0) + chip_h + px(10.0) + rows * (d + gap) - gap + px(12.0) + chip_h + px(10.0);
             let below = anchor.y + anchor.h + px(6.0);
             let top = if below + h <= canvas_h { below } else { (anchor.y - h - px(6.0)).max(0) };
             let pop = Rect { x: (anchor.x + anchor.w - w).max(0), y: top, w, h };
             canvas.panel(pop, px(10.0), c.panel, c.edge);
             hits.push((pop, Hit::Track));
-            // The settings' own accent first, then the colours.
+            // The settings' own accent first, then the colors.
             let chip = Rect { x: pop.x + px(10.0), y: pop.y + px(10.0), w: pop.w - px(20.0), h: chip_h };
             let on_settings = current.is_none();
             canvas.round_fill(chip, px(6.0), if on_settings { c.hover } else if hover == Some(Hit::WsAccent(wi, usize::MAX)) { c.field } else { c.panel }, 255);
@@ -1135,6 +1214,22 @@ impl App {
                     canvas.ring(Rect { x: dot.x - px(2.0), y: dot.y - px(2.0), w: d + px(4.0), h: d + px(4.0) }, d, 1, c.dim);
                 }
                 hits.push((dot, Hit::WsAccent(wi, i)));
+            }
+            // Any color, typed as hex; Enter takes it.
+            let hb = Rect { x: pop.x + px(10.0), y: chip.y + chip_h + px(10.0) + rows * (d + gap) - gap + px(12.0), w: pop.w - px(20.0), h: chip_h };
+            let typed = st.hex.string();
+            let valid = hex_color(&typed);
+            canvas.round_fill(hb, px(6.0), c.field, 255);
+            canvas.ring(hb, px(6.0), 1, if valid.is_some() { accent } else { c.edge });
+            let ty = hb.y + (chip_h - uh) / 2;
+            let tx = canvas.text(&mut fonts.ui, "#", (hb.x + px(10.0)) as f32, ty, c.faint, hb) + px(2.0);
+            if typed.is_empty() {
+                canvas.text(&mut fonts.ui, "ff8800", tx as f32, ty, c.faint, hb);
+            }
+            st.hex.draw(canvas, &mut fonts.ui, tx, ty, c.text, mix(accent, c.panel, 140), true, hb);
+            if let Some(color) = valid {
+                let sd = px(14.0);
+                canvas.round_fill(Rect { x: hb.x + hb.w - px(10.0) - sd, y: hb.y + (chip_h - sd) / 2, w: sd, h: sd }, sd / 2, color, 255);
             }
         }
 
@@ -1192,4 +1287,46 @@ impl App {
         self.settings = Some(st);
         self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
     }
+}
+
+/// A chevron pointing down, as on a list that opens.
+fn chevron(canvas: &mut Canvas, cx: i32, cy: i32, size: i32, color: u32) {
+    let y = cy + size / 2;
+    for t in 0..size {
+        canvas.fill(Rect { x: cx - t - 1, y: y - t, w: 2, h: 2 }, color);
+        canvas.fill(Rect { x: cx + t - 1, y: y - t, w: 2, h: 2 }, color);
+    }
+}
+
+/// An arrow pointing right, for going somewhere.
+fn arrow(canvas: &mut Canvas, cx: i32, cy: i32, arm: i32, dot: i32, color: u32) {
+    canvas.fill(Rect { x: cx - arm, y: cy - dot / 2, w: 2 * arm, h: dot }, color);
+    for t in 0..=arm * 3 / 5 {
+        canvas.round_fill(Rect { x: cx + arm - t - dot / 2, y: cy - t - dot / 2, w: dot, h: dot }, dot / 2, color, 255);
+        canvas.round_fill(Rect { x: cx + arm - t - dot / 2, y: cy + t - dot / 2, w: dot, h: dot }, dot / 2, color, 255);
+    }
+}
+
+/// An ×, for closing.
+fn cross(canvas: &mut Canvas, cx: i32, cy: i32, arm: i32, dot: i32, color: u32) {
+    for t in -arm..=arm {
+        canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy + t - dot / 2, w: dot, h: dot }, dot / 2, color, 255);
+        canvas.round_fill(Rect { x: cx + t - dot / 2, y: cy - t - dot / 2, w: dot, h: dot }, dot / 2, color, 255);
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+}
+
+/// A color typed as RRGGBB (or RGB), with or without its #.
+fn hex_color(s: &str) -> Option<u32> {
+    let s = s.trim().trim_start_matches('#');
+    let s: String = match s.len() {
+        3 => s.chars().flat_map(|c| [c, c]).collect(),
+        6 => s.to_string(),
+        _ => return None,
+    };
+    u32::from_str_radix(&s, 16).ok()
 }

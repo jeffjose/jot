@@ -1,5 +1,5 @@
-//! Emoji in colour, from Twemoji, as Discord and X draw them: Mozilla's
-//! font of them has each emoji as outlines filled with flat colours, one
+//! Emoji in color, from Twemoji, as Discord and X draw them: Mozilla's
+//! font of them has each emoji as outlines filled with flat colors, one
 //! over another, drawn here at whatever size a cell is, sharp. As jog
 //! draws its emoji.
 

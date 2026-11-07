@@ -27,7 +27,7 @@ const UNDERLINE_MASK: u16 = 0x7 << 8;
 /// which writes it to the program's PTY.
 pub type Reply = Box<dyn FnMut(&[u8])>;
 
-/// A colour as 0x00RRGGBB.
+/// A color as 0x00RRGGBB.
 pub type Rgb = u32;
 
 fn rgb(c: GhosttyColorRgb) -> Rgb {
@@ -39,7 +39,7 @@ fn to_ghostty(c: Rgb) -> GhosttyColorRgb {
 }
 
 /// One cell as it is to be drawn: its text (empty for a blank or for the
-/// second half of a wide character), colours resolved, and its attributes.
+/// second half of a wide character), colors resolved, and its attributes.
 #[derive(Clone, Default)]
 pub struct Cell {
     /// Its character, or NUL for none: a blank, or the second half of a
@@ -152,8 +152,8 @@ impl Terminal {
         }
     }
 
-    /// The theme's colours: its ground, text and cursor, and its sixteen
-    /// colours over the top of the usual 256.
+    /// The theme's colors: its ground, text and cursor, and its sixteen
+    /// colors over the top of the usual 256.
     pub fn set_theme(&mut self, theme: &Theme) {
         unsafe {
             let (fg, bg, cursor) = (to_ghostty(theme.fg), to_ghostty(theme.bg), to_ghostty(theme.cursor));
@@ -821,7 +821,7 @@ impl Terminal {
 
 impl Terminal {
     /// All the terminal holds, scrollback and screen, as text with its
-    /// colours (VT), its last `max` lines; to be shown again after a
+    /// colors (VT), its last `max` lines; to be shown again after a
     /// restart.
     pub fn dump(&self, max: usize, upto: Option<u64>) -> Option<String> {
         unsafe {

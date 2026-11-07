@@ -182,10 +182,10 @@ pub struct Config {
     /// different one, all but the first.
     #[serde(default = "yes")]
     pub workspace_colors: bool,
-    /// The colour theme, by name.
+    /// The color theme, by name.
     #[serde(default = "default_theme")]
     pub theme: String,
-    /// The colour of what is picked out: a Radix colour by name, or RRGGBB.
+    /// The color of what is picked out: a Radix color by name, or RRGGBB.
     #[serde(default = "default_accent")]
     pub accent: String,
     /// The terminal's font, by family.

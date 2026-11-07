@@ -38,7 +38,7 @@ pub struct Glyph {
     pub width: usize,
     pub height: usize,
     pub coverage: Vec<u8>,
-    /// For an emoji, its own colours, alpha in the top byte; then the
+    /// For an emoji, its own colors, alpha in the top byte; then the
     /// coverage is not used.
     pub color: Option<Vec<u32>>,
 }
@@ -198,9 +198,9 @@ impl Fonts {
 
     /// A character's glyph in a style: 1 bold, 2 italic, 4 an emoji in one
     /// cell rather than two.
-    /// An emoji in colour from Twemoji, two cells wide and as tall as a
+    /// An emoji in color from Twemoji, two cells wide and as tall as a
     /// cell, in their middle; None for a character Twemoji has no
-    /// colours for.
+    /// colors for.
     fn emoji(&self, c: char, narrow: bool) -> Option<Glyph> {
         let u = c as u32;
         if !(u >= 0x1F000 || (0x2600..0x27C0).contains(&u) || (0x2B00..0x2C00).contains(&u) || (0x2300..0x2400).contains(&u)) {

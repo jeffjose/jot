@@ -76,7 +76,7 @@ impl Gpu {
         }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| fail(&format!("device: {e}"))).ok()?;
         let mut config = surface.get_default_config(&adapter, width.max(1), height.max(1))?;
-        // The frame's colours go to the screen as they are, with no sRGB
+        // The frame's colors go to the screen as they are, with no sRGB
         // conversion on the way.
         let caps = surface.get_capabilities(&adapter);
         if let Some(f) = caps.formats.iter().find(|f| !f.is_srgb()) {

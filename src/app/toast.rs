@@ -8,7 +8,7 @@ use super::*;
 pub struct Toast {
     pub title: String,
     pub body: String,
-    /// The colour of its edge: green done, red failed, the accent else.
+    /// The color of its edge: green done, red failed, the accent else.
     pub color: u32,
     pub pane: Option<PaneId>,
     pub at: Instant,
