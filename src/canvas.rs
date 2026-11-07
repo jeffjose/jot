@@ -359,6 +359,7 @@ pub mod icons {
     pub static KEYBOARD: &[u8] = include_bytes!("../assets/icons/keyboard.png");
     pub static TEE: &[u8] = include_bytes!("../assets/icons/tee.png");
     pub static FILTER: &[u8] = include_bytes!("../assets/icons/filter.png");
+    pub static BELL: &[u8] = include_bytes!("../assets/icons/bell.png");
 }
 
 /// An icon's mask at `size` pixels square: its coverage, scaled down from

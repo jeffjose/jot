@@ -28,6 +28,8 @@ pub enum BarHit {
     /// Opens the bar, from the strip a closed one leaves.
     Open,
     Remove(usize),
+    /// A command waiting on another pane, taken out.
+    RemoveAfter(usize),
     RunNow(usize),
     /// Lets a queue held by a failed command go on.
     Resume,
@@ -51,9 +53,9 @@ impl App {
         let s = &p.shell;
         if self.bar.as_ref().is_some_and(|b| b.pane == id) {
             let (head, out) = s.ran.as_ref().map_or((0, 0), |(_, text, _)| (1, text.lines().count().clamp(1, OUTPUT_SHOWN)));
-            (1 + s.queue.len().min(QUEUE_SHOWN) + head, out)
+            (1 + s.queue.len().min(QUEUE_SHOWN) + s.after.len().min(QUEUE_SHOWN) + head, out)
         } else {
-            (usize::from(!s.queue.is_empty()), 0)
+            (usize::from(!s.queue.is_empty() || !s.after.is_empty()), 0)
         }
     }
 
@@ -221,6 +223,29 @@ impl App {
         if cmd.is_empty() {
             return;
         }
+        // @N cmd: waits for pane N's command to end, then runs here. If
+        // pane N is not running anything, it runs as any other would.
+        let (cmd, after) = match cmd.strip_prefix('@').and_then(|r| r.split_once(char::is_whitespace)) {
+            Some((name, rest)) => match self.pane_by_number(name) {
+                Some(t) if t != id && !self.waiting(t) => (rest.trim().to_string(), Some(t)),
+                Some(_) => (rest.trim().to_string(), None),
+                None => {
+                    self.toast("No such pane", &format!("@{name}: pane N in this workspace, or W.P"), None, Some(id));
+                    return;
+                }
+            },
+            None => (cmd, None),
+        };
+        if let Some(t) = after {
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.shell.after.push((t, cmd));
+            }
+            if let Some(b) = &mut self.bar {
+                b.field = TextField::default();
+                b.back = None;
+            }
+            return self.bar_changed();
+        }
         let waiting = self.waiting(id);
         let Some(p) = self.panes.get_mut(&id) else { return };
         p.shell.history.retain(|h| *h != cmd);
@@ -289,6 +314,23 @@ impl App {
                 self.close_bar();
                 let text = self.prompt_line(id);
                 self.open_editor_with(id, &text, false);
+            }
+            Does::Tree | Does::Ports | Does::Files => {
+                let (title, lines) = match c.does {
+                    Does::Tree => ("/tree", self.report_tree(id)),
+                    Does::Ports => ("/ports", self.report_ports(id)),
+                    _ => ("/files", self.report_files(id)),
+                };
+                self.bar_report(id, title, lines);
+                if let Some(b) = &mut self.bar {
+                    b.field = TextField::default();
+                    b.selected = 0;
+                }
+                self.bar_changed();
+            }
+            Does::Notify => {
+                self.set_notify(id, true);
+                self.close_bar();
             }
             Does::Info => {
                 self.bar_info(id);
@@ -409,6 +451,14 @@ impl App {
                 self.relayout();
             }
             BarHit::RunNow(i) => self.run_now(id, i),
+            BarHit::RemoveAfter(i) => {
+                if let Some(p) = self.panes.get_mut(&id) {
+                    if i < p.shell.after.len() {
+                        p.shell.after.remove(i);
+                    }
+                }
+                self.bar_changed();
+            }
             BarHit::Resume => {
                 if let Some(p) = self.panes.get_mut(&id) {
                     p.shell.paused = false;
@@ -432,7 +482,7 @@ impl App {
     /// The next queued command, typed at the prompt.
     pub(super) fn run_next(&mut self, id: PaneId) {
         let Some(p) = self.panes.get_mut(&id) else { return };
-        if p.shell.paused || p.shell.queue.is_empty() {
+        if p.shell.paused || p.shell.queue.is_empty() || !p.shell.at_prompt {
             return;
         }
         let next = p.shell.queue.remove(0);
@@ -452,7 +502,9 @@ impl App {
         let Some(p) = self.panes.get(&id) else { return };
         let cap = if self.config.captions { self.caption_h() } else { 0 };
         let area = Rect { x: p.rect.x, y: p.rect.y + p.rect.h - cap - h, w: p.rect.w, h };
-        let (queue, paused, ran) = (p.shell.queue.clone(), p.shell.paused, p.shell.ran.clone());
+        let (queue, paused, ran, after) = (p.shell.queue.clone(), p.shell.paused, p.shell.ran.clone(), p.shell.after.clone());
+        // Each pane waited on, named as @ names it.
+        let after: Vec<(String, String)> = after.into_iter().map(|(t, cmd)| (self.pane_number(t), cmd)).collect();
         let busy = !self.waiting(id);
         let c = self.cur_theme.chrome();
         let accent = self.cur_accent;
@@ -491,12 +543,15 @@ impl App {
         };
         if !open {
             // The strip: what is next, and how many after it.
-            let label = if paused { "held" } else { "next" };
+            let (label, first, total) = match (queue.first(), after.first()) {
+                (Some(q), _) => (if paused { "held".to_string() } else { "next".to_string() }, q.clone(), queue.len() + after.len()),
+                (None, Some((n, cmd))) => (format!("after {n}"), cmd.clone(), after.len()),
+                _ => (String::new(), String::new(), 0),
+            };
             let tx = area.x + pad;
             let ty = y + (row_h - sh) / 2;
-            let end = self.canvas.text(&mut self.fonts.small, label, tx as f32, ty, if paused { 0xE5484D } else { accent }, area);
-            let more = if queue.len() > 1 { format!("  +{} more", queue.len() - 1) } else { String::new() };
-            let first = queue.first().cloned().unwrap_or_default();
+            let end = self.canvas.text(&mut self.fonts.small, &label, tx as f32, ty, if paused && !queue.is_empty() { 0xE5484D } else { accent }, area);
+            let more = if total > 1 { format!("  +{} more", total - 1) } else { String::new() };
             self.canvas.text_fit(&mut self.fonts.ui, &format!("{first}{more}"), end + px(10.0), y + (row_h - uh) / 2, area.x + area.w - end - pad * 2, c.text, area);
             self.bar_hits.push((Rect { x: area.x, y: area.y, w: area.w, h: area.h }, id, BarHit::Open));
             self.damage.push(area);
@@ -521,6 +576,15 @@ impl App {
                 y += line_h;
             }
             y += px(6.0);
+        }
+        // What waits on another pane, each with remove.
+        for (i, (n, cmd)) in after.iter().enumerate().take(QUEUE_SHOWN) {
+            let label = format!("after {n}");
+            let end = self.canvas.text(&mut self.fonts.small, &label, (area.x + pad) as f32, y + (row_h - sh) / 2, accent, area);
+            let room = area.x + area.w - pad - ib - px(8.0) - (end + px(10.0));
+            self.canvas.text_fit(&mut self.fonts.ui, cmd, end + px(10.0), y + (row_h - uh) / 2, room, c.text, area);
+            button(self, area.x + area.w - pad - ib, y, BarHit::RemoveAfter(i), false);
+            y += row_h;
         }
         // The queue, each with run now and remove.
         for (i, cmd) in queue.iter().enumerate().take(QUEUE_SHOWN) {
@@ -566,7 +630,7 @@ impl App {
         if !p.shell.queue_due {
             return;
         }
-        if p.shell.paused || p.shell.queue.is_empty() {
+        if p.shell.paused || p.shell.queue.is_empty() || !p.shell.at_prompt {
             p.shell.queue_due = false;
             return;
         }
@@ -680,5 +744,52 @@ impl App {
             let first = selected.saturating_sub(7);
             self.draw_command_list(&rows, selected, first, x, y, y, true);
         }
+    }
+}
+
+impl App {
+    /// A pane named as @ names it: N, the Nth pane of this workspace, or
+    /// W.P, pane P of workspace W, counted from 1 as captions show them.
+    pub(super) fn pane_by_number(&self, name: &str) -> Option<PaneId> {
+        let (w, p) = match name.split_once('.') {
+            Some((w, p)) => (w.parse::<usize>().ok()?.checked_sub(1)?, p),
+            None => (self.current, name),
+        };
+        let mut ids = Vec::new();
+        self.workspaces.get(w)?.root.panes(&mut ids);
+        ids.get(p.parse::<usize>().ok()?.checked_sub(1)?).copied()
+    }
+
+    /// The commands waiting on pane `done`'s command, now it has ended:
+    /// into their panes' queues, held if it failed.
+    pub(super) fn release_after(&mut self, done: PaneId, failed: bool) {
+        let waiting: Vec<PaneId> = self.panes.iter().filter(|(_, p)| p.shell.after.iter().any(|(t, _)| *t == done)).map(|(id, _)| *id).collect();
+        for id in waiting {
+            let Some(p) = self.panes.get_mut(&id) else { continue };
+            let (go, stay): (Vec<_>, Vec<_>) = std::mem::take(&mut p.shell.after).into_iter().partition(|(t, _)| *t == done);
+            p.shell.after = stay;
+            p.shell.queue.extend(go.into_iter().map(|(_, cmd)| cmd));
+            if failed {
+                p.shell.paused = true;
+            }
+            p.shell.queue_due = true;
+            p.full = true;
+            self.queue_tick(id);
+        }
+        self.relayout();
+    }
+}
+
+impl App {
+    /// A pane's number as @ takes it: N in this workspace, W.P elsewhere.
+    fn pane_number(&self, id: PaneId) -> String {
+        for (wi, ws) in self.workspaces.iter().enumerate() {
+            let mut ids = Vec::new();
+            ws.root.panes(&mut ids);
+            if let Some(n) = ids.iter().position(|p| *p == id) {
+                return if wi == self.current { format!("{}", n + 1) } else { format!("{}.{}", wi + 1, n + 1) };
+            }
+        }
+        "?".into()
     }
 }

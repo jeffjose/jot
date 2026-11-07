@@ -187,4 +187,19 @@ pub enum Tag {
     Tee,
     /// Lines filtered: stops it.
     Filter,
+    /// To be told when the command ends: no longer.
+    Notify,
+}
+
+impl App {
+    /// /notify: told when the pane's command ends, or its next one if none
+    /// is running; or not, any more.
+    pub(super) fn set_notify(&mut self, id: PaneId, on: bool) {
+        if let Some(p) = self.panes.get_mut(&id) {
+            p.shell.notify = on;
+            p.full = true;
+        }
+        self.full = true;
+        self.redraw();
+    }
 }

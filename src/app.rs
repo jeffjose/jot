@@ -612,6 +612,8 @@ impl App {
     /// Closes a pane, its workspace with it when it was the last; jterm
     /// with the last workspace.
     fn close(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // Commands waiting on it wait no more.
+        self.release_after(id, false);
         // A pane in a window of its own takes the window with it.
         if let Some(i) = self.popout_of(id) {
             self.popouts.remove(i);
@@ -1163,6 +1165,7 @@ impl App {
                     watch::Tag::Multi => self.toggle_multi_pane(id),
                     watch::Tag::Tee => self.stop_tee(id),
                     watch::Tag::Filter => self.stop_filter(id),
+                    watch::Tag::Notify => self.set_notify(id, false),
                 }
                 return;
             }
@@ -1769,6 +1772,9 @@ impl App {
         }
         if let Some(name) = tee {
             tags.push((watch::Tag::Tee, format!("TEE {name}"), 0x12A594, crate::canvas::icons::TEE));
+        }
+        if self.panes.get(&id).is_some_and(|p| p.shell.notify) {
+            tags.push((watch::Tag::Notify, "NOTIFY".into(), 0xFFC53D, crate::canvas::icons::BELL));
         }
         if let Some((text, armed)) = filter {
             let label = if armed { format!("NEXT: {text}") } else { text };

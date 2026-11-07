@@ -42,6 +42,11 @@ pub enum Does {
     Grep,
     /// The workspace given the name that follows.
     Rename,
+    /// Told when the command ends; its processes; its ports; its files.
+    Notify,
+    Tree,
+    Ports,
+    Files,
     Kill,
 }
 
@@ -91,6 +96,10 @@ impl App {
         let mut all = vec![
             Command::new("settings", "Open settings", Does::Act(Action::Settings)),
             Command::new("info", "What this pane is running: pid, time, memory", Does::Info),
+            Command::new("notify", "Tell me when this command ends", Does::Notify),
+            Command::new("tree", "The running command's processes", Does::Tree),
+            Command::new("ports", "Ports the running command listens on", Does::Ports),
+            Command::new("files", "Files the running command has open", Does::Files),
             Command::new("split", "Split right", Does::Act(Action::Split(Dir::Across))),
             Command::new("split-down", "Split down", Does::Act(Action::Split(Dir::Down))),
             if self.ws().zoom.is_some() {
@@ -458,6 +467,19 @@ impl App {
             Does::Run(cmd) => write(self, format!("{cmd}\r").as_bytes()),
             Does::Stop => self.stop_job(id),
             Does::Info => self.print_info(id),
+            Does::Notify => self.set_notify(id, true),
+            Does::Tree => {
+                let lines = self.report_tree(id);
+                self.print_report(id, "/tree", lines);
+            }
+            Does::Ports => {
+                let lines = self.report_ports(id);
+                self.print_report(id, "/ports", lines);
+            }
+            Does::Files => {
+                let lines = self.report_files(id);
+                self.print_report(id, "/files", lines);
+            }
             Does::Tee => self.tee(id, arg),
             Does::Filter => self.filter(id, arg),
             Does::Grep => self.find_text(id, arg),
@@ -573,7 +595,7 @@ fn kind_of(d: &Does) -> &'static str {
         Does::Grep => "find",
         Does::Rename => "jterm",
         Does::Run(_) => "run",
-        Does::Stop | Does::Kill | Does::Info => "job",
+        Does::Stop | Does::Kill | Does::Info | Does::Notify | Does::Tree | Does::Ports | Does::Files => "job",
     }
 }
 

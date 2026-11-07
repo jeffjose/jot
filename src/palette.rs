@@ -44,6 +44,7 @@ pub enum Action {
     TeeOpen(u64),
     TeeCopyPath(u64),
     FilterStop(u64),
+    NotifyOff(u64),
     Settings,
     Palette,
     /// Opens the n-th submenu of the right-click menu.

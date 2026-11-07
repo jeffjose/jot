@@ -47,6 +47,11 @@ pub struct Shell {
     pub ran: Option<(String, String, Option<i32>)>,
     /// When the running job was last sent SIGTERM, to send SIGKILL next.
     pub killed_at: Option<Instant>,
+    /// /notify: the command running, or the next, told of when it ends.
+    pub notify: bool,
+    /// Commands waiting for another pane's command to end (@2 cmd): then
+    /// they join this pane's queue.
+    pub after: Vec<(PaneId, String)>,
     pub prompt_row: u64,
     pub running: Option<(Instant, u64, String)>,
     pub blocks: Vec<Block>,
@@ -80,6 +85,10 @@ impl App {
         let (_, row) = Self::cursor_row(p);
         let mut notices: Vec<(String, String, u32)> = Vec::new();
         let mut prompted = false;
+        // Its command ended, and whether it failed: what waits on it goes.
+        let mut ended: Option<bool> = None;
+        // What /notify asked to be told, whatever the time it took.
+        let mut told: Vec<(String, String, u32)> = Vec::new();
         for e in events {
             match e {
                 ShellEvent::Prompt => {
@@ -104,6 +113,16 @@ impl App {
                 ShellEvent::End(exit) => {
                     let Some((started, start, line)) = p.shell.running.take() else { continue };
                     let took = started.elapsed();
+                    if std::mem::take(&mut p.shell.notify) {
+                        let how = match exit {
+                            Some(0) | None => "done".to_string(),
+                            Some(n) => format!("failed, exit {n}"),
+                        };
+                        let color = if exit.is_some_and(|e| e != 0) { 0xE5484D } else { 0x30A46C };
+                        told.push((place.clone(), format!("{} · {how} in {}", line.trim(), human(took)), color));
+                        p.full = true;
+                    }
+                    ended = Some(exit.is_some_and(|e| e != 0));
                     // A failed command holds what is queued behind it.
                     if exit.is_some_and(|e| e != 0) && !p.shell.queue.is_empty() {
                         p.shell.paused = true;
@@ -126,7 +145,7 @@ impl App {
                         p.shell.blocks.remove(0);
                     }
                     p.full = true;
-                    if took >= Duration::from_secs(10) && !shown && !line.trim().is_empty() {
+                    if took >= Duration::from_secs(10) && !shown && !line.trim().is_empty() && told.is_empty() {
                         let how = match exit {
                             Some(0) | None => "done".to_string(),
                             Some(n) => format!("failed, exit {n}"),
@@ -138,8 +157,11 @@ impl App {
                 }
             }
         }
-        for (title, body, color) in notices {
+        for (title, body, color) in told.into_iter().chain(notices) {
             self.toast(&title, &body, Some(color), Some(id));
+        }
+        if let Some(failed) = ended {
+            self.release_after(id, failed);
         }
         // Back at a prompt: the next queued command is due.
         if prompted {

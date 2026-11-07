@@ -323,6 +323,7 @@ impl App {
                 }
             }
             Action::FilterStop(id) => self.stop_filter(id),
+            Action::NotifyOff(id) => self.set_notify(id, false),
             Action::Palette => self.open_palette(),
             Action::Submenu(_) => {}
             Action::StatusLine => {
@@ -665,6 +666,7 @@ impl App {
                 vec![c(&format!("Stop writing to {name}"), "click", Action::TeeStop(id)), None, c(&format!("Open {name}"), "", Action::TeeOpen(id)), c("Copy its path", "", Action::TeeCopyPath(id))]
             }
             Tag::Filter => vec![c("Stop filtering", "click", Action::FilterStop(id))],
+            Tag::Notify => vec![c("Don't notify", "click", Action::NotifyOff(id))],
         };
         while matches!(items.last(), Some(None)) {
             items.pop();
