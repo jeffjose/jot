@@ -554,3 +554,17 @@ pub fn empty_in_order(spec: &Spec) -> Vec<bool> {
         }
     }
 }
+
+/// How the window's sidebar was left: shown or tucked away, and how wide.
+pub fn load_sidebar() -> (bool, f32) {
+    let text = std::fs::read_to_string(state_dir().join("sidebar")).unwrap_or_default();
+    let mut words = text.split_whitespace();
+    let open = words.next().map_or(true, |w| w != "hidden");
+    let width = words.next().and_then(|w| w.parse().ok()).unwrap_or(240.0);
+    (open, width)
+}
+
+pub fn save_sidebar(open: bool, width: f32) {
+    let _ = std::fs::create_dir_all(state_dir());
+    let _ = std::fs::write(state_dir().join("sidebar"), format!("{} {width:.0}\n", if open { "shown" } else { "hidden" }));
+}

@@ -296,6 +296,7 @@ impl App {
                 self.add_workspace(&WorkspaceSpec { name: String::new(), cwd: Some(dir.display().to_string()), panes: vec![], split: None, layout: None, ..Default::default() });
                 self.go_to(self.workspaces.len() - 1);
             }
+            Action::Sidebar => self.toggle_sidebar(),
             Action::ConnectPrompt => {
                 self.palette = Some(Palette { mode: Mode::Machine, field: TextField::default(), matches: Vec::new(), selected: 0, first: 0 });
                 self.palette_changed();

@@ -33,6 +33,8 @@ PICKS = {
     "FOCUS": "full-screen", "UNFOCUS": "quit-full-screen", "RESTART": "restart",
     "PLAY": "play", "CLOSE": "close",
     "MINUS": "minus", "CHEVRON_DOWN": "alt-arrow-down", "ARROW_RIGHT": "arrow-right",
+    "SIDEBAR": "panel-left", "PLUS": "add", "MONITOR": "monitor", "SERVER": "server-minimalistic",
+    "CHEVRON_RIGHT": "alt-arrow-right",
 }
 
 LINE = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'

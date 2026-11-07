@@ -13,6 +13,8 @@ pub enum Action {
     /// Split, the new pane before: left, or up.
     SplitBefore(Dir),
     Close,
+    /// The sidebar shown, or tucked away.
+    Sidebar,
     /// A workspace on another machine: its session reached by ssh.
     Connect(String),
     /// The box for a machine to connect to.
@@ -247,7 +249,8 @@ pub fn commands() -> Vec<Item> {
         c("Type into multiple panes", "Alt Shift M", Action::Broadcast),
         c("Pane command line: run or queue", "Alt ;", Action::CommandLine),
         c("Settings", "Ctrl ,", Action::Settings),
-        c("Connect to machine…", "ssh", Action::ConnectPrompt),
+        c("Connect to machine…", "", Action::ConnectPrompt),
+        c("Show or hide the sidebar", "", Action::Sidebar),
         c("Quit and end all panes", "", Action::QuitAll),
         c("Go to workspace, pane or folder", "Ctrl K", Action::Palette),
     ]

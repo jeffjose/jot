@@ -366,6 +366,11 @@ pub mod icons {
     pub const MINUS: char = '\u{e2a4}';
     pub const CHEVRON_DOWN: char = '\u{e2a5}';
     pub const ARROW_RIGHT: char = '\u{e04d}';
+    pub const SIDEBAR: char = '\u{e300}';
+    pub const PLUS: char = '\u{e301}';
+    pub const MONITOR: char = '\u{e302}';
+    pub const SERVER: char = '\u{e303}';
+    pub const CHEVRON_RIGHT: char = '\u{e304}';
 }
 
 /// An icon's mask at `size` pixels square: its letter drawn to fill the

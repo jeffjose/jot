@@ -45,6 +45,7 @@ mod popout;
 mod restore;
 mod settings;
 mod slash;
+mod sidebar;
 mod space;
 mod toast;
 mod watch;
@@ -135,6 +136,8 @@ pub struct Workspace {
 }
 
 enum Drag {
+    /// The sidebar's edge, to make it wider or narrower, or tuck it away.
+    Sidebar,
     Divider(Divider),
     Select { pane: PaneId, from: (u16, u16) },
     Pane(dnd::Carry),
@@ -289,6 +292,12 @@ pub struct App {
     tx: std::sync::mpsc::Sender<Output>,
     /// Panes to become shells on a machine once it is reached (/connect).
     connecting: Vec<(usize, PaneId)>,
+    /// The sidebar: shown or tucked away, its width when shown (points),
+    /// what can be clicked in it, and what the pointer is on.
+    sidebar_open: bool,
+    sidebar_width: f32,
+    side_hits: Vec<(Rect, sidebar::SideHit)>,
+    side_lit: Option<sidebar::SideHit>,
     /// Panes the session had when this window took it up, until the
     /// layout takes them up.
     held: HashMap<u64, crate::mux::Held>,
@@ -462,6 +471,10 @@ impl App {
             unreached: Vec::new(),
             tx: tx.clone(),
             connecting: Vec::new(),
+            sidebar_open: persist::load_sidebar().0,
+            sidebar_width: persist::load_sidebar().1,
+            side_hits: Vec::new(),
+            side_lit: None,
             mux: attached.client,
             held,
             replays: Vec::new(),
@@ -724,8 +737,10 @@ impl App {
         self.workspaces.get(self.current).map(|w| w.focus)
     }
 
+    /// Where the panes go: the window but for the sidebar and status line.
     fn area(&self) -> Rect {
-        Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height - self.status_h() }
+        let side = self.sidebar_w().min(self.canvas.width / 2);
+        Rect { x: side, y: 0, w: self.canvas.width - side, h: self.canvas.height - self.status_h() }
     }
 
     /// Lays out every workspace, so panes not shown are the right size
@@ -1455,6 +1470,16 @@ impl App {
         if (button == MouseButton::Left && (self.offer_click(event_loop) || self.toast_click() || self.mini_click() || self.pin_click() || self.editor_run_click() || self.editor_press() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
             return;
         }
+        if button == MouseButton::Left {
+            let x = self.pointer.0;
+            if self.sidebar_edge_at(x) {
+                self.drag = Some(Drag::Sidebar);
+                return;
+            }
+            if self.sidebar_click() {
+                return;
+            }
+        }
         let (x, y) = self.pointer;
         if button == MouseButton::Left && self.mods.control_key() && self.open_link() {
             return;
@@ -1583,6 +1608,12 @@ impl App {
             }
             return;
         }
+        if matches!(self.drag, Some(Drag::Sidebar)) {
+            return self.sidebar_drag_to(x);
+        }
+        if self.drag.is_none() && self.sidebar_hover(x, y) {
+            return;
+        }
         match &self.drag {
             Some(Drag::Divider(d)) => {
                 let fraction = match d.dir {
@@ -1594,6 +1625,7 @@ impl App {
                 self.changed();
             }
             Some(Drag::Pane(_)) => self.carry_move(x, y),
+            Some(Drag::Sidebar) => {}
             None if self.mouse_held.is_some() => {
                 let (id, b) = self.mouse_held.unwrap();
                 self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_MOTION, Some(b));
@@ -1639,6 +1671,10 @@ impl App {
     }
 
     fn mouse_release(&mut self) {
+        if matches!(self.drag, Some(Drag::Sidebar)) {
+            self.drag = None;
+            return;
+        }
         self.bar_field_release();
         self.editor_release();
         if let Some((id, b)) = self.mouse_held.take() {
@@ -1917,6 +1953,9 @@ impl App {
                 }
                 self.draw_pane(r, 0, full, true);
             }
+        }
+        if full {
+            self.draw_sidebar();
         }
         if full {
             self.draw_minimized();
