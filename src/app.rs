@@ -214,6 +214,8 @@ pub struct App {
     /// Minimized panes' rows, to click, and the one the pointer is on.
     mini_hits: Vec<(Rect, PaneId)>,
     mini_lit: Option<PaneId>,
+    /// Their restore buttons: only these restore.
+    mini_btns: Vec<(Rect, PaneId)>,
     /// Where the current workspace's minimized rows are, as laid out.
     mini_rows: Vec<(PaneId, Rect)>,
     /// Pin strips' buttons, and the one the pointer is on.
@@ -419,6 +421,7 @@ impl App {
             float_near: None,
             mini_hits: Vec::new(),
             mini_lit: None,
+            mini_btns: Vec::new(),
             mini_rows: Vec::new(),
             pin_hits: Vec::new(),
             pin_lit: None,

@@ -78,6 +78,7 @@ impl App {
     pub(super) fn draw_minimized(&mut self) {
         let rows = self.mini_rows.clone();
         self.mini_hits.clear();
+        self.mini_btns.clear();
         if rows.is_empty() {
             return;
         }
@@ -93,7 +94,7 @@ impl App {
             let h = r.h;
             let number = ids.iter().position(|p| *p == id).map_or(0, |n| n + 1);
             let lit = self.mini_lit == Some(id);
-            self.canvas.fill(r, if lit { mix(c.side, c.text, 10) } else { c.side });
+            self.canvas.fill(r, c.side);
             self.canvas.fill(Rect { y: r.y + r.h - 1, h: 1, ..r }, c.edge);
             // How it is doing: running green, its last command failed red,
             // else quiet.
@@ -121,34 +122,43 @@ impl App {
             self.canvas.text(&mut self.fonts.small, &time, (right - px(8.0) - tw) as f32, r.y + (h - sh) / 2, c.faint, r);
             let b = Rect { x: right, y: r.y + (h - ib) / 2, w: ib, h: ib };
             let size = ib * 6 / 10;
+            if lit {
+                self.canvas.round_fill(b, ib / 2, c.text, 30);
+            }
             self.canvas.icon(crate::canvas::icons::FOCUS, size, b.x + (ib - size) / 2, b.y + (ib - size) / 2, if lit { c.text } else { c.dim }, r);
+            self.mini_btns.push((b, id));
             self.mini_hits.push((r, id));
             self.damage.push(r);
         }
     }
 
-    /// A click on a minimized row: the pane back. True when it was one.
+    /// A click on a minimized row: its restore button brings the pane back;
+    /// the rest of the row does nothing. True when it was on one.
     pub(super) fn mini_click(&mut self) -> bool {
         let (x, y) = self.pointer;
-        let Some(id) = self.mini_hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| *id) else { return false };
-        self.restore(id);
-        true
+        if let Some(id) = self.mini_btns.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| *id) {
+            self.restore(id);
+            return true;
+        }
+        self.mini_hits.iter().any(|(r, _)| r.contains(x, y))
     }
 
-    /// The pointer over a minimized row: lit, and the hand.
+    /// The pointer over a minimized row: its restore button lit, and the
+    /// hand, when on that. True when on a row.
     pub(super) fn mini_hover(&mut self, x: i32, y: i32) -> bool {
-        let at = self.mini_hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| *id);
+        let at = self.mini_btns.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| *id);
         if at != self.mini_lit {
             self.mini_lit = at;
             self.full = true;
             self.redraw();
         }
-        if at.is_some() {
+        let on_row = self.mini_hits.iter().any(|(r, _)| r.contains(x, y));
+        if on_row {
             if let Some(w) = &self.window {
-                w.set_cursor(CursorIcon::Pointer);
+                w.set_cursor(if at.is_some() { CursorIcon::Pointer } else { CursorIcon::Default });
             }
         }
-        at.is_some()
+        on_row
     }
 
     /// A right click on a minimized row: what can be done with the pane.
