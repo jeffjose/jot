@@ -622,10 +622,14 @@ impl App {
     /// session types each at the prompt when it comes, window or not.
     pub(super) fn sync_queue(&mut self, id: PaneId) {
         let Some(p) = self.panes.get_mut(&id) else { return };
-        let now = crate::mux::Queue { items: p.shell.queue.clone(), paused: p.shell.paused, after: p.shell.after.iter().map(|(t, c)| (*t, c.clone())).collect(), restarting: p.shell.restarting };
+        // In the session's names; waits on a pane on another machine are the
+        // window's alone.
+        let m = p.pty.machine;
+        let after = p.shell.after.iter().map(|(t, c)| (crate::mux::split_id(*t), c)).filter(|((tm, _), _)| *tm == m).map(|((_, t), c)| (t, c.clone())).collect();
+        let now = crate::mux::Queue { items: p.shell.queue.clone(), paused: p.shell.paused, after, restarting: p.shell.restarting };
         if now != p.shell.synced {
             p.shell.synced = now.clone();
-            self.mux.queue(id, now);
+            p.pty.mux.queue(p.pty.pane, now);
         }
     }
 

@@ -28,10 +28,11 @@ pub enum Output {
     TeeEnd(u64, u64, String),
     /// What its program is doing, changed.
     Proc(u64, Proc),
-    /// Another machine's session reached again, with what it holds.
-    Back(Vec<crate::mux::Held>),
-    /// The session the panes were in ended.
-    Gone,
+    /// A machine's session reached again, with what it holds (by its
+    /// own names).
+    Back(usize, Vec<crate::mux::Held>),
+    /// The connection to a machine's session ended.
+    Gone(usize),
 }
 
 fn shell() -> String {
@@ -200,7 +201,10 @@ impl Local {
 /// this machine or another, reached through the session. What it is
 /// doing is as the server last said.
 pub struct Pty {
+    /// Its name in its session (not the window's: see [`crate::mux::app_id`]).
     pub pane: u64,
+    /// Which of the window's machines it is on.
+    pub machine: usize,
     /// The shell's process, on the machine it runs on.
     pub pid: libc::pid_t,
     pub mux: std::sync::Arc<crate::mux::Client>,

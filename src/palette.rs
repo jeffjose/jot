@@ -13,6 +13,10 @@ pub enum Action {
     /// Split, the new pane before: left, or up.
     SplitBefore(Dir),
     Close,
+    /// A workspace on another machine: its session reached by ssh.
+    Connect(String),
+    /// The box for a machine to connect to.
+    ConnectPrompt,
     /// The window closed and every pane ended, the session with them.
     QuitAll,
     NewPane,
@@ -99,6 +103,9 @@ pub struct Item {
 pub enum Mode {
     Find,
     Rename,
+    /// A machine to open a workspace on: one of ~/.ssh/config's, or any
+    /// typed as ssh takes it.
+    Machine,
 }
 
 pub struct Palette {
@@ -122,6 +129,7 @@ impl Palette {
     pub fn label(&self) -> &'static str {
         match (self.mode, self.field.text.first().copied()) {
             (Mode::Rename, _) => "Name:",
+            (Mode::Machine, _) => "Machine:",
             (_, None) if !self.matches.is_empty() => "Find:",
             (_, Some('>')) => "Run:",
             (_, Some('@')) => "Workspace:",
@@ -239,6 +247,7 @@ pub fn commands() -> Vec<Item> {
         c("Type into multiple panes", "Alt Shift M", Action::Broadcast),
         c("Pane command line: run or queue", "Alt ;", Action::CommandLine),
         c("Settings", "Ctrl ,", Action::Settings),
+        c("Connect to machine…", "ssh", Action::ConnectPrompt),
         c("Quit and end all panes", "", Action::QuitAll),
         c("Go to workspace, pane or folder", "Ctrl K", Action::Palette),
     ]

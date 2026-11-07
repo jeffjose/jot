@@ -49,6 +49,10 @@ pub enum Spec {
 pub struct WorkspaceSpec {
     #[serde(default)]
     pub name: String,
+    /// The machine its panes are on, reached by ssh; none for the machine
+    /// whose session this is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     /// The shorthand: panes in a row, `split` deciding which way.
@@ -132,7 +136,7 @@ pub fn spec(node: &Node, pane: &impl Fn(PaneId) -> (String, Option<PathBuf>, Vec
     match node {
         Node::Pane(id) => {
             let (cmd, cwd, pins, empty) = pane(*id);
-            Spec::Pane { cmd, cwd: cwd.map(|p| shorten(&p)), pins, empty, id: Some(*id) }
+            Spec::Pane { cmd, cwd: cwd.map(|p| shorten(&p)), pins, empty, id: Some(crate::mux::split_id(*id).1) }
         }
         Node::Split { dir, children, sizes } => {
             let kids = children.iter().map(|c| spec(c, pane)).collect();

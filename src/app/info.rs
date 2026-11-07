@@ -53,7 +53,7 @@ impl App {
     pub(super) fn pane_info(&self, id: PaneId) -> Vec<(String, String)> {
         let Some(p) = self.panes.get(&id) else { return Vec::new() };
         if p.pty.remote() {
-            let host = self.mux.host.clone().unwrap_or_default();
+            let host = p.pty.mux.host.clone().unwrap_or_default();
             let mut rows = vec![("machine".to_string(), host)];
             if let Some(cwd) = p.pty.cwd() {
                 rows.push(("folder".into(), cwd.display().to_string()));

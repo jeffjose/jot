@@ -853,3 +853,15 @@ pub fn window_id() -> u64 {
         t ^ ((std::process::id() as u64) << 32) | 1
     })
 }
+
+/// A pane's name in the window: its machine's place among the window's
+/// machines, and its name in that machine's session. This machine's
+/// panes (place 0) keep their session's names.
+pub fn app_id(machine: usize, pane: u64) -> u64 {
+    ((machine as u64) << 40) | pane
+}
+
+/// A window's pane name as its machine and its session's name for it.
+pub fn split_id(id: u64) -> (usize, u64) {
+    ((id >> 40) as usize, id & ((1 << 40) - 1))
+}

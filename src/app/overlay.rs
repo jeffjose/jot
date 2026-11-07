@@ -139,9 +139,19 @@ impl App {
     }
 
     fn palette_changed(&mut self) {
-        let Some(p) = &self.palette else { return };
-        if p.mode == Mode::Find {
-            let matches = palette::matching(self.palette_items(), &p.typed(), &self.recent);
+        let Some(mode) = self.palette.as_ref().map(|p| p.mode) else { return };
+        if mode == Mode::Machine {
+            let typed = self.palette.as_ref().map(|p| p.typed()).unwrap_or_default();
+            let matches = machine_items(&typed);
+            if let Some(p) = &mut self.palette {
+                p.matches = matches;
+                p.selected = 0;
+                p.first = 0;
+            }
+        }
+        if mode == Mode::Find {
+            let typed = self.palette.as_ref().map(|p| p.typed()).unwrap_or_default();
+            let matches = palette::matching(self.palette_items(), &typed, &self.recent);
             if let Some(p) = &mut self.palette {
                 p.matches = matches;
                 p.selected = 0;
@@ -228,6 +238,14 @@ impl App {
             }
             return self.redraw();
         }
+        // A machine as typed, when none listed is picked.
+        if p.mode == Mode::Machine && p.matches.is_empty() {
+            let host = p.typed().trim().to_string();
+            if !host.is_empty() {
+                self.run(Action::Connect(host), event_loop);
+            }
+            return self.redraw();
+        }
         let Some(item) = p.matches.get(p.selected).cloned() else { return self.redraw() };
         self.remember(&item.label);
         self.run(item.action, event_loop);
@@ -278,6 +296,11 @@ impl App {
                 self.add_workspace(&WorkspaceSpec { name: String::new(), cwd: Some(dir.display().to_string()), panes: vec![], split: None, layout: None, ..Default::default() });
                 self.go_to(self.workspaces.len() - 1);
             }
+            Action::ConnectPrompt => {
+                self.palette = Some(Palette { mode: Mode::Machine, field: TextField::default(), matches: Vec::new(), selected: 0, first: 0 });
+                self.palette_changed();
+            }
+            Action::Connect(host) => self.connect_workspace(&host),
             Action::Rename => {
                 let name = self.ws().name.clone();
                 // The name is all selected, to type over or to change.
@@ -413,6 +436,7 @@ impl App {
         let (label, field, mode) = (p.label(), p.field.clone(), p.mode);
         let note = match (mode, p.matches.len()) {
             (Mode::Rename, _) => "Enter to rename".to_string(),
+            (Mode::Machine, 0) => "Enter to connect".to_string(),
             (_, 0) => "No matches".to_string(),
             (_, n) => format!("{} of {n}", p.selected + 1),
         };
@@ -708,8 +732,9 @@ impl App {
 
     pub(super) fn set_title(&self) {
         if let (Some(w), Some(ws)) = (&self.window, self.workspaces.get(self.current)) {
-            match &self.mux.host {
-                Some(host) if !self.mux.connected() => w.set_title(&format!("{} · {host}, reconnecting… · jot", ws.name)),
+            let m = &self.machines[ws.machine.min(self.machines.len() - 1)];
+            match &m.host {
+                Some(host) if !m.client.connected() => w.set_title(&format!("{} · {host}, reconnecting… · jot", ws.name)),
                 Some(host) => w.set_title(&format!("{} · {host} · jot", ws.name)),
                 None => w.set_title(&format!("{} · jot", ws.name)),
             }
@@ -789,4 +814,26 @@ impl App {
         self.full = true;
         self.redraw();
     }
+}
+
+/// The machines to offer: the hosts named in ~/.ssh/config (no wildcards),
+/// those with `typed` in them; and what is typed, as ssh would take it.
+fn machine_items(typed: &str) -> Vec<Item> {
+    let config = std::fs::read_to_string(crate::pty::home().join(".ssh/config")).unwrap_or_default();
+    let mut hosts: Vec<String> = Vec::new();
+    for line in config.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("Host ").or_else(|| line.strip_prefix("host ")) else { continue };
+        for h in rest.split_whitespace() {
+            if !h.contains(['*', '?', '!']) && !hosts.iter().any(|x| x == h) {
+                hosts.push(h.to_string());
+            }
+        }
+    }
+    let t = typed.trim();
+    let mut items: Vec<Item> = hosts.into_iter().filter(|h| h.to_lowercase().contains(&t.to_lowercase())).map(|h| Item { label: h.clone(), hint: "ssh config".into(), action: Action::Connect(h) }).collect();
+    if !t.is_empty() && !items.iter().any(|i| i.label == t) {
+        items.push(Item { label: t.to_string(), hint: "connect".into(), action: Action::Connect(t.to_string()) });
+    }
+    items
 }

@@ -123,8 +123,8 @@ impl App {
         };
         // The session writes it; a file it cannot open comes back as an end.
         let armed = !all && !running;
-        self.mux.tee(id, crate::mux::TeeState { path: path.display().to_string(), lines: 0, all, armed });
         if let Some(p) = self.panes.get_mut(&id) {
+            p.pty.mux.tee(p.pty.pane, crate::mux::TeeState { path: path.display().to_string(), lines: 0, all, armed });
             p.tee = Some(Tee { path, lines: 0, armed });
             p.full = true;
         }
@@ -150,8 +150,8 @@ impl App {
     /// A tee stopped: the session told, which says where it went when it
     /// has.
     pub(super) fn stop_tee(&mut self, id: PaneId) {
-        if self.panes.get(&id).is_some_and(|p| p.tee.is_some()) {
-            self.mux.tee_stop(id);
+        if let Some(p) = self.panes.get(&id).filter(|p| p.tee.is_some()) {
+            p.pty.mux.tee_stop(p.pty.pane);
         }
     }
 
