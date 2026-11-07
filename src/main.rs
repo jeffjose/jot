@@ -34,6 +34,7 @@ jterm: a terminal with splits and workspaces
   jterm list | open DIR | split [--down] [-- CMD] | run CMD
         | send PANE TEXT | focus PANE | notify TEXT
                    control the running jterm
+  jterm setup      add jterm and its icon to the desktop's programs
   jterm --version
 
 Keys:
@@ -74,6 +75,9 @@ fn main() {
     if args.first().is_some_and(|a| remote::COMMANDS.contains(&a.as_str())) {
         std::process::exit(remote::client(&args));
     }
+    if args.first().is_some_and(|a| a == "setup") {
+        return setup();
+    }
     let mut fresh = false;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
@@ -94,4 +98,31 @@ fn main() {
     let event_loop = EventLoop::<()>::with_user_event().build().expect("no display to open a window on");
     let mut app = app::App::new(event_loop.create_proxy(), config, session);
     event_loop.run_app(&mut app).expect("event loop");
+}
+
+/// `jterm setup`: jterm in the desktop's list of programs, with its icon,
+/// for the user who runs it.
+fn setup() {
+    let data = std::env::var_os("XDG_DATA_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| pty::home().join(".local/share"));
+    let exe = std::env::current_exe().map(|e| e.display().to_string()).unwrap_or_else(|_| "jterm".into());
+    let desktop = include_str!("../assets/jterm.desktop").replace("Exec=jterm", &format!("Exec={exe}"));
+    let files: [(std::path::PathBuf, &[u8]); 3] = [
+        (data.join("applications/jterm.desktop"), desktop.as_bytes()),
+        (data.join("icons/hicolor/scalable/apps/jterm.svg"), include_bytes!("../assets/jterm.svg")),
+        (data.join("icons/hicolor/256x256/apps/jterm.png"), include_bytes!("../assets/jterm.png")),
+    ];
+    for (path, bytes) in files {
+        let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, bytes));
+        match written {
+            Ok(()) => println!("wrote {}", path.display()),
+            Err(e) => {
+                eprintln!("jterm: could not write {}: {e}", path.display());
+                std::process::exit(1);
+            }
+        }
+    }
+    // The desktop's caches, told, where it has the tools.
+    let quiet = || std::process::Stdio::null();
+    let _ = std::process::Command::new("gtk-update-icon-cache").arg("-q").arg(data.join("icons/hicolor")).stdout(quiet()).stderr(quiet()).status();
+    let _ = std::process::Command::new("update-desktop-database").arg("-q").arg(data.join("applications")).stdout(quiet()).stderr(quiet()).status();
 }

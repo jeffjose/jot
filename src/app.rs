@@ -1792,7 +1792,7 @@ impl ApplicationHandler<()> for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title("jterm").with_inner_size(LogicalSize::new(1400.0, 900.0));
+        let attrs = window_attributes("jterm", LogicalSize::new(1400.0, 900.0));
         let window = Rc::new(event_loop.create_window(attrs).expect("failed to create window"));
         let context = Context::new(window.clone()).expect("failed to connect to display");
         self.surface = Some(Surface::new(&context, window.clone()).expect("failed to create surface"));
@@ -1998,5 +1998,63 @@ impl App {
             restore_scrollback(self.panes.get_mut(&id), &format!("p{}", i + 1));
             self.open_popout_window(id, event_loop);
         }
+    }
+}
+
+/// jterm's own window settings: its icon, and its name for the desktop
+/// (the X11 class and the Wayland app id), so that a dock or a list of
+/// windows shows it as jterm, with jterm.desktop's icon.
+pub(super) fn window_attributes(title: &str, size: impl Into<winit::dpi::Size>) -> winit::window::WindowAttributes {
+    use winit::platform::wayland::WindowAttributesExtWayland;
+    use winit::platform::x11::WindowAttributesExtX11;
+    let attrs = Window::default_attributes().with_title(title).with_inner_size(size).with_window_icon(app_icon());
+    let attrs = WindowAttributesExtX11::with_name(attrs, "jterm", "jterm");
+    WindowAttributesExtWayland::with_name(attrs, "jterm", "jterm")
+}
+
+/// The icon built in: a prompt on tomato, at 64 pixels, as a window's is
+/// shown; X11 takes no more in one request than a 256 one would need.
+fn app_icon() -> Option<winit::window::Icon> {
+    static PNG: &[u8] = include_bytes!("../assets/jterm.png");
+    let mut reader = png::Decoder::new(std::io::Cursor::new(PNG)).read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    let (w, h) = (info.width as usize, info.height as usize);
+    let k = (w / 64).max(1);
+    let (ow, oh) = (w / k, h / k);
+    let mut out = vec![0u8; ow * oh * 4];
+    for y in 0..oh {
+        for x in 0..ow {
+            // Each pixel the mean of the block it stands for, its colors
+            // weighed by how opaque they are, so edges do not darken.
+            let mut sum = [0u32; 4];
+            for dy in 0..k {
+                for dx in 0..k {
+                    let i = ((y * k + dy) * w + x * k + dx) * 4;
+                    let a = buf[i + 3] as u32;
+                    for c in 0..3 {
+                        sum[c] += buf[i + c] as u32 * a;
+                    }
+                    sum[3] += a;
+                }
+            }
+            let o = (y * ow + x) * 4;
+            for c in 0..3 {
+                out[o + c] = if sum[3] == 0 { 0 } else { (sum[c] / sum[3]) as u8 };
+            }
+            out[o + 3] = (sum[3] / (k * k) as u32) as u8;
+        }
+    }
+    winit::window::Icon::from_rgba(out, ow as u32, oh as u32).ok()
+}
+
+#[cfg(test)]
+mod icon_test {
+    #[test]
+    fn icon_decodes() {
+        assert!(super::app_icon().is_some());
     }
 }
