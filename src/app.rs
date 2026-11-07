@@ -283,6 +283,11 @@ pub struct App {
     /// Panes taken up whose output is yet to be replayed.
     replays: Vec<(PaneId, Vec<u8>)>,
     replaying: bool,
+    /// The time the output being replayed was printed, for how long its
+    /// commands took.
+    replay_at: Option<Instant>,
+    /// What to say about other sessions, once the window is up.
+    notes: Vec<String>,
 }
 
 fn hostname() -> String {
@@ -311,7 +316,7 @@ fn folder_name(p: &std::path::Path) -> String {
 }
 
 impl App {
-    pub fn new(proxy: EventLoopProxy<()>, config: Config, session: Option<Session>) -> App {
+    pub fn new(proxy: EventLoopProxy<()>, config: Config, session: Option<Session>, pick: crate::mux::Pick) -> App {
         let (tx, rx) = channel();
         // The `jot` command's requests, each waking the window.
         let (req_tx, requests) = channel();
@@ -325,11 +330,14 @@ impl App {
         let woken = Arc::new(AtomicBool::new(false));
         let attached = {
             let (tx, proxy, woken) = (tx.clone(), proxy.clone(), woken.clone());
-            crate::mux::Client::open(move |heard| {
+            crate::mux::Client::open(pick, move |heard| {
                 let out = match heard {
                     crate::mux::Heard::Output(id, b) => Output::Bytes(id, b),
                     crate::mux::Heard::Exit(id) => Output::Exit(id),
                     crate::mux::Heard::Mode(id, raw) => Output::Mode(id, raw),
+                    crate::mux::Heard::Ran(id, cmd) => Output::Ran(id, cmd),
+                    crate::mux::Heard::TeeLines(id, n) => Output::TeeLines(id, n),
+                    crate::mux::Heard::TeeEnd(id, n, e) => Output::TeeEnd(id, n, e),
                     crate::mux::Heard::Gone => Output::Gone,
                 };
                 let _ = tx.send(out);
@@ -351,6 +359,7 @@ impl App {
         let session = if taking_up { toml::from_str::<Session>(&attached.layout).ok() } else { session };
         let next_id = attached.panes.iter().map(|h| h.pane + 1).max().unwrap_or(1);
         let held: HashMap<u64, crate::mux::Held> = attached.panes.into_iter().map(|h| (h.pane, h)).collect();
+        let notes = attached.notes;
         let font_size = config.font_size;
         let theme = Theme::by_name(&config.theme);
         let accent = crate::theme::accent(&config.accent);
@@ -444,6 +453,8 @@ impl App {
             held,
             replays: Vec::new(),
             replaying: false,
+            replay_at: None,
+            notes,
         }
     }
 
@@ -474,9 +485,11 @@ impl App {
     fn spawn(&mut self, start: Start) -> PaneId {
         let (cols, rows) = (80, 24);
         let held = start.pane.and_then(|p| self.held.remove(&p));
+        let mut kept = None;
         let (id, pid, cmd) = match held {
             Some(h) => {
                 self.replays.push((h.pane, h.log));
+                kept = Some((h.tee, h.queue));
                 (h.pane, h.pid, h.cmd)
             }
             None => {
@@ -504,6 +517,14 @@ impl App {
             id,
             Pane { term, pty, cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0 },
         );
+        // A tee and a queue the session kept going, shown again.
+        if let (Some((tee, queue)), Some(p)) = (kept, self.panes.get_mut(&id)) {
+            p.tee = tee.map(|t| watch::Tee { path: PathBuf::from(t.path), lines: t.lines as usize, armed: t.armed });
+            p.shell.queue = queue.items.clone();
+            p.shell.paused = queue.paused;
+            p.shell.after = queue.after.clone();
+            p.shell.synced = queue;
+        }
         id
     }
 
@@ -525,6 +546,10 @@ impl App {
                         p.cols = cols;
                         p.rows = rows;
                     }
+                    crate::mux::Entry::Time(ms) => {
+                        let ago = Duration::from_millis(crate::mux::now_ms().saturating_sub(ms));
+                        self.replay_at = Instant::now().checked_sub(ago);
+                    }
                     crate::mux::Entry::Bytes(b) => {
                         p.term.write(b);
                         if !p.has_images && b.windows(3).any(|w| w == b"\x1b_G") {
@@ -540,6 +565,7 @@ impl App {
         }
         self.mux.mute.store(false, Ordering::Release);
         self.replaying = false;
+        self.replay_at = None;
         // Back to the sizes the window gives them.
         self.relayout();
     }
@@ -638,6 +664,9 @@ impl App {
         }
         self.load_triggers();
         self.replay_held();
+        for note in std::mem::take(&mut self.notes) {
+            self.toast("Sessions", &note, None, None);
+        }
     }
 
     fn ws(&self) -> &Workspace {
@@ -1670,6 +1699,9 @@ impl App {
                         self.queue_tick(id);
                     }
                 }
+                Output::Ran(id, cmd) => self.queue_ran(id, cmd),
+                Output::TeeLines(id, n) => self.tee_lines(id, n),
+                Output::TeeEnd(id, n, e) => self.tee_ended(id, n, e),
                 Output::Gone => {
                     eprintln!("jot: the session ended");
                     self.mux.detach();
@@ -2348,6 +2380,8 @@ impl ApplicationHandler<()> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Queues changed by what was done: told to the session.
+        self.sync_queues();
         if self.unsaved && self.saved_at.elapsed() > Duration::from_secs(2) {
             self.save();
         }

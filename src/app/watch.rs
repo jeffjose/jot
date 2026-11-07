@@ -4,42 +4,14 @@
 //! Each is shown by a tag on the pane's caption, which a click stops.
 
 use super::*;
-use std::io::Write as _;
 
-/// A pane's output written to a file too, as plain text.
+/// A pane's output written to a file too, as plain text: by the session,
+/// so that it goes on with no window. This is what the caption shows.
 pub struct Tee {
     pub path: PathBuf,
-    file: std::fs::File,
     pub lines: usize,
-    /// When its tag was last drawn, its count with it.
-    shown_at: Instant,
-    /// Everything the pane prints, until stopped; else one command's
-    /// output, that ends it.
-    pub all: bool,
     /// Not yet on: waiting for the next command to start.
     pub armed: bool,
-}
-
-impl Tee {
-    /// What of these bytes goes to the file: all of them, or only what
-    /// the command printed, from its start mark to its end mark. The
-    /// second is true once the command ended.
-    fn take<'a>(&mut self, bytes: &'a [u8]) -> (&'a [u8], bool) {
-        if self.all {
-            return (bytes, false);
-        }
-        let mut rest = bytes;
-        if self.armed {
-            let Some(at) = mark(rest, b"\x1b]133;C") else { return (&[], false) };
-            let end = rest[at..].iter().position(|b| *b == 0x07).map_or(rest.len(), |e| at + e + 1);
-            rest = &rest[end..];
-            self.armed = false;
-        }
-        match mark(rest, b"\x1b]133;D") {
-            Some(at) => (&rest[..at], true),
-            None => (rest, false),
-        }
-    }
 }
 
 /// A pane's command's lines, only those with `text` in them shown.
@@ -120,27 +92,6 @@ impl App {
     /// terminal has it.
     pub(super) fn watch_output(&mut self, id: PaneId, bytes: Vec<u8>) -> Vec<u8> {
         let Some(p) = self.panes.get_mut(&id) else { return bytes };
-        if let Some(t) = &mut p.tee {
-            let (part, ended) = t.take(&bytes);
-            let text = automate::plain(part);
-            t.lines += text.matches('\n').count();
-            // Its count on the caption, kept up a few times a second.
-            if t.shown_at.elapsed() > Duration::from_millis(250) {
-                t.shown_at = Instant::now();
-                p.full = true;
-            }
-            if t.file.write_all(text.as_bytes()).is_err() {
-                let path = persist::shorten(&t.path);
-                p.tee = None;
-                self.toast("Tee stopped", &format!("Could not write to {path}"), Some(0xE5484D), Some(id));
-                return bytes;
-            }
-            // Its command ended: so does the tee, saying where it went.
-            if ended {
-                self.stop_tee(id);
-            }
-        }
-        let Some(p) = self.panes.get_mut(&id) else { return bytes };
         let Some(f) = &mut p.filter else { return bytes };
         let (shown, ended) = f.pass(&bytes);
         if ended {
@@ -170,17 +121,12 @@ impl App {
             let p = persist::expand(&file);
             if p.is_absolute() { p } else { cwd.join(p) }
         };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-            Ok(file) => {
-                if let Some(p) = self.panes.get_mut(&id) {
-                    p.tee = Some(Tee { path: path.clone(), file, lines: 0, shown_at: Instant::now(), all, armed: !all && !running });
-                    p.full = true;
-                }
-            }
-            Err(e) => self.toast("Could not tee", &format!("{}: {e}", persist::shorten(&path)), Some(0xE5484D), Some(id)),
+        // The session writes it; a file it cannot open comes back as an end.
+        let armed = !all && !running;
+        self.mux.tee(id, crate::mux::TeeState { path: path.display().to_string(), lines: 0, all, armed });
+        if let Some(p) = self.panes.get_mut(&id) {
+            p.tee = Some(Tee { path, lines: 0, armed });
+            p.full = true;
         }
         self.full = true;
         self.redraw();
@@ -201,14 +147,42 @@ impl App {
         std::env::temp_dir().join("jot").join(format!("{word}-{stamp}.log"))
     }
 
+    /// A tee stopped: the session told, which says where it went when it
+    /// has.
     pub(super) fn stop_tee(&mut self, id: PaneId) {
+        if self.panes.get(&id).is_some_and(|p| p.tee.is_some()) {
+            self.mux.tee_stop(id);
+        }
+    }
+
+    /// The session ended a tee: stopped, its command done, or the file
+    /// failed. Where it went said, or why not.
+    pub(super) fn tee_ended(&mut self, id: PaneId, lines: u64, error: String) {
         let Some(t) = self.panes.get_mut(&id).and_then(|p| p.tee.take()) else { return };
         if let Some(p) = self.panes.get_mut(&id) {
             p.full = true;
         }
-        self.toast("Saved", &format!("{} lines · {}", t.lines, persist::shorten(&t.path)), None, Some(id));
+        let path = persist::shorten(&t.path);
+        if error.is_empty() {
+            self.toast("Saved", &format!("{lines} lines · {path}"), None, Some(id));
+        } else {
+            self.toast("Tee stopped", &format!("{path}: {error}"), Some(0xE5484D), Some(id));
+        }
         self.full = true;
         self.redraw();
+    }
+
+    /// How many lines a tee has written, as the session counts them.
+    pub(super) fn tee_lines(&mut self, id: PaneId, lines: u64) {
+        if let Some(p) = self.panes.get_mut(&id) {
+            if let Some(t) = &mut p.tee {
+                t.lines = lines as usize;
+                t.armed = false;
+                p.full = true;
+                self.full = true;
+                self.redraw();
+            }
+        }
     }
 
     /// /filter TEXT: only the running command's lines with the text in

@@ -2,6 +2,13 @@
 //! own, keeps what it prints, and passes keys and output between the
 //! shells and the one window attached. It runs on when the window goes,
 //! and ends with its last pane.
+//!
+//! What has to go on with no window is done here: /tee writes its file,
+//! and queued commands are typed at the prompt when it comes. It watches
+//! the shell's marks (OSC 133) for that: A, a prompt; C, a command
+//! started; D, it ended, and how. With no window, a failed command holds
+//! the queue behind it and commands waiting on it (@N) go on, as the
+//! window would have done.
 
 use super::*;
 use crate::pty::Local;
@@ -33,22 +40,32 @@ pub fn launch(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// What a pane printed, as it came, and the sizes it was made.
+/// What a pane printed, as it came, the sizes it was made, and the time
+/// now and then.
 #[derive(Default)]
 struct Log {
     entries: VecDeque<Kept>,
     bytes: usize,
     /// The size before the first entry kept.
     base: (u16, u16),
+    /// When the time was last put down.
+    timed: Option<Instant>,
 }
 
 enum Kept {
     Bytes(Vec<u8>),
     Size(u16, u16),
+    Time(u64),
 }
 
 impl Log {
     fn push(&mut self, b: &[u8]) {
+        // The time, a few times a second at most, so that replayed
+        // commands take as long as they did.
+        if self.timed.is_none_or(|t| t.elapsed() >= Duration::from_millis(250)) {
+            self.timed = Some(Instant::now());
+            self.entries.push_back(Kept::Time(now_ms()));
+        }
         self.bytes += b.len();
         match self.entries.back_mut() {
             Some(Kept::Bytes(last)) if last.len() < 64 << 10 => last.extend_from_slice(b),
@@ -67,39 +84,26 @@ impl Log {
         }
     }
 
+    fn drop_front(&mut self) -> bool {
+        match self.entries.pop_front() {
+            Some(Kept::Bytes(b)) => self.bytes -= b.len(),
+            Some(Kept::Size(c, r)) => self.base = (c, r),
+            Some(Kept::Time(_)) => {}
+            None => return false,
+        }
+        true
+    }
+
     /// The oldest half gone, then up to the next prompt (or line), so the
     /// replay starts at the start of something.
     fn trim(&mut self) {
-        while self.bytes > CAP / 2 {
-            match self.entries.pop_front() {
-                Some(Kept::Bytes(b)) => self.bytes -= b.len(),
-                Some(Kept::Size(c, r)) => self.base = (c, r),
-                None => break,
-            }
-        }
+        while self.bytes > CAP / 2 && self.drop_front() {}
         const PROMPT: &[u8] = b"\x1b]133;A";
-        let mut cut = None;
-        for (i, e) in self.entries.iter().enumerate() {
-            if let Kept::Bytes(b) = e {
-                if let Some(at) = b.windows(PROMPT.len()).position(|w| w == PROMPT) {
-                    cut = Some((i, at));
-                    break;
-                }
-            }
-        }
-        let cut = cut.or_else(|| {
-            self.entries.iter().enumerate().find_map(|(i, e)| match e {
-                Kept::Bytes(b) => b.iter().position(|c| *c == b'\n').map(|at| (i, at + 1)),
-                _ => None,
-            })
-        });
+        let find = |entries: &VecDeque<Kept>, f: &dyn Fn(&[u8]) -> Option<usize>| entries.iter().enumerate().find_map(|(i, e)| if let Kept::Bytes(b) = e { f(b).map(|at| (i, at)) } else { None });
+        let cut = find(&self.entries, &|b| b.windows(PROMPT.len()).position(|w| w == PROMPT)).or_else(|| find(&self.entries, &|b| b.iter().position(|c| *c == b'\n').map(|at| at + 1)));
         let Some((i, at)) = cut else { return };
         for _ in 0..i {
-            match self.entries.pop_front() {
-                Some(Kept::Bytes(b)) => self.bytes -= b.len(),
-                Some(Kept::Size(c, r)) => self.base = (c, r),
-                None => {}
-            }
+            self.drop_front();
         }
         if let Some(Kept::Bytes(b)) = self.entries.front_mut() {
             b.drain(..at);
@@ -123,10 +127,81 @@ impl Log {
                     o.extend_from_slice(b);
                 }
                 Kept::Size(c, r) => size(&mut o, (*c, *r)),
+                Kept::Time(ms) => {
+                    o.push(2);
+                    o.extend_from_slice(&ms.to_le_bytes());
+                }
             }
         }
         o
     }
+}
+
+/// A pane's /tee: its output, as plain text, to a file too.
+struct Tee {
+    state: TeeState,
+    file: std::fs::File,
+    /// The count last told to the window.
+    told: u64,
+}
+
+impl Tee {
+    /// What of these bytes goes to the file: all of them, or only what
+    /// the command printed, from its start mark to its end mark. The
+    /// second is true once the command ended.
+    fn take<'a>(&mut self, bytes: &'a [u8]) -> (&'a [u8], bool) {
+        if self.state.all {
+            return (bytes, false);
+        }
+        let mut rest = bytes;
+        if self.state.armed {
+            let Some(at) = find(rest, b"\x1b]133;C") else { return (&[], false) };
+            let end = rest[at..].iter().position(|b| *b == 0x07).map_or(rest.len(), |e| at + e + 1);
+            rest = &rest[end..];
+            self.state.armed = false;
+        }
+        match find(rest, b"\x1b]133;D") {
+            Some(at) => (&rest[..at], true),
+            None => (rest, false),
+        }
+    }
+}
+
+fn find(bytes: &[u8], which: &[u8]) -> Option<usize> {
+    bytes.windows(which.len()).position(|w| w == which)
+}
+
+/// A shell mark: A, B, C, or D with the exit status if given.
+enum Mark {
+    Prompt,
+    Started,
+    Ended(Option<i32>),
+}
+
+/// The marks in `bytes`, those that end past `from` (the bytes before it
+/// were seen with the last read, and their marks with them).
+fn marks(bytes: &[u8], from: usize) -> Vec<Mark> {
+    const OSC: &[u8] = b"\x1b]133;";
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(at) = find(&bytes[i..], OSC) {
+        let start = i + at + OSC.len();
+        let Some(&kind) = bytes.get(start) else { break };
+        i = start;
+        if start < from {
+            continue;
+        }
+        match kind {
+            b'A' => out.push(Mark::Prompt),
+            b'C' => out.push(Mark::Started),
+            b'D' => {
+                let code = bytes[start + 1..].strip_prefix(b";").map(|r| r.iter().take_while(|c| c.is_ascii_digit() || **c == b'-').map(|c| *c as char).collect::<String>()).and_then(|s| s.parse().ok());
+                out.push(Mark::Ended(code));
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 struct Pane {
@@ -136,6 +211,12 @@ struct Pane {
     log: Log,
     /// Whether it reads keys one at a time, as last told.
     raw: Option<bool>,
+    /// The last bytes read, for a mark split between reads.
+    tail: Vec<u8>,
+    /// At a prompt, nothing typed there yet by the queue.
+    at_prompt: bool,
+    queue: Queue,
+    tee: Option<Tee>,
 }
 
 enum Ev {
@@ -145,6 +226,172 @@ enum Ev {
     Out(u64, Vec<u8>),
     Ended(u64),
     Tick,
+}
+
+struct Server {
+    panes: HashMap<u64, Pane>,
+    conns: HashMap<u64, UnixStream>,
+    attached: Option<u64>,
+    layout: String,
+}
+
+impl Server {
+    fn send(&mut self, c: u64, m: ToClient) {
+        if let Some(s) = self.conns.get_mut(&c) {
+            if s.write_all(&m.encode()).is_err() {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+        }
+    }
+
+    fn tell(&mut self, m: ToClient) {
+        if let Some(c) = self.attached {
+            self.send(c, m);
+        }
+    }
+
+    /// The next queued command typed at a pane's prompt, once its line
+    /// editor is reading (out of line mode), so it is not echoed twice.
+    fn fire(&mut self, id: u64) {
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        if !p.at_prompt || p.queue.paused || p.queue.items.is_empty() || !p.pty.raw() {
+            return;
+        }
+        let cmd = p.queue.items.remove(0);
+        let _ = p.keys.send(format!("\x15{cmd}\r").into_bytes());
+        p.at_prompt = false;
+        self.tell(ToClient::Ran { pane: id, cmd });
+    }
+
+    fn output(&mut self, id: u64, b: Vec<u8>) {
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        p.log.push(&b);
+        // Marks, a split one too.
+        let seen = p.tail.len();
+        let mut joined = std::mem::take(&mut p.tail);
+        joined.extend_from_slice(&b);
+        let found = marks(&joined, seen);
+        p.tail = joined[joined.len().saturating_sub(15)..].to_vec();
+        let mut ended = None;
+        for m in found {
+            match m {
+                Mark::Prompt => p.at_prompt = true,
+                Mark::Started => p.at_prompt = false,
+                Mark::Ended(exit) => ended = Some(exit),
+            }
+        }
+        // /tee: its part of the output to the file.
+        let mut tee_end = None;
+        if let Some(t) = &mut p.tee {
+            let (part, done) = t.take(&b);
+            let text = crate::app::automate::plain(part);
+            t.state.lines += text.matches('\n').count() as u64;
+            use std::io::Write as _;
+            if let Err(e) = t.file.write_all(text.as_bytes()) {
+                tee_end = Some(e.to_string());
+            } else if done {
+                tee_end = Some(String::new());
+            }
+        }
+        if let Some(error) = tee_end {
+            let lines = p.tee.take().map_or(0, |t| t.state.lines);
+            self.tell(ToClient::TeeEnd { pane: id, lines, error });
+        }
+        // A failed command holds the queue behind it (as the window does,
+        // but before the next is typed), unless it was being restarted.
+        if let Some(exit) = ended {
+            let failed = exit.is_some_and(|e| e != 0);
+            if let Some(p) = self.panes.get_mut(&id) {
+                if failed && !p.queue.items.is_empty() && !p.queue.restarting {
+                    p.queue.paused = true;
+                }
+                p.queue.restarting = false;
+            }
+        }
+        // With no window, the commands waiting on this one go on.
+        if let (Some(exit), None) = (ended, self.attached) {
+            let failed = exit.is_some_and(|e| e != 0);
+            for (_, other) in self.panes.iter_mut() {
+                let (go, stay): (Vec<_>, Vec<_>) = std::mem::take(&mut other.queue.after).into_iter().partition(|(t, _)| *t == id);
+                other.queue.after = stay;
+                if !go.is_empty() {
+                    other.queue.items.extend(go.into_iter().map(|(_, c)| c));
+                    if failed {
+                        other.queue.paused = true;
+                    }
+                }
+            }
+        }
+        if let Some(c) = self.attached {
+            self.send(c, ToClient::Output { pane: id, bytes: b });
+        }
+        self.fire(id);
+    }
+
+    fn welcome(&mut self, c: u64) {
+        let mut held: Vec<Held> = self
+            .panes
+            .iter()
+            .map(|(id, p)| Held { pane: *id, pid: p.pty.pid, cmd: p.cmd.clone(), log: p.log.encode(), tee: p.tee.as_ref().map(|t| t.state.clone()), queue: p.queue.clone() })
+            .collect();
+        held.sort_by_key(|h| h.pane);
+        for p in self.panes.values_mut() {
+            p.raw = None;
+            if let Some(t) = &mut p.tee {
+                t.told = t.state.lines;
+            }
+        }
+        let layout = self.layout.clone();
+        self.send(c, ToClient::Welcome { layout, panes: held });
+    }
+
+    fn info(&self) -> ToClient {
+        let names = toml::from_str::<crate::persist::Session>(&self.layout).map(|s| s.workspaces.iter().map(|w| w.name.clone()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+        ToClient::Info { attached: self.attached.is_some(), panes: self.panes.len() as u32, names }
+    }
+
+    fn spawn(&mut self, tx: &Sender<Ev>, pane: u64, cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32)) -> i32 {
+        match Local::spawn(&cmd, Path::new(&cwd), cols, rows, px) {
+            Ok(pty) => {
+                let pid = pty.pid;
+                let tx2 = tx.clone();
+                pty.read_on_thread(pane, move |out| {
+                    let _ = tx2.send(match out {
+                        crate::pty::Output::Bytes(id, b) => Ev::Out(id, b),
+                        _ => Ev::Ended(pane),
+                    });
+                });
+                let (keys, rx_keys) = channel::<Vec<u8>>();
+                let fd = unsafe { libc::dup(pty.fd) };
+                std::thread::spawn(move || {
+                    while let Ok(b) = rx_keys.recv() {
+                        Local::write_fd(fd, &b);
+                    }
+                    unsafe { libc::close(fd) };
+                });
+                let mut log = Log::default();
+                log.size(cols, rows);
+                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None });
+                pid
+            }
+            Err(e) => {
+                eprintln!("jot serve: could not start a shell: {e}");
+                -1
+            }
+        }
+    }
+
+    fn tee(&mut self, pane: u64, state: TeeState) {
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        let path = PathBuf::from(&state.path);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(file) => p.tee = Some(Tee { state, file, told: 0 }),
+            Err(e) => self.tell(ToClient::TeeEnd { pane, lines: 0, error: e.to_string() }),
+        }
+    }
 }
 
 /// `jot serve PATH`: the session, until its last pane ends.
@@ -178,26 +425,16 @@ pub fn run(path: &Path) {
             }
         });
     }
-    let mut panes: HashMap<u64, Pane> = HashMap::new();
-    let mut conns: HashMap<u64, UnixStream> = HashMap::new();
-    let mut attached: Option<u64> = None;
-    let mut layout = String::new();
+    let mut s = Server { panes: HashMap::new(), conns: HashMap::new(), attached: None, layout: String::new() };
     let mut next_conn = 0u64;
     let started = Instant::now();
-    let send = |conns: &mut HashMap<u64, UnixStream>, c: u64, m: ToClient| {
-        if let Some(s) = conns.get_mut(&c) {
-            if s.write_all(&m.encode()).is_err() {
-                let _ = s.shutdown(std::net::Shutdown::Both);
-            }
-        }
-    };
     while let Ok(ev) = rx.recv() {
         match ev {
-            Ev::Conn(s) => {
+            Ev::Conn(stream) => {
                 next_conn += 1;
                 let c = next_conn;
-                let Ok(mut r) = s.try_clone() else { continue };
-                conns.insert(c, s);
+                let Ok(mut r) = stream.try_clone() else { continue };
+                s.conns.insert(c, stream);
                 let tx = tx.clone();
                 std::thread::spawn(move || {
                     while let Ok(f) = read_frame(&mut r) {
@@ -213,125 +450,107 @@ pub fn run(path: &Path) {
                     let _ = tx.send(Ev::Left(c));
                 });
             }
+            Ev::Said(c, ToServer::Peek) => {
+                let info = s.info();
+                s.send(c, info);
+                if let Some(st) = s.conns.remove(&c) {
+                    let _ = st.shutdown(std::net::Shutdown::Both);
+                }
+            }
             Ev::Said(c, ToServer::Hello { proto }) => {
                 let why = if proto != PROTO {
-                    Some(format!("this session speaks {PROTO}, the window {proto}"))
-                } else if attached.is_some_and(|a| a != c) {
+                    Some(format!("protocol {PROTO} here, {proto} in the window"))
+                } else if s.attached.is_some_and(|a| a != c) {
                     Some("another window has it".into())
                 } else {
                     None
                 };
                 if let Some(why) = why {
-                    send(&mut conns, c, ToClient::Refused { why });
-                    if let Some(s) = conns.remove(&c) {
-                        let _ = s.shutdown(std::net::Shutdown::Both);
+                    s.send(c, ToClient::Refused { why });
+                    if let Some(st) = s.conns.remove(&c) {
+                        let _ = st.shutdown(std::net::Shutdown::Both);
                     }
                     continue;
                 }
-                attached = Some(c);
-                let mut held: Vec<Held> = panes.iter().map(|(id, p)| Held { pane: *id, pid: p.pty.pid, cmd: p.cmd.clone(), log: p.log.encode() }).collect();
-                held.sort_by_key(|h| h.pane);
-                for p in panes.values_mut() {
-                    p.raw = None;
-                }
-                send(&mut conns, c, ToClient::Welcome { layout: layout.clone(), panes: held });
+                s.attached = Some(c);
+                s.welcome(c);
             }
-            Ev::Said(c, m) if attached == Some(c) => match m {
+            Ev::Said(c, m) if s.attached == Some(c) => match m {
                 ToServer::Spawn { pane, cmd, cwd, cols, rows, px } => {
-                    let pid = match Local::spawn(&cmd, Path::new(&cwd), cols, rows, px) {
-                        Ok(pty) => {
-                            let pid = pty.pid;
-                            let tx2 = tx.clone();
-                            pty.read_on_thread(pane, move |out| {
-                                let _ = tx2.send(match out {
-                                    crate::pty::Output::Bytes(id, b) => Ev::Out(id, b),
-                                    _ => Ev::Ended(pane),
-                                });
-                            });
-                            let (keys, rx_keys) = channel::<Vec<u8>>();
-                            let fd = unsafe { libc::dup(pty.fd) };
-                            std::thread::spawn(move || {
-                                while let Ok(b) = rx_keys.recv() {
-                                    Local::write_fd(fd, &b);
-                                }
-                                unsafe { libc::close(fd) };
-                            });
-                            let mut log = Log::default();
-                            log.size(cols, rows);
-                            panes.insert(pane, Pane { pty, keys, cmd, log, raw: None });
-                            pid
-                        }
-                        Err(e) => {
-                            eprintln!("jot serve: could not start a shell: {e}");
-                            -1
-                        }
-                    };
-                    send(&mut conns, c, ToClient::Spawned { pane, pid });
+                    let pid = s.spawn(&tx, pane, cmd, cwd, cols, rows, px);
+                    s.send(c, ToClient::Spawned { pane, pid });
                 }
                 ToServer::Input { pane, bytes } => {
-                    if let Some(p) = panes.get(&pane) {
+                    if let Some(p) = s.panes.get(&pane) {
                         let _ = p.keys.send(bytes);
                     }
                 }
                 ToServer::Resize { pane, cols, rows, px } => {
-                    if let Some(p) = panes.get_mut(&pane) {
+                    if let Some(p) = s.panes.get_mut(&pane) {
                         p.pty.resize(cols, rows, px);
                         p.log.size(cols, rows);
                     }
                 }
                 ToServer::Close { pane } => {
                     // Dropped: its shell hung up on.
-                    panes.remove(&pane);
+                    s.panes.remove(&pane);
                 }
-                ToServer::Layout { text } => layout = text,
-                ToServer::Hello { .. } => {}
+                ToServer::Layout { text } => s.layout = text,
+                ToServer::Tee { pane, tee } => s.tee(pane, tee),
+                ToServer::TeeStop { pane } => {
+                    if let Some(t) = s.panes.get_mut(&pane).and_then(|p| p.tee.take()) {
+                        s.send(c, ToClient::TeeEnd { pane, lines: t.state.lines, error: String::new() });
+                    }
+                }
+                ToServer::Queue { pane, queue } => {
+                    if let Some(p) = s.panes.get_mut(&pane) {
+                        p.queue = queue;
+                    }
+                    s.fire(pane);
+                }
+                ToServer::Hello { .. } | ToServer::Peek => {}
             },
             Ev::Said(..) => {}
             Ev::Left(c) => {
-                conns.remove(&c);
-                if attached == Some(c) {
-                    attached = None;
-                    if panes.is_empty() {
+                s.conns.remove(&c);
+                if s.attached == Some(c) {
+                    s.attached = None;
+                    if s.panes.is_empty() {
                         break;
                     }
                 }
             }
-            Ev::Out(id, b) => {
-                if let Some(p) = panes.get_mut(&id) {
-                    p.log.push(&b);
-                    if let Some(c) = attached {
-                        send(&mut conns, c, ToClient::Output { pane: id, bytes: b });
-                    }
-                }
-            }
+            Ev::Out(id, b) => s.output(id, b),
             Ev::Ended(id) => {
-                if panes.remove(&id).is_some() {
-                    if let Some(c) = attached {
-                        send(&mut conns, c, ToClient::Exit { pane: id });
-                    }
+                if s.panes.remove(&id).is_some() {
+                    s.tell(ToClient::Exit { pane: id });
                 }
                 crate::pty::reap();
-                if panes.is_empty() && attached.is_none() {
+                if s.panes.is_empty() && s.attached.is_none() {
                     break;
                 }
             }
             Ev::Tick => {
                 crate::pty::reap();
-                if let Some(c) = attached {
-                    let mut changed = Vec::new();
-                    for (id, p) in panes.iter_mut() {
-                        let raw = p.pty.raw();
-                        if p.raw != Some(raw) {
-                            p.raw = Some(raw);
-                            changed.push((*id, raw));
-                        }
-                    }
-                    for (pane, raw) in changed {
-                        send(&mut conns, c, ToClient::Mode { pane, raw });
+                let ids: Vec<u64> = s.panes.keys().copied().collect();
+                for id in ids {
+                    s.fire(id);
+                    let Some(p) = s.panes.get_mut(&id) else { continue };
+                    let raw = p.pty.raw();
+                    let mode = (p.raw != Some(raw)).then(|| {
+                        p.raw = Some(raw);
+                        ToClient::Mode { pane: id, raw }
+                    });
+                    let lines = p.tee.as_mut().filter(|t| t.told != t.state.lines).map(|t| {
+                        t.told = t.state.lines;
+                        ToClient::TeeLines { pane: id, lines: t.state.lines }
+                    });
+                    for m in [mode, lines].into_iter().flatten() {
+                        s.tell(m);
                     }
                 }
                 // Started but never taken up: nothing to keep it.
-                if attached.is_none() && panes.is_empty() && started.elapsed() > Duration::from_secs(30) {
+                if s.attached.is_none() && s.panes.is_empty() && started.elapsed() > Duration::from_secs(30) {
                     break;
                 }
             }

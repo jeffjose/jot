@@ -21,6 +21,11 @@ pub enum Output {
     Exit(u64),
     /// Whether it reads keys one at a time, now (see [`Local::raw`]).
     Mode(u64, bool),
+    /// A queued command typed at its prompt by the session.
+    Ran(u64, String),
+    /// Lines a /tee has written; that it ended, and why if it failed.
+    TeeLines(u64, u64),
+    TeeEnd(u64, u64, String),
     /// The session the panes were in ended.
     Gone,
 }

@@ -476,15 +476,7 @@ impl App {
 
     /// The next queued command, typed at the prompt.
     pub(super) fn run_next(&mut self, id: PaneId) {
-        let Some(p) = self.panes.get_mut(&id) else { return };
-        if p.shell.paused || p.shell.queue.is_empty() || !p.shell.at_prompt {
-            return;
-        }
-        let next = p.shell.queue.remove(0);
-        p.pty.write(format!("\x15{next}\r").as_bytes());
-        p.shell.entered = Some(next);
-        self.full = true;
-        self.relayout();
+        self.sync_queue(id);
     }
 
     /// The bar of a pane, or the strip its waiting queue leaves, at the
@@ -623,18 +615,39 @@ impl App {
     /// The next queued command typed at the prompt, once one is due and
     /// the shell's line editor has the terminal (out of line mode).
     pub(super) fn queue_tick(&mut self, id: PaneId) {
+        self.sync_queue(id);
+    }
+
+    /// The pane's queue told to the session if it changed here: the
+    /// session types each at the prompt when it comes, window or not.
+    pub(super) fn sync_queue(&mut self, id: PaneId) {
         let Some(p) = self.panes.get_mut(&id) else { return };
-        if !p.shell.queue_due {
-            return;
+        let now = crate::mux::Queue { items: p.shell.queue.clone(), paused: p.shell.paused, after: p.shell.after.iter().map(|(t, c)| (*t, c.clone())).collect(), restarting: p.shell.restarting };
+        if now != p.shell.synced {
+            p.shell.synced = now.clone();
+            self.mux.queue(id, now);
         }
-        if p.shell.paused || p.shell.queue.is_empty() || !p.shell.at_prompt {
-            p.shell.queue_due = false;
-            return;
+    }
+
+    /// Every pane's queue told, those changed.
+    pub(super) fn sync_queues(&mut self) {
+        let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        for id in ids {
+            self.sync_queue(id);
         }
-        if p.pty.raw {
-            p.shell.queue_due = false;
-            self.run_next(id);
+    }
+
+    /// The session typed a queued command at the prompt: out of the
+    /// queue here too, and the command its block is named for.
+    pub(super) fn queue_ran(&mut self, id: PaneId, cmd: String) {
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        if let Some(i) = p.shell.queue.iter().position(|c| *c == cmd) {
+            p.shell.queue.remove(i);
         }
+        p.shell.synced.items = p.shell.queue.clone();
+        p.shell.entered = Some(cmd);
+        self.full = true;
+        self.relayout();
     }
 }
 

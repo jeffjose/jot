@@ -42,6 +42,8 @@ pub struct Shell {
     /// A prompt came: the next in the queue goes once the shell's line
     /// editor is reading, so that it is not echoed twice.
     pub queue_due: bool,
+    /// The queue as the session was last told it.
+    pub synced: crate::mux::Queue,
     /// What the pane ran, oldest first: at its prompt, from its command
     /// line, from its queue.
     pub history: Vec<String>,
@@ -90,6 +92,8 @@ impl App {
 
     /// The shell's marks since last time, made into blocks and notices.
     pub(super) fn shell_events(&mut self, id: PaneId) {
+        // When this happened: now, or when replayed output was printed.
+        let now = self.replay_at.unwrap_or_else(Instant::now);
         let shown = self.focused_window && (self.ws().root.contains(id) && !self.roam_shown || self.roam == Some(id) && self.roam_shown || self.popout_of(id).is_some());
         let place = self.pane_label(id);
         let Some(p) = self.panes.get_mut(&id) else { return };
@@ -123,14 +127,14 @@ impl App {
                     // as it reads on the screen.
                     let entered = p.shell.entered.take().filter(|e| !e.trim().is_empty());
                     let line = if !cmd.is_empty() { cmd } else { entered.unwrap_or_else(|| Self::typed(p, start, row)) };
-                    p.shell.running = Some((Instant::now(), start, line));
+                    p.shell.running = Some((now, start, line));
                     // Its caption shows the restart button while it runs.
                     p.full = true;
                 }
                 ShellEvent::Output(_) => {}
                 ShellEvent::End(exit) => {
                     let Some((started, start, line)) = p.shell.running.take() else { continue };
-                    let took = started.elapsed();
+                    let took = now.saturating_duration_since(started);
                     Self::pins_ended(p, &line, exit);
                     if std::mem::take(&mut p.shell.notify) {
                         let how = match exit {

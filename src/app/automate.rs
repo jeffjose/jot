@@ -28,7 +28,7 @@ pub fn notify(title: &str, body: &str) {
 }
 
 /// What a pane printed as plain lines: escape sequences taken out.
-pub(super) fn plain(bytes: &[u8]) -> String {
+pub(crate) fn plain(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
