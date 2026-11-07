@@ -36,6 +36,7 @@ jot: a terminal with splits and workspaces
         | send PANE TEXT | focus PANE | notify TEXT
                    control the running jot
   jot setup      add jot and its icon to the desktop's programs
+  jot ssh HOST    a window on HOST's session (jot installed there)
   jot status      what the session holds, and whether a window shows it
   jot kill        end the session and every pane in it
   jot serve SOCK  a session (started by jot itself)
@@ -96,8 +97,23 @@ fn main() {
     if args.first().is_some_and(|a| a == "status" || a == "kill") {
         std::process::exit(mux::command(&args));
     }
+    // `jot bridge`: run by ssh, from a window on another machine.
+    if args.first().is_some_and(|a| a == "bridge") {
+        std::process::exit(mux::bridge());
+    }
+    // `jot ssh HOST`: a window on HOST's session.
+    let host = match args.first().map(String::as_str) {
+        Some("ssh") => match args.get(1) {
+            Some(h) => Some(h.clone()),
+            None => {
+                eprintln!("jot ssh: which machine?");
+                std::process::exit(2);
+            }
+        },
+        _ => None,
+    };
     let mut fresh = false;
-    for arg in std::env::args().skip(1) {
+    for arg in std::env::args().skip(if host.is_some() { 3 } else { 1 }) {
         match arg.as_str() {
             "--fresh" => fresh = true,
             "--debug" => DEBUG.store(true, std::sync::atomic::Ordering::Relaxed),
@@ -114,7 +130,7 @@ fn main() {
     vt::set_up();
     app::catch_end_signals();
     let event_loop = EventLoop::<()>::with_user_event().build().expect("no display to open a window on");
-    let mut app = app::App::new(event_loop.create_proxy(), config, session);
+    let mut app = app::App::new(event_loop.create_proxy(), config, if host.is_some() { None } else { session }, host);
     event_loop.run_app(&mut app).expect("event loop");
 }
 

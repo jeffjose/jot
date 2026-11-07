@@ -26,6 +26,8 @@ pub enum Output {
     /// Lines a /tee has written; that it ended, and why if it failed.
     TeeLines(u64, u64),
     TeeEnd(u64, u64, String),
+    /// What its program is doing, changed.
+    Proc(u64, Proc),
     /// The session the panes were in ended.
     Gone,
 }
@@ -164,16 +166,45 @@ pub fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// A pane's program as the window has it: in the session server, reached
-/// through the session's socket. What it is doing is read from /proc, as
-/// the session is on this machine.
+/// What a pane's program is doing, as read where it runs: its folder, what
+/// has its terminal, and whether the shell is running something.
+#[derive(Clone, Default, PartialEq, Debug)]
+pub struct Proc {
+    pub cwd: String,
+    /// The name of what is in the foreground: the shell, waiting.
+    pub fg: String,
+    /// The foreground process group.
+    pub pgrp: i32,
+    pub busy: bool,
+}
+
+impl Local {
+    /// What its program is doing now, from /proc.
+    pub fn proc(&self) -> Proc {
+        let pgrp = unsafe { libc::tcgetpgrp(self.fd) };
+        let cwd = std::fs::read_link(format!("/proc/{}/cwd", self.pid)).map(|p| p.display().to_string()).unwrap_or_default();
+        let kids = std::fs::read_to_string(format!("/proc/{0}/task/{0}/children", self.pid)).unwrap_or_default();
+        let busy = (pgrp > 0 && pgrp != self.pid) || !kids.trim().is_empty();
+        let comm = |pid: &str| std::fs::read_to_string(format!("/proc/{pid}/comm")).map(|c| c.trim_end().to_string()).ok();
+        let who = if pgrp > 0 { pgrp } else { self.pid };
+        // A command run by `shell -c` has no job control: look for it
+        // among the shell's children instead.
+        let fg = if who == self.pid { kids.split_whitespace().next().and_then(comm).or_else(|| comm(&who.to_string())) } else { comm(&who.to_string()) };
+        Proc { cwd, fg: fg.unwrap_or_default(), pgrp, busy }
+    }
+}
+
+/// A pane's program as the window has it: in the session's server, on
+/// this machine or another, reached through the session. What it is
+/// doing is as the server last said.
 pub struct Pty {
     pub pane: u64,
-    /// The shell's process.
+    /// The shell's process, on the machine it runs on.
     pub pid: libc::pid_t,
     pub mux: std::sync::Arc<crate::mux::Client>,
     /// Whether it reads keys one at a time, as the session last said.
     pub raw: bool,
+    pub proc: Proc,
 }
 
 impl Pty {
@@ -190,45 +221,34 @@ impl Pty {
     /// The process group in the foreground of its terminal: the shell's
     /// own when it waits for a command, else the job's.
     pub fn foreground_group(&self) -> libc::pid_t {
-        // The 8th field of /proc/PID/stat, tpgid: the 6th after the
-        // name's closing parenthesis.
-        std::fs::read_to_string(format!("/proc/{}/stat", self.pid))
-            .ok()
-            .and_then(|s| s.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(5).and_then(|v| v.parse().ok())))
-            .unwrap_or(-1)
+        self.proc.pgrp
     }
 
     /// The folder the shell is in now.
     pub fn cwd(&self) -> Option<PathBuf> {
-        std::fs::read_link(format!("/proc/{}/cwd", self.pid)).ok()
+        (!self.proc.cwd.is_empty()).then(|| PathBuf::from(&self.proc.cwd))
     }
 
     /// The name of what is running in the foreground: the shell itself
     /// when it is waiting for a command.
     pub fn foreground(&self) -> Option<String> {
-        let pgrp = self.foreground_group();
-        let pid = if pgrp > 0 { pgrp } else { self.pid };
-        let mut comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-        comm.truncate(comm.trim_end().len());
-        // A command run by `shell -c` has no job control: look for it
-        // among the shell's children instead.
-        if pid == self.pid {
-            if let Ok(kids) = std::fs::read_to_string(format!("/proc/{0}/task/{0}/children", self.pid)) {
-                if let Some(kid) = kids.split_whitespace().next() {
-                    if let Ok(c) = std::fs::read_to_string(format!("/proc/{kid}/comm")) {
-                        return Some(c.trim_end().to_string());
-                    }
-                }
-            }
-        }
-        Some(comm)
+        (!self.proc.fg.is_empty()).then(|| self.proc.fg.clone())
     }
 
     /// Whether the shell is running something.
     pub fn busy(&self) -> bool {
-        let pgrp = self.foreground_group();
-        (pgrp > 0 && pgrp != self.pid)
-            || std::fs::read_to_string(format!("/proc/{0}/task/{0}/children", self.pid)).is_ok_and(|k| !k.trim().is_empty())
+        self.proc.busy
+    }
+
+    /// A signal to what it is running (its foreground job), or with
+    /// `job` false to the shell and all it started.
+    pub fn signal(&self, sig: i32, job: bool) {
+        self.mux.signal(self.pane, sig, job);
+    }
+
+    /// Whether it runs on another machine.
+    pub fn remote(&self) -> bool {
+        self.mux.host.is_some()
     }
 }
 

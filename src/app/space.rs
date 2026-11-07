@@ -25,7 +25,7 @@ impl App {
         }
         // Its shell and what it ran, ended.
         if let Some(p) = self.panes.get(&id) {
-            unsafe { libc::kill(-p.pty.pid, libc::SIGHUP) };
+            p.pty.signal(libc::SIGHUP, false);
         }
         let ws = &mut self.workspaces[wi];
         ws.spaces.push(id);

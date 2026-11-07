@@ -367,13 +367,13 @@ impl App {
     /// The running job killed: SIGTERM, and SIGKILL if asked again within
     /// a few seconds.
     pub(super) fn kill_job(&mut self, id: PaneId) {
-        let Some(pgrp) = self.job(id) else {
+        if self.job(id).is_none() {
             return self.toast("Nothing running", "The shell has the pane to itself", None, Some(id));
-        };
+        }
         let Some(p) = self.panes.get_mut(&id) else { return };
         let hard = p.shell.killed_at.is_some_and(|t| t.elapsed() < Duration::from_secs(10));
         let signal = if hard { libc::SIGKILL } else { libc::SIGTERM };
-        unsafe { libc::kill(-pgrp, signal) };
+        p.pty.signal(signal, true);
         p.shell.killed_at = Some(Instant::now());
     }
 
@@ -1005,9 +1005,7 @@ impl App {
                 p.shell.paused = false;
                 p.shell.restarting = true;
                 match (hard, job) {
-                    (true, Some(pgrp)) => unsafe {
-                        libc::kill(-pgrp, libc::SIGKILL);
-                    },
+                    (true, Some(_)) => p.pty.signal(libc::SIGKILL, true),
                     _ => p.pty.write(&[0x03]),
                 }
                 p.full = true;

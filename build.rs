@@ -30,7 +30,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target_dir = root.join("target");
     let prefix = target_dir.join("ghostty-vt");
     let status = Command::new("zig")
-        .args(["build", "-Demit-lib-vt=true", "-Doptimize=ReleaseFast", "-Dapp-runtime=none", "-Demit-xcframework=false"])
+        // For any CPU of its kind, not only this machine's (Zig's default):
+        // jot is copied to other machines to run their sessions.
+        .args(["build", "-Demit-lib-vt=true", "-Doptimize=ReleaseFast", "-Dapp-runtime=none", "-Demit-xcframework=false", "-Dcpu=baseline"])
         .arg("--prefix")
         .arg(&prefix)
         .arg("--cache-dir")

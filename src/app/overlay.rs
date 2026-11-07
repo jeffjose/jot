@@ -708,7 +708,10 @@ impl App {
 
     pub(super) fn set_title(&self) {
         if let (Some(w), Some(ws)) = (&self.window, self.workspaces.get(self.current)) {
-            w.set_title(&format!("{} · jot", ws.name));
+            match &self.mux.host {
+                Some(host) => w.set_title(&format!("{} · {host} · jot", ws.name)),
+                None => w.set_title(&format!("{} · jot", ws.name)),
+            }
         }
     }
 }

@@ -318,7 +318,7 @@ fn folder_name(p: &std::path::Path) -> String {
 }
 
 impl App {
-    pub fn new(proxy: EventLoopProxy<()>, config: Config, session: Option<Session>) -> App {
+    pub fn new(proxy: EventLoopProxy<()>, config: Config, session: Option<Session>, host: Option<String>) -> App {
         let (tx, rx) = channel();
         // The `jot` command's requests, each waking the window.
         let (req_tx, requests) = channel();
@@ -332,7 +332,7 @@ impl App {
         let woken = Arc::new(AtomicBool::new(false));
         let attached = {
             let (tx, proxy, woken) = (tx.clone(), proxy.clone(), woken.clone());
-            crate::mux::Client::open(move |heard| {
+            let hear = move |heard: crate::mux::Heard| {
                 let out = match heard {
                     crate::mux::Heard::Output(id, b) => Output::Bytes(id, b),
                     crate::mux::Heard::Exit(id) => Output::Exit(id),
@@ -340,13 +340,18 @@ impl App {
                     crate::mux::Heard::Ran(id, cmd) => Output::Ran(id, cmd),
                     crate::mux::Heard::TeeLines(id, n) => Output::TeeLines(id, n),
                     crate::mux::Heard::TeeEnd(id, n, e) => Output::TeeEnd(id, n, e),
+                    crate::mux::Heard::Proc(id, p) => Output::Proc(id, p),
                     crate::mux::Heard::Gone => Output::Gone,
                 };
                 let _ = tx.send(out);
                 if !woken.swap(true, Ordering::AcqRel) {
                     let _ = proxy.send_event(());
                 }
-            })
+            };
+            match &host {
+                Some(h) => crate::mux::Client::open_remote(h, hear),
+                None => crate::mux::Client::open(hear),
+            }
         };
         let attached = match attached {
             Ok(a) => a,
@@ -507,7 +512,7 @@ impl App {
                 }
             }
         };
-        let pty = Pty { pane: id, pid, mux: self.mux.clone(), raw: false };
+        let pty = Pty { pane: id, pid, mux: self.mux.clone(), raw: false, proc: Default::default() };
         let mux = self.mux.clone();
         let reply: vt::Reply = Box::new(move |bytes: &[u8]| {
             if !mux.mute.load(Ordering::Acquire) {
@@ -594,7 +599,7 @@ impl App {
             for (id, empty) in ids.iter().zip(persist::empty_in_order(layout)) {
                 if empty {
                     if let Some(p) = self.panes.get(id) {
-                        unsafe { libc::kill(-p.pty.pid, libc::SIGHUP) };
+                        p.pty.signal(libc::SIGHUP, false);
                     }
                     spaces.push(*id);
                 }
@@ -1703,10 +1708,18 @@ impl App {
                     }
                 }
                 Output::Ran(id, cmd) => self.queue_ran(id, cmd),
+                Output::Proc(id, proc) => {
+                    if let Some(p) = self.panes.get_mut(&id) {
+                        p.pty.proc = proc;
+                    }
+                }
                 Output::TeeLines(id, n) => self.tee_lines(id, n),
                 Output::TeeEnd(id, n, e) => self.tee_ended(id, n, e),
                 Output::Gone => {
-                    eprintln!("jot: the session ended");
+                    match &self.mux.host {
+                        Some(h) => eprintln!("jot: lost {h} (its panes run on there; jot ssh {h} takes them up again)"),
+                        None => eprintln!("jot: the session ended"),
+                    }
                     self.mux.detach();
                     event_loop.exit();
                     return;
@@ -2224,6 +2237,10 @@ impl App {
     /// Every pane's scrollback kept, by its place: "1-2" for workspace
     /// 1's second pane, "p1" for the first popped out.
     fn save_scrollback(&mut self) {
+        // Kept on the machine the panes are on, by its session; not here.
+        if self.mux.host.is_some() {
+            return;
+        }
         // The last session is left as it was while it is on offer.
         if self.offered.is_some() {
             return;

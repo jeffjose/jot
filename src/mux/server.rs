@@ -217,6 +217,8 @@ struct Pane {
     at_prompt: bool,
     queue: Queue,
     tee: Option<Tee>,
+    /// What its program was doing, as last told.
+    proc: Option<crate::pty::Proc>,
     /// The window it is in, if one has it.
     owner: Option<u64>,
 }
@@ -347,6 +349,7 @@ impl Server {
         for p in self.panes.values_mut().filter(|p| p.owner.is_none()) {
             p.owner = Some(c);
             p.raw = None;
+            p.proc = None;
             if let Some(t) = &mut p.tee {
                 t.told = t.state.lines;
             }
@@ -395,7 +398,7 @@ impl Server {
                 });
                 let mut log = Log::default();
                 log.size(cols, rows);
-                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, owner: Some(c) });
+                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, proc: None, owner: Some(c) });
                 pid
             }
             Err(e) => {
@@ -531,6 +534,15 @@ pub fn run(path: &Path) {
                     }
                     s.fire(pane);
                 }
+                ToServer::Signal { pane, sig, job } => {
+                    if let Some(p) = s.panes.get(&pane) {
+                        let who = if job { unsafe { libc::tcgetpgrp(p.pty.fd) } } else { p.pty.pid };
+                        // Never the server's own group, nor every process.
+                        if who > 1 {
+                            unsafe { libc::kill(-who, sig) };
+                        }
+                    }
+                }
                 ToServer::Hello { .. } | ToServer::Peek => {}
             },
             Ev::Said(..) => {}
@@ -581,11 +593,16 @@ pub fn run(path: &Path) {
                         p.raw = Some(raw);
                         ToClient::Mode { pane: id, raw }
                     });
+                    let now = p.pty.proc();
+                    let proc = (p.proc.as_ref() != Some(&now)).then(|| {
+                        p.proc = Some(now.clone());
+                        ToClient::Proc { pane: id, proc: now }
+                    });
                     let lines = p.tee.as_mut().filter(|t| t.told != t.state.lines).map(|t| {
                         t.told = t.state.lines;
                         ToClient::TeeLines { pane: id, lines: t.state.lines }
                     });
-                    for m in [mode, lines].into_iter().flatten() {
+                    for m in [mode, proc, lines].into_iter().flatten() {
                         s.tell(id, m);
                     }
                 }

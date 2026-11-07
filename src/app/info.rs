@@ -52,6 +52,16 @@ impl App {
     /// What /info says of a pane, as rows of a name and what it is.
     pub(super) fn pane_info(&self, id: PaneId) -> Vec<(String, String)> {
         let Some(p) = self.panes.get(&id) else { return Vec::new() };
+        if p.pty.remote() {
+            let host = self.mux.host.clone().unwrap_or_default();
+            let mut rows = vec![("machine".to_string(), host)];
+            if let Some(cwd) = p.pty.cwd() {
+                rows.push(("folder".into(), cwd.display().to_string()));
+            }
+            rows.push(("running".into(), p.pty.foreground().unwrap_or_default()));
+            rows.push(("note".into(), "more of /info is for panes on this machine, for now".into()));
+            return rows;
+        }
         let mut rows: Vec<(String, String)> = Vec::new();
         let shell = p.pty.pid;
         let pgrp = p.pty.foreground_group();
@@ -212,6 +222,9 @@ impl App {
 
     /// /tree: the job and every process it started, with their memory.
     pub(super) fn report_tree(&self, id: PaneId) -> Vec<String> {
+        if self.panes.get(&id).is_some_and(|p| p.pty.remote()) {
+            return vec!["Only for panes on this machine, for now.".into()];
+        }
         let Some((root, _)) = self.report_root(id) else { return Vec::new() };
         tree(root)
             .into_iter()
@@ -225,6 +238,9 @@ impl App {
 
     /// /ports: what the job's processes listen on, as links.
     pub(super) fn report_ports(&self, id: PaneId) -> Vec<String> {
+        if self.panes.get(&id).is_some_and(|p| p.pty.remote()) {
+            return vec!["Only for panes on this machine, for now.".into()];
+        }
         let Some((root, _)) = self.report_root(id) else { return Vec::new() };
         let sockets = listening();
         let mut out = Vec::new();
@@ -249,6 +265,9 @@ impl App {
 
     /// /files: the files the job's processes have open, and how.
     pub(super) fn report_files(&self, id: PaneId) -> Vec<String> {
+        if self.panes.get(&id).is_some_and(|p| p.pty.remote()) {
+            return vec!["Only for panes on this machine, for now.".into()];
+        }
         let Some((root, _)) = self.report_root(id) else { return Vec::new() };
         let cwd = self.panes.get(&id).and_then(|p| p.pty.cwd());
         let mut out = Vec::new();
