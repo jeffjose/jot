@@ -307,6 +307,8 @@ struct Server {
     /// The machine's desktop, as a window here last had it (or found on
     /// it), for panes asked for from no desktop of this machine's.
     desktop: Option<Env>,
+    /// What each window said it is, for jot status.
+    abouts: HashMap<u64, String>,
 }
 
 impl Server {
@@ -586,7 +588,17 @@ impl Server {
 
     fn info(&self) -> ToClient {
         let names = merge(self.layouts.values().map(String::as_str).chain(self.left.iter().map(|(_, l)| l.as_str()))).map(|s| s.workspaces.iter().map(|w| w.name.clone()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
-        ToClient::Info { attached: !self.windows.is_empty(), panes: self.panes.len() as u32, names, version: crate::version(), windows: self.windows.len() as u32 }
+        let list = self
+            .windows
+            .iter()
+            .map(|c| {
+                let names = self.layouts.get(c).and_then(|l| merge(std::iter::once(l.as_str()))).map(|s| s.workspaces.iter().map(|w| w.name.clone()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+                let panes = self.panes.values().filter(|p| p.viewers.contains(c)).count() as u32;
+                (self.abouts.get(c).cloned().unwrap_or_default(), names, panes)
+            })
+            .collect();
+        let free = self.panes.values().filter(|p| p.viewers.is_empty()).count() as u32;
+        ToClient::Info { attached: !self.windows.is_empty(), panes: self.panes.len() as u32, names, version: crate::version(), windows: self.windows.len() as u32, free, list }
     }
 
     /// The desktop window `c`'s new pane is given: the window's own,
@@ -660,7 +672,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
             return;
         }
         None => match UnixListener::bind(path) {
-            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None }, l),
+            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new() }, l),
             Err(e) => {
                 eprintln!("jot serve: {}: {e}", path.display());
                 return;
@@ -737,7 +749,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 let e = s.handover(&exe, listener_fd, path);
                 eprintln!("jot serve: could not restart as {exe}: {e}");
             }
-            Ev::Said(c, ToServer::Hello { proto, window, again, want }) => {
+            Ev::Said(c, ToServer::Hello { proto, window, again, want, about }) => {
                 if proto != PROTO {
                     s.send(c, ToClient::Refused { why: format!("protocol {PROTO} here, {proto} in the window") });
                     if let Some(st) = s.conns.remove(&c) {
@@ -749,6 +761,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     s.windows.push(c);
                 }
                 s.names.insert(c, window);
+                s.abouts.insert(c, about);
                 if again {
                     s.welcome_back(c, window, &want);
                 } else {
@@ -849,6 +862,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                         }
                     }
                     let name = s.names.remove(&c).unwrap_or(0);
+                    s.abouts.remove(&c);
                     if let Some(l) = s.layouts.remove(&c).filter(|_| any) {
                         s.left.push((name, l));
                     }
@@ -1126,7 +1140,7 @@ fn resume(file: &Path, tx: &Sender<Ev>) -> io::Result<(Server, i32)> {
         panes.insert(id, Pane { pty, keys, cmd, log, raw: None, tail, at_prompt, queue, tee, proc: None, viewers: Vec::new(), windows, sizes: HashMap::new(), size });
     }
     keep_on_exec(listener, false);
-    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane, desktop: None }, listener))
+    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane, desktop: None, abouts: HashMap::new() }, listener))
 }
 
 /// The session's names of the panes a window's layout has (its workspaces'

@@ -52,7 +52,9 @@ pub struct TeeState {
 pub enum ToServer {
     /// `window` names the window for as long as it is open; `again`: it
     /// is reconnecting, and wants back only the panes it had.
-    Hello { proto: u32, window: u64, again: bool, want: Vec<u64> },
+    /// `about`: which jot the window is and where (for jot status), added
+    /// after: empty from an older window.
+    Hello { proto: u32, window: u64, again: bool, want: Vec<u64>, about: String },
     /// A new pane; the session names it, in Spawned.
     Spawn { cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32) },
     Input { pane: u64, bytes: Vec<u8> },
@@ -115,7 +117,9 @@ pub enum ToClient {
     /// For Peek: whether a window has it, and its workspaces and panes.
     /// `version` and `windows` were added after: empty and 0 from an older
     /// server.
-    Info { attached: bool, panes: u32, names: String, version: String, windows: u32 },
+    /// `free` and `list` (each window: what it is, its workspaces and its
+    /// panes) were added after that.
+    Info { attached: bool, panes: u32, names: String, version: String, windows: u32, free: u32, list: Vec<(String, String, u32)> },
     /// What a pane's program is doing, when it changes.
     Proc { pane: u64, proc: crate::pty::Proc },
     /// For List: its workspaces this window does not show.
@@ -243,12 +247,12 @@ impl ToServer {
     fn encode(&self) -> Vec<u8> {
         let mut o = Out::default();
         match self {
-            ToServer::Hello { proto, window, again, want } => {
+            ToServer::Hello { proto, window, again, want, about } => {
                 o.u8(0).u32(*proto).u64(*window).u8(*again as u8).u32(want.len() as u32);
                 for w in want {
                     o.u64(*w);
                 }
-                &mut o
+                o.str(about)
             }
             ToServer::Spawn { cmd, cwd, cols, rows, px } => o.u8(1).str(cmd).str(cwd).u16(*cols).u16(*rows).u32(px.0).u32(px.1),
             ToServer::Input { pane, bytes } => o.u8(2).u64(*pane).bytes(bytes),
@@ -281,7 +285,7 @@ impl ToServer {
                 let (proto, window, again) = (i.u32()?, i.u64().unwrap_or(0), i.u8().unwrap_or(0) != 0);
                 let n = i.u32().unwrap_or(0);
                 let want = (0..n).map(|_| i.u64()).collect::<io::Result<Vec<_>>>()?;
-                ToServer::Hello { proto, window, again, want }
+                ToServer::Hello { proto, window, again, want, about: i.str().unwrap_or_default() }
             }
             1 => ToServer::Spawn { cmd: i.str()?, cwd: i.str()?, cols: i.u16()?, rows: i.u16()?, px: (i.u32()?, i.u32()?) },
             2 => ToServer::Input { pane: i.u64()?, bytes: i.bytes()? },
@@ -344,8 +348,11 @@ impl ToClient {
             ToClient::TeeEnd { pane, lines, error } => {
                 o.u8(8).u64(*pane).u64(*lines).str(error);
             }
-            ToClient::Info { attached, panes, names, version, windows } => {
-                o.u8(9).u8(*attached as u8).u32(*panes).str(names).str(version).u32(*windows);
+            ToClient::Info { attached, panes, names, version, windows, free, list } => {
+                o.u8(9).u8(*attached as u8).u32(*panes).str(names).str(version).u32(*windows).u32(*free).u32(list.len() as u32);
+                for (about, names, panes) in list {
+                    o.str(about).str(names).u32(*panes);
+                }
             }
             ToClient::Proc { pane, proc } => {
                 o.u8(10).u64(*pane).str(&proc.cwd).str(&proc.fg).u32(proc.pgrp as u32).u8(proc.busy as u8);
@@ -403,7 +410,12 @@ impl ToClient {
             6 => ToClient::Ran { pane: i.u64()?, cmd: i.str()? },
             7 => ToClient::TeeLines { pane: i.u64()?, lines: i.u64()? },
             8 => ToClient::TeeEnd { pane: i.u64()?, lines: i.u64()?, error: i.str()? },
-            9 => ToClient::Info { attached: i.u8()? != 0, panes: i.u32()?, names: i.str()?, version: i.str().unwrap_or_default(), windows: i.u32().unwrap_or(0) },
+            9 => {
+                let (attached, panes, names, version, windows, free) = (i.u8()? != 0, i.u32()?, i.str()?, i.str().unwrap_or_default(), i.u32().unwrap_or(0), i.u32().unwrap_or(0));
+                let n = i.u32().unwrap_or(0);
+                let list = (0..n).map_while(|_| Some((i.str().ok()?, i.str().ok()?, i.u32().ok()?))).collect();
+                ToClient::Info { attached, panes, names, version, windows, free, list }
+            }
             10 => ToClient::Proc { pane: i.u64()?, proc: crate::pty::Proc { cwd: i.str()?, fg: i.str()?, pgrp: i.u32()? as i32, busy: i.u8()? != 0 } },
             11 => {
                 let n = i.u32()?;
@@ -609,7 +621,7 @@ impl Client {
         // One opened to show a terminal names it, and takes it up whatever
         // other window shows it.
         let want: Vec<u64> = crate::show_pane().into_iter().collect();
-        s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again: crate::quake_mode() || !want.is_empty(), want }.encode())?;
+        s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again: crate::quake_mode() || !want.is_empty(), want, about: about() }.encode())?;
         let f = read_frame(&mut s)?;
         s.set_read_timeout(None)?;
         match ToClient::decode(&f) {
@@ -802,7 +814,32 @@ fn restart() -> i32 {
 pub fn command(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("status") => match peek() {
-            Ok(ToClient::Info { attached, panes, names, version, windows }) => {
+            // A tree: the server, each window with its workspaces, the panes
+            // no window shows. Which jot each is, marked when it is not this
+            // one.
+            Ok(ToClient::Info { panes, version, windows, free, list, .. }) if !list.is_empty() || windows == 0 && !version.is_empty() => {
+                let me = crate::version();
+                let host = std::fs::read_to_string("/proc/sys/kernel/hostname").map(|h| h.trim().to_string()).unwrap_or_default();
+                let count = |n: u32| if n == 1 { "1 pane".to_string() } else { format!("{n} panes") };
+                let wins = if windows == 1 { "1 window".to_string() } else { format!("{windows} windows") };
+                println!("{host} · {} · {wins}", count(panes));
+                let older = |v: &str| if v.starts_with(&me) { "" } else { "   ⚠ not this jot" };
+                let last = free == 0 && list.is_empty();
+                println!("{} server   {version}{}", if last { "└─" } else { "├─" }, if version == me { String::new() } else { format!("   ⚠ this is {me}: jot restart swaps it") });
+                for (i, (about, names, n)) in list.iter().enumerate() {
+                    let last = i + 1 == list.len() && free == 0;
+                    let about = if about.is_empty() { "an older jot" } else { about.as_str() };
+                    println!("{} window   {about} · {}{}", if last { "└─" } else { "├─" }, count(*n), older(about));
+                    if !names.is_empty() {
+                        println!("{}  └─ {names}", if last { " " } else { "│" });
+                    }
+                }
+                if free > 0 {
+                    println!("└─ no window   {}", count(free));
+                }
+                0
+            }
+            Ok(ToClient::Info { attached, panes, names, version, windows, .. }) => {
                 let panes = if panes == 1 { "1 pane".to_string() } else { format!("{panes} panes") };
                 let shown = match (attached, windows) {
                     (false, _) => "no window".to_string(),
@@ -854,7 +891,7 @@ type Reached = (std::process::ChildStdin, std::process::ChildStdout, std::proces
 fn reach_local(again: bool, want: Vec<u64>) -> io::Result<(UnixStream, UnixStream, Vec<Held>)> {
     let mut s = UnixStream::connect(socket())?;
     s.set_read_timeout(Some(Duration::from_secs(5)))?;
-    s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again, want }.encode())?;
+    s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again, want, about: about() }.encode())?;
     let f = read_frame(&mut s)?;
     s.set_read_timeout(None)?;
     match ToClient::decode(&f) {
@@ -900,7 +937,7 @@ fn reach(host: &str, again: bool, want: Vec<u64>) -> io::Result<Reached> {
         let s = said.lock().map(|s| s.trim().to_string()).unwrap_or_default();
         io::Error::new(e.kind(), if s.is_empty() { format!("{host}: {e}") } else { format!("{host}: {s}") })
     };
-    let hello = w.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again, want }.encode()).and_then(|_| read_frame(&mut r));
+    let hello = w.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again, want, about: about() }.encode()).and_then(|_| read_frame(&mut r));
     let f = match hello {
         Ok(f) => f,
         Err(e) => {
@@ -1169,4 +1206,11 @@ pub fn base_id(id: u64) -> u64 {
 /// The name of view `v` of terminal `base` in a window.
 pub fn view_id(base: u64, v: u64) -> u64 {
     base_id(base) | (v << 56)
+}
+
+/// What the window says it is, for jot status: which jot, on which
+/// machine, and whether it is the quake window.
+fn about() -> String {
+    let host = std::fs::read_to_string("/proc/sys/kernel/hostname").map(|h| h.trim().to_string()).unwrap_or_default();
+    format!("{} · {host}{}", crate::version(), if crate::quake_mode() { " · quake" } else { "" })
 }
