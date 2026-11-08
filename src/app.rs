@@ -33,6 +33,7 @@ mod bar;
 mod commands;
 mod copymode;
 mod editor;
+mod edges;
 mod info;
 mod dnd;
 mod find;
@@ -1663,6 +1664,10 @@ impl App {
         }
         if button == MouseButton::Left {
             let x = self.pointer.0;
+            // The window's edge or corner, within reach: resized from it.
+            if self.edge_press() {
+                return;
+            }
             if self.sidebar_edge_at(x) {
                 self.drag = Some(Drag::Sidebar);
                 return;
@@ -1840,7 +1845,7 @@ impl App {
                 }
             }
             None => {
-                if self.quake_bar_hover(x, y) || self.mini_hover(x, y) || self.pin_hover(x, y) || self.editor_drag(x, y) || self.editor_run_hover(x, y) || self.editor_hover(x, y) || self.bar_field_drag(x, y) || self.bar_field_hover(x, y) || self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
+                if self.quake_bar_hover(x, y) || self.mini_hover(x, y) || self.pin_hover(x, y) || self.editor_drag(x, y) || self.edge_hover(x, y) || self.editor_run_hover(x, y) || self.editor_hover(x, y) || self.bar_field_drag(x, y) || self.bar_field_hover(x, y) || self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
                     return;
                 }
                 self.update_link();
