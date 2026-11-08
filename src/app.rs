@@ -50,6 +50,7 @@ mod restore;
 mod settings;
 mod slash;
 mod sidebar;
+mod scrollbar;
 mod shared;
 mod terminals;
 mod tooltip;
@@ -178,6 +179,8 @@ enum Drag {
     Side(sidebar::SideCarry),
     /// The quake window's grip, for its height.
     QuakeGrip,
+    /// A pane's scrollbar, held where it was grabbed (from its top).
+    Scroll { pane: PaneId, grab: i32 },
 }
 
 pub struct App {
@@ -415,6 +418,9 @@ pub struct App {
     session_numbers: HashMap<usize, HashMap<u64, usize>>,
     /// Panes waiting for their terminals, asked for (see taken_back).
     filling: Vec<(usize, u64)>,
+    /// Each pane's scrollbar as last drawn, and the one under the pointer.
+    scrollbars: HashMap<PaneId, scrollbar::Bar>,
+    scroll_lit: Option<PaneId>,
     /// What the sidebar showed last, as `sidebar_moved` counts it.
     side_sig: u64,
     /// What the project bar said when last drawn: drawn again when it changes.
@@ -678,6 +684,8 @@ impl App {
             unclaimed: HashMap::new(),
             session_numbers: HashMap::new(),
             filling: Vec::new(),
+            scrollbars: HashMap::new(),
+            scroll_lit: None,
             side_sig: 0,
             foot_said: String::new(),
             foot_dots: Vec::new(),
@@ -1891,6 +1899,10 @@ impl App {
                 self.drag = Some(Drag::Sidebar);
                 return;
             }
+            // A pane's scrollbar.
+            if self.scroll_press() {
+                return;
+            }
             if self.sidebar_click() {
                 return;
             }
@@ -2040,7 +2052,7 @@ impl App {
         if matches!(self.drag, Some(Drag::Sidebar)) {
             return self.sidebar_drag_to(x);
         }
-        if self.drag.is_none() && self.sidebar_hover(x, y) {
+        if self.drag.is_none() && (self.sidebar_hover(x, y) || self.scroll_hover(x, y)) {
             return;
         }
         match &self.drag {
@@ -2056,6 +2068,7 @@ impl App {
             Some(Drag::Pane(_)) => self.carry_move(x, y),
             Some(Drag::Sidebar) => {}
             Some(Drag::QuakeGrip) => self.quake_grip_move(),
+            Some(Drag::Scroll { .. }) => self.scroll_drag(y),
             Some(Drag::Side(_)) => self.side_drag_move(x, y),
             None if self.mouse_held.is_some() => {
                 let (id, b) = self.mouse_held.unwrap();
@@ -2104,6 +2117,9 @@ impl App {
     }
 
     fn mouse_release(&mut self) {
+        if self.scroll_release() {
+            return;
+        }
         if let Some(Drag::Side(c)) = self.drag {
             self.drag = None;
             return self.side_drag_drop(c);
@@ -2795,6 +2811,8 @@ impl App {
         }
         self.draw_blocks(id);
         self.draw_float(id);
+        // Its scrollbar, over all of it.
+        self.draw_scroll_bar(id);
     }
 
     /// The caption along the top of a pane, as Chrome draws its tabs: the
@@ -3367,7 +3385,10 @@ impl ApplicationHandler<()> for App {
             self.queue_tick(*id);
         }
         let printing = self.print_tick();
+        // Scrollbars to go: when the soonest is.
+        let bars = self.scrollbars_tick().map(|at| at.saturating_duration_since(Instant::now()) + Duration::from_millis(20));
         let soon = if !due.is_empty() || printing { Duration::from_millis(50) } else if self.unsaved { SAVE_AFTER } else { Duration::from_secs(1) };
+        let soon = bars.map_or(soon, |b| b.min(soon));
         event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + soon));
         // The window has kept its size: its programs told it, each drawing
         // itself again once. Only told: the panes are laid out and drawn

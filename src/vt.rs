@@ -197,6 +197,14 @@ impl Terminal {
         unsafe { ghostty_terminal_scroll_viewport(self.raw, how) };
     }
 
+    /// Scrolls the view so that row `row` of the scrollback (as scrollbar
+    /// counts them) is its first.
+    pub fn scroll_to(&mut self, row: u64) {
+        let mut how = GhosttyTerminalScrollViewport { tag: GHOSTTY_TERMINAL_SCROLL_VIEWPORT_ROW, value: unsafe { std::mem::zeroed() } };
+        how.value.row = row as usize;
+        unsafe { ghostty_terminal_scroll_viewport(self.raw, how) };
+    }
+
     pub fn scroll_to_bottom(&mut self) {
         let how = GhosttyTerminalScrollViewport { tag: GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM, value: unsafe { std::mem::zeroed() } };
         unsafe { ghostty_terminal_scroll_viewport(self.raw, how) };
