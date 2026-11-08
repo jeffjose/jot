@@ -23,6 +23,7 @@ pub enum Action {
     /// The picker of those terminals; the pane given the next or the one
     /// before.
     PickTerminal,
+    NewTerminalHere,
     NextTerminal,
     PrevTerminal,
     /// A terminal no pane here shows: in a split beside the pane you are
@@ -270,6 +271,7 @@ pub fn commands() -> Vec<Item> {
         c("Close pane", "Ctrl W", Action::Close),
         c("Kill terminal (ends its shell)", "", Action::EndPane),
         c("Show another terminal here", "Alt '", Action::PickTerminal),
+        c("New terminal in this pane", "Alt N", Action::NewTerminalHere),
         c("Next terminal in this pane", "Alt .", Action::NextTerminal),
         c("Previous terminal in this pane", "Alt ,", Action::PrevTerminal),
         c("Pop out pane", "Alt Shift O", Action::PopOut),

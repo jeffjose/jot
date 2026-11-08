@@ -413,3 +413,22 @@ impl App {
         super::open_detached(&exe, &args);
     }
 }
+
+impl App {
+    /// A new terminal in the pane you are in, as screen's Ctrl a c: the one
+    /// it showed runs on, under it (Alt , and Alt . step back to it), and
+    /// its own folder is the new one's here (its home on another machine).
+    pub(super) fn new_terminal_here(&mut self) {
+        let Some(at) = self.focused() else { return };
+        if self.roam == Some(at) || self.roam_shown {
+            return;
+        }
+        let (k, _) = crate::mux::split_id(at);
+        let cwd = if k > 0 { PathBuf::from("~") } else { self.panes.get(&at).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home) };
+        self.target = k;
+        let new = self.spawn(Start { cmd: String::new(), cwd, pane: None, host: None });
+        let wi = self.current;
+        self.stand_in(wi, at, new, true);
+        self.changed();
+    }
+}
