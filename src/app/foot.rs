@@ -235,8 +235,9 @@ impl App {
         let accent = self.cur_accent;
         let clock = if self.config.status_line { String::new() } else { self.clock.clone() };
         let dots: Vec<(FootDot, u32)> = set.iter().map(|(d, _, c)| (*d, *c)).collect();
-        let lit = self.foot_lit;
-        let said = format!("{name}\0{folder}\0{machine}\0{accent}\0{dots:?}\0{}\0{clock}\0{}\0{}\0{lit}", self.current, self.canvas.width, self.cur_theme.bg);
+        let hot = self.foot_lit;
+        let lit = hot == FootHot::Machine;
+        let said = format!("{name}\0{folder}\0{machine}\0{accent}\0{dots:?}\0{}\0{clock}\0{}\0{}\0{hot:?}", self.current, self.canvas.width, self.cur_theme.bg);
         if !full && said == self.foot_said {
             return;
         }
@@ -281,6 +282,12 @@ impl App {
         self.canvas.text(&mut self.fonts.ui, &number, (tile.x + (tile.w - nw) / 2) as f32, ty, fg, tile);
         // Its name, plain; the folder of the pane you are in, dim.
         let clip = Rect { x: tile.x + tile.w, y: bar.y, w: (right - self.px(60.0) - tile.x - tile.w).max(0), h };
+        // Under the pointer (double-clicked, it is renamed): a soft lift.
+        if hot == FootHot::Name && self.inline.is_none() {
+            let nw = self.fonts.ui.width(&name).min((clip.w - 2 * pad).max(0));
+            let lift = if self.cur_theme.dark { 0xFFFFFF } else { 0x000000 };
+            self.canvas.round_fill(Rect { x: clip.x + pad - self.px(6.0), y: bar.y + self.px(3.0), w: nw + self.px(12.0), h: h - self.px(6.0) }, self.px(5.0), lift, 16);
+        }
         // Being renamed: the field where its name is (wide enough to type in).
         let ws_id = self.ws().id;
         let room = (self.fonts.ui.width(&name) + self.px(80.0)).min((clip.w - 2 * pad).max(0));
@@ -302,11 +309,16 @@ impl App {
         // The middle of the line under the bar's top hairline.
         let cy = bar.y as f32 + 1.0 + (h - 1) as f32 / 2.0;
         let mut x = end.min(clip.x + clip.w) + self.px(10.0);
-        for (d, color) in dots {
+        for (i, (d, color)) in dots.into_iter().enumerate() {
             if x + step > right {
                 break;
             }
             let cx = x as f32 + step as f32 / 2.0;
+            // Under the pointer: a soft disc behind it.
+            if hot == FootHot::Dot(i) {
+                let lift = if self.cur_theme.dark { 0xFFFFFF } else { 0x000000 };
+                self.canvas.round_fill(Rect { x: x + 1, y: bar.y + self.px(3.0), w: step - 2, h: h - self.px(6.0) }, self.px(5.0), lift, 22);
+            }
             if d == FootDot::Here(self.current) {
                 self.canvas.annulus(cx, cy, ring_in, ring_out, color);
             }
@@ -380,15 +392,34 @@ impl App {
         false
     }
 
-    /// The pointer over the bar's machine: lit, the bar drawn again when
-    /// that changes.
-    pub(super) fn foot_hover(&mut self) {
+    /// The pointer over the bar: what it is on lit (the machine's button, a
+    /// dot, the name), the bar drawn again when that changes; the hand over
+    /// what a click does something to, the arrow elsewhere on it (not the
+    /// text cursor of the pane behind). Whether it is on the bar.
+    pub(super) fn foot_hover(&mut self) -> bool {
         let (x, y) = self.pointer;
-        let lit = self.foot_button.is_some_and(|r| r.contains(x, y));
-        if lit != self.foot_lit {
-            self.foot_lit = lit;
+        let on = self.foot_at(x, y);
+        let hot = if !on {
+            FootHot::None
+        } else if self.foot_button.is_some_and(|r| r.contains(x, y)) {
+            FootHot::Machine
+        } else if let Some(i) = self.foot_dots.iter().position(|(r, _)| r.contains(x, y)) {
+            FootHot::Dot(i)
+        } else if self.foot_name.is_some_and(|r| r.contains(x, y)) {
+            FootHot::Name
+        } else {
+            FootHot::None
+        };
+        if hot != self.foot_lit {
+            self.foot_lit = hot;
             self.redraw();
         }
+        if on {
+            if let Some(w) = &self.window {
+                w.set_cursor(if matches!(hot, FootHot::Machine | FootHot::Dot(_)) { CursorIcon::Pointer } else { CursorIcon::Default });
+            }
+        }
+        on
     }
 
     /// The project bar right clicked: what can be done to the workspace it
@@ -423,4 +454,16 @@ impl App {
         self.redraw();
         true
     }
+}
+
+/// What on the project bar the pointer is over.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum FootHot {
+    None,
+    /// The machine's button.
+    Machine,
+    /// The workspace's name (double-clicked to rename).
+    Name,
+    /// A workspace's dot, by its place.
+    Dot(usize),
 }

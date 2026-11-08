@@ -437,7 +437,7 @@ pub struct App {
     /// The workspace's name on the bar, for a double click on it.
     foot_name: Option<Rect>,
     /// The pointer over it.
-    foot_lit: bool,
+    foot_lit: foot::FootHot,
     /// The workspace you were in last on each machine, to go back to.
     foot_last: HashMap<usize, usize>,
     /// When the debug log was last given its counts.
@@ -700,7 +700,7 @@ impl App {
             foot_dots: Vec::new(),
             foot_button: None,
             foot_name: None,
-            foot_lit: false,
+            foot_lit: foot::FootHot::None,
             foot_last: HashMap::new(),
             dbg_at: Instant::now(),
             mux: attached.client,
@@ -2067,11 +2067,15 @@ impl App {
     fn mouse_move(&mut self, x: i32, y: i32) {
         self.pointer = (x, y);
         self.float_track(x, y);
-        self.foot_hover();
+        let on_foot = self.foot_hover();
         if self.offer_hover(x, y) || self.find_hover(x, y) || self.settings_hover(x, y) || self.overlay_hover(x, y) {
             if let Some(w) = &self.window {
                 w.set_cursor(CursorIcon::Default);
             }
+            return;
+        }
+        // On the project bar: its pointer, set; not the pane's behind it.
+        if self.drag.is_none() && on_foot {
             return;
         }
         if matches!(self.drag, Some(Drag::Sidebar)) {
