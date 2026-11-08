@@ -140,11 +140,10 @@ impl App {
     }
 
     /// The machines, in a menu from the button `anchor`, up from it (a bar
-    /// at the foot) or down: the one shown ticked. In the quake window, the
-    /// one whose terminals its bar lists.
+    /// at the foot) or down: the one shown ticked.
     pub(super) fn machine_menu_at(&mut self, anchor: Rect, up: bool) {
         use crate::palette::{Action, Item};
-        let here = if crate::quake_mode() { self.quake_k } else { self.foot_machine() };
+        let here = self.foot_machine();
         let items: Vec<Option<Item>> = self
             .foot_machines()
             .into_iter()
@@ -176,16 +175,11 @@ impl App {
     /// Machine `k`'s workspaces brought to the bar: the one you were in
     /// last there, else its first here; one its session holds, opened here,
     /// when this window has none on it; a new one there when it has none.
+    /// The quake window the same: its bar lists the terminals of the
+    /// machine its workspace is on.
     pub(super) fn show_machine(&mut self, k: usize) {
         if k >= self.machines.len() {
             return;
-        }
-        // The quake window: its bar lists that machine's terminals, its
-        // layout as it is.
-        if crate::quake_mode() {
-            self.quake_k = k;
-            self.full = true;
-            return self.redraw();
         }
         if k == self.foot_machine() {
             return;

@@ -403,10 +403,10 @@ impl App {
 
     /// The bar, as the main window's along its foot, its look the same: at
     /// the left jot's own mark (the quake window is jot's, no workspace's);
-    /// then every terminal of one machine, those in its panes numbered, the
-    /// one you are in lit, any clicked shown in the pane you are in (its
-    /// layout, this desk's, never changes: only what its panes show); at
-    /// the right that machine, a button to list another's, and hide. Its
+    /// then every terminal of the machine its workspace is on, those in its
+    /// panes numbered, the one you are in lit, any clicked shown in the
+    /// pane you are in; at the right that machine, a button to go to
+    /// another's workspace, as the main window's does, and hide. Its
     /// empty stretch is dragged for the window's height.
     pub(super) fn draw_quake_bar(&mut self) {
         self.quake_hits.clear();
@@ -442,7 +442,7 @@ impl App {
         let chevron = if self.quake_bar_on_top() { crate::canvas::icons::CHEVRON_DOWN } else { crate::canvas::icons::CHEVRON_UP };
         self.canvas.icon_in(chevron, hide, px(12.0), if lit == Some(QuakeHit::Hide) { c.text } else { c.dim });
         hits.push((hide, QuakeHit::Hide));
-        let k = self.quake_k.min(self.machines.len().saturating_sub(1));
+        let k = self.foot_machine();
         let machine = self.machine_name(k);
         let ih = px(10.0);
         let bw = px(8.0) + self.fonts.ui.width(&machine) + px(6.0) + ih + px(7.0);
