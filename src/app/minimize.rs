@@ -106,7 +106,14 @@ impl App {
             self.canvas.round_fill(Rect { x, y: r.y + (h - d) / 2, w: d, h: d }, d / 2, dot, 255);
             x += d + px(10.0);
             x = self.canvas.text(&mut self.fonts.small, &format!("{number}"), x as f32, r.y + (h - sh) / 2, c.faint, r) + px(10.0);
-            let cmd = p.shell.running.as_ref().filter(|_| running).map(|r| r.2.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| p.caption.clone());
+            // A login to another machine: what runs there, as its shell's
+            // title says, over the `ssh host` this one's shell saw.
+            let cmd = p.shell.running.as_ref().filter(|_| running).map(|r| r.2.trim().to_string()).filter(|s| !s.is_empty());
+            let cmd = match cmd {
+                Some(c) if remote_login(&c) && !p.caption.trim().is_empty() => p.caption.clone(),
+                Some(c) => c,
+                None => p.caption.clone(),
+            };
             let (line, elapsed) = (p.last_line.clone(), p.shell.running.as_ref().filter(|_| running).map(|r| commands::human(r.0.elapsed())));
             // The command, its last line, how long, then restore.
             let cmd_w = self.fonts.mono.width(&cmd).min(r.w / 3);
@@ -180,5 +187,27 @@ impl App {
             c("Close pane", "", Action::MiniClose(id)),
         ]);
         true
+    }
+}
+
+/// Whether a command line logs in to another machine (ssh, mosh and the
+/// like), so what it shows runs there, not here.
+fn remote_login(cmd: &str) -> bool {
+    let mut words = cmd.split_whitespace().skip_while(|w| w.contains('=') || matches!(*w, "exec" | "command" | "sudo"));
+    let prog = words.next().map(|w| w.rsplit('/').next().unwrap_or(w)).unwrap_or("");
+    matches!(prog, "ssh" | "mosh" | "autossh" | "et" | "sshpass") || (prog == "kitten" && words.next() == Some("ssh"))
+}
+
+#[cfg(test)]
+mod remote_login_tests {
+    use super::remote_login;
+
+    #[test]
+    fn knows_logins() {
+        assert!(remote_login("ssh host"));
+        assert!(remote_login("/usr/bin/ssh -p 22 me@host"));
+        assert!(remote_login("TERM=xterm mosh host"));
+        assert!(!remote_login("cargo build"));
+        assert!(!remote_login("sshd -D"));
     }
 }
