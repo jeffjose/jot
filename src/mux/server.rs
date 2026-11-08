@@ -592,7 +592,8 @@ impl Server {
             .windows
             .iter()
             .map(|c| {
-                let names = self.layouts.get(c).and_then(|l| merge(std::iter::once(l.as_str()))).map(|s| s.workspaces.iter().map(|w| w.name.clone()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+                // The workspace it shows now.
+                let names = self.layouts.get(c).and_then(|l| toml::from_str::<crate::persist::Session>(l).ok()).and_then(|s| s.workspaces.get(s.current.min(s.workspaces.len().saturating_sub(1))).map(|w| w.name.clone())).unwrap_or_default();
                 let panes = self.panes.values().filter(|p| p.viewers.contains(c)).count() as u32;
                 (self.abouts.get(c).cloned().unwrap_or_default(), names, panes)
             })
