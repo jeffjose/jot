@@ -48,6 +48,7 @@ impl App {
                 quake::QuakeHit::Machine => "Another machine's terminals".to_string(),
                 quake::QuakeHit::Grip => "Drag to make it taller or shorter".to_string(),
                 quake::QuakeHit::Hide => "Hide  ·  jot --quake".to_string(),
+                quake::QuakeHit::Full => "Full width  ·  or double-click a side".to_string(),
             };
             return Some((*r, words));
         }

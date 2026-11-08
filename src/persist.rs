@@ -229,6 +229,13 @@ pub struct Config {
     pub quake_position: String,
     #[serde(default = "default_quake_align")]
     pub quake_align: String,
+    /// Where the quake window's sides are, as dragged: each one's distance
+    /// in from the screen's edge, in percent of its width. Unset (below
+    /// zero): as quake-width and quake-align say.
+    #[serde(default = "unset_side", rename = "quake-left")]
+    pub quake_left: f32,
+    #[serde(default = "unset_side", rename = "quake-right")]
+    pub quake_right: f32,
     #[serde(default = "default_quake_monitor")]
     pub quake_monitor: String,
     #[serde(default = "yes")]
@@ -368,7 +375,7 @@ fn default_projects() -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), restore: default_restore(), status_line: false, project_bar: true, title_bar: default_title_bar(), editor_colors: default_editor_colors(), captions: true, quake_height: default_quake_height(), quake_width: default_quake_width(), quake_position: default_quake_position(), quake_align: default_quake_align(), quake_monitor: default_quake_monitor(), quake_all_workspaces: true, quake_hide_on_blur: false, ligatures: true, command_bars: false, bold_text: true, subpixel: default_subpixel(), workspace_colors: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), slash: Default::default(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), restore: default_restore(), status_line: false, project_bar: true, title_bar: default_title_bar(), editor_colors: default_editor_colors(), captions: true, quake_height: default_quake_height(), quake_width: default_quake_width(), quake_position: default_quake_position(), quake_align: default_quake_align(), quake_left: unset_side(), quake_right: unset_side(), quake_monitor: default_quake_monitor(), quake_all_workspaces: true, quake_hide_on_blur: false, ligatures: true, command_bars: false, bold_text: true, subpixel: default_subpixel(), workspace_colors: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), slash: Default::default(), workspaces: Vec::new() }
     }
 }
 
@@ -828,4 +835,9 @@ mod sharing_tests {
         let w: WorkspaceSpec = toml::from_str(old).unwrap();
         assert_eq!((w.id, w.rev, w.home), (None, None, None));
     }
+}
+
+/// A quake window's side not set by hand (see Config::quake_left).
+pub fn unset_side() -> f32 {
+    -1.0
 }

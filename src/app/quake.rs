@@ -20,27 +20,44 @@ pub(super) fn attributes() -> winit::window::WindowAttributes {
 /// How the quake window is to be, from the settings.
 pub(super) struct Shape {
     height: u32,
-    width: u32,
+    /// Its sides' distances in from the screen's edges, in percent of its
+    /// width.
+    left: f32,
+    right: f32,
     bottom: bool,
-    align: i32,
     pointer: bool,
     pub all_workspaces: bool,
 }
 
 impl Shape {
     fn of(c: &Config) -> Shape {
+        // As dragged; else as its width and alignment say.
+        let width = c.quake_width.clamp(10, 100) as f32;
+        let (left, right) = if c.quake_left >= 0.0 && c.quake_right >= 0.0 {
+            (c.quake_left, c.quake_right)
+        } else {
+            let left = match c.quake_align.to_ascii_lowercase().as_str() {
+                "left" => 0.0,
+                "right" => 100.0 - width,
+                _ => (100.0 - width) / 2.0,
+            };
+            (left, 100.0 - width - left)
+        };
+        let (left, right) = (left.clamp(0.0, 90.0), right.clamp(0.0, 90.0));
+        let right = right.min(90.0 - left);
         Shape {
             height: c.quake_height.clamp(10, 100),
-            width: c.quake_width.clamp(10, 100),
+            left,
+            right,
             bottom: c.quake_position.eq_ignore_ascii_case("bottom"),
-            align: match c.quake_align.to_ascii_lowercase().as_str() {
-                "left" => -1,
-                "right" => 1,
-                _ => 0,
-            },
             pointer: !c.quake_monitor.eq_ignore_ascii_case("primary"),
             all_workspaces: c.quake_all_workspaces,
         }
+    }
+
+    /// Whether it is narrower than the screen.
+    pub fn narrowed(&self) -> bool {
+        self.left > 0.05 || self.right > 0.05
     }
 }
 
@@ -69,6 +86,8 @@ impl App {
         self.config.quake_width = c.quake_width;
         self.config.quake_position = c.quake_position;
         self.config.quake_align = c.quake_align;
+        self.config.quake_left = c.quake_left;
+        self.config.quake_right = c.quake_right;
         self.config.quake_monitor = c.quake_monitor;
         self.config.quake_all_workspaces = c.quake_all_workspaces;
         self.config.quake_hide_on_blur = c.quake_hide_on_blur;
@@ -129,7 +148,7 @@ fn quake_place(window: &Window, x: Option<&x11::X>, shape: &Shape) -> Option<(Ph
 }
 
 /// As quake_place, and the top and height of the work area it is in.
-fn quake_place_area(window: &Window, x: Option<&x11::X>, shape: &Shape) -> Option<(PhysicalPosition<i32>, PhysicalSize<u32>, (i32, i32))> {
+fn quake_place_area(window: &Window, x: Option<&x11::X>, shape: &Shape) -> Option<(PhysicalPosition<i32>, PhysicalSize<u32>, (i32, i32, i32, i32))> {
     let monitors: Vec<_> = window.available_monitors().collect();
     let pointer = if shape.pointer { x.and_then(|x| x.pointer()) } else { None };
     let monitor = pointer
@@ -152,15 +171,11 @@ fn quake_place_area(window: &Window, x: Option<&x11::X>, shape: &Shape) -> Optio
             (ax, ay, aw, ah) = (x0, y0, x1 - x0, y1 - y0);
         }
     }
-    let w = aw * shape.width as i32 / 100;
+    let x = ax + (aw as f32 * shape.left / 100.0).round() as i32;
+    let w = (aw as f32 * (100.0 - shape.left - shape.right) / 100.0).round() as i32;
     let h = ah * shape.height as i32 / 100;
-    let x = match shape.align {
-        -1 => ax,
-        1 => ax + aw - w,
-        _ => ax + (aw - w) / 2,
-    };
     let y = if shape.bottom { ay + ah - h } else { ay };
-    Some((PhysicalPosition::new(x, y), PhysicalSize::new(w.max(1) as u32, h.max(1) as u32), (ay, ah)))
+    Some((PhysicalPosition::new(x, y), PhysicalSize::new(w.max(1) as u32, h.max(1) as u32), (ax, ay, aw, ah)))
 }
 
 /// The window's X11 id, when it is on X11.
@@ -370,6 +385,8 @@ pub(super) enum QuakeHit {
     /// The bar's empty stretch, dragged for the height.
     Grip,
     Hide,
+    /// Make it full width again (there while it is narrower).
+    Full,
 }
 
 /// jot's own color, its icon's: the quake window's square, which stands
@@ -494,11 +511,31 @@ impl App {
         let chevron = if self.quake_bar_on_top() { crate::canvas::icons::CHEVRON_DOWN } else { crate::canvas::icons::CHEVRON_UP };
         self.canvas.icon_in(chevron, hide, px(12.0), if lit == Some(QuakeHit::Hide) { c.text } else { c.dim });
         hits.push((hide, QuakeHit::Hide));
+        // Narrower than the screen: a button to make it full width again.
+        let mut left_of = hide.x;
+        if Shape::of(&self.config).narrowed() {
+            let full = Rect { x: hide.x - px(4.0) - hw, y: by, w: hw, h: bh };
+            let on = lit == Some(QuakeHit::Full);
+            if on {
+                self.canvas.round_fill(full, px(5.0), lift, 30);
+            }
+            // ⟷: arrows to both sides.
+            let (cx, cy, half) = (full.x + full.w / 2, full.y + full.h / 2, px(6.0));
+            let color = if on { c.text } else { c.dim };
+            self.canvas.fill(Rect { x: cx - half, y: cy, w: 2 * half, h: px(1.5).max(1) }, color);
+            for (sx, d) in [(cx - half, 1), (cx + half, -1)] {
+                for i in 0..px(3.0) {
+                    self.canvas.fill(Rect { x: sx + d * i, y: cy - i, w: 1, h: 2 * i + 1 }, color);
+                }
+            }
+            hits.push((full, QuakeHit::Full));
+            left_of = full.x;
+        }
         let k = self.foot_machine();
         let machine = self.machine_name(k);
         let ih = px(10.0);
         let bw = px(8.0) + self.fonts.ui.width(&machine) + px(6.0) + ih + px(7.0);
-        let button = Rect { x: hide.x - px(6.0) - bw, y: by, w: bw, h: bh };
+        let button = Rect { x: left_of - px(6.0) - bw, y: by, w: bw, h: bh };
         let on = lit == Some(QuakeHit::Machine);
         self.canvas.round_fill(button, px(5.0), lift, if on { 30 } else { 14 });
         self.canvas.text(&mut self.fonts.ui, &machine, (button.x + px(8.0)) as f32, ty, if on { c.text } else { mix(c.dim, c.text, 128) }, bar);
@@ -607,6 +644,7 @@ impl App {
             Some(QuakeHit::Machine) => self.quake_machine_menu(),
             Some(QuakeHit::Grip) => self.drag = Some(Drag::QuakeGrip),
             Some(QuakeHit::Hide) => self.quake_hide(),
+            Some(QuakeHit::Full) => self.quake_full_width(),
             None => {}
         }
         true
@@ -624,7 +662,7 @@ impl App {
         let Some(x) = x11::X::open() else { return };
         let Some((_, gy)) = x.pointer() else { return };
         let shape = Shape::of(&self.config);
-        let Some((pos, size, (ay, ah))) = quake_place_area(&window, Some(&x), &shape) else { return };
+        let Some((pos, size, (_, ay, _, ah))) = quake_place_area(&window, Some(&x), &shape) else { return };
         let min = (ah / 10).max(self.px(80.0));
         let h = if shape.bottom { ay + ah - gy } else { gy - ay }.clamp(min, ah);
         let _ = window.request_inner_size(PhysicalSize::new(size.width, h as u32));
@@ -696,5 +734,168 @@ impl App {
             }
         }
         true
+    }
+}
+
+/// How near the screen's edge a side dragged snaps to it.
+const SNAP: i32 = 16;
+
+impl App {
+    /// The side of the quake window the point is at (true the left), within
+    /// reach of its edge, above its bar.
+    fn quake_side_at(&self, x: i32, y: i32) -> Option<bool> {
+        if !crate::quake_mode() || self.quake_bar_rect().contains(x, y) {
+            return None;
+        }
+        let reach = self.px(6.0);
+        if x < reach {
+            Some(true)
+        } else if x >= self.canvas.width - reach {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    /// The pointer near a side: the resize arrows, and a handle lit there.
+    /// Whether it is.
+    pub(super) fn quake_side_hover(&mut self, x: i32, y: i32) -> bool {
+        let at = if matches!(self.drag, Some(Drag::QuakeSide(_))) { self.quake_side_lit } else { self.quake_side_at(x, y) };
+        if at != self.quake_side_lit {
+            self.quake_side_lit = at;
+            self.full = true;
+            self.redraw();
+        }
+        if at.is_some() {
+            if let Some(w) = &self.window {
+                w.set_cursor(CursorIcon::EwResize);
+            }
+        }
+        at.is_some()
+    }
+
+    /// A press at a side: held, to drag; pressed twice, that side back to
+    /// the screen's edge.
+    pub(super) fn quake_side_press(&mut self) -> bool {
+        let (x, y) = self.pointer;
+        let Some(left) = self.quake_side_at(x, y) else { return false };
+        let again = self.quake_side_click.is_some_and(|(l, t)| l == left && t.elapsed() < Duration::from_millis(400));
+        self.quake_side_click = Some((left, Instant::now()));
+        if again {
+            self.quake_side_click = None;
+            if left {
+                self.config.quake_left = 0.0;
+            } else {
+                self.config.quake_right = 0.0;
+            }
+            self.quake_sides_keep();
+            return true;
+        }
+        self.drag = Some(Drag::QuakeSide(left));
+        true
+    }
+
+    /// A side dragged: to the pointer, wherever on the screen; within reach
+    /// of the screen's edge, to it. The other side stays.
+    pub(super) fn quake_side_move(&mut self) {
+        let Some(Drag::QuakeSide(left)) = self.drag else { return };
+        let Some(window) = self.window.clone() else { return };
+        let Some(x) = x11::X::open() else { return };
+        let Some((gx, _)) = x.pointer() else { return };
+        let shape = Shape::of(&self.config);
+        let Some((_, _, (ax, _, aw, _))) = quake_place_area(&window, Some(&x), &shape) else { return };
+        let aw = aw.max(1);
+        let min = (self.px(320.0) as f32 / aw as f32 * 100.0).min(90.0);
+        let pct = |px: i32| px as f32 / aw as f32 * 100.0;
+        if left {
+            let gap = if gx - ax < SNAP { 0 } else { gx - ax };
+            self.config.quake_left = pct(gap).clamp(0.0, 100.0 - shape.right - min);
+            self.config.quake_right = shape.right;
+        } else {
+            let gap = if ax + aw - gx < SNAP { 0 } else { ax + aw - gx };
+            self.config.quake_right = pct(gap).clamp(0.0, 100.0 - shape.left - min);
+            self.config.quake_left = shape.left;
+        }
+        let shape = Shape::of(&self.config);
+        self.quake_readout = Some(if shape.narrowed() { format!("from {:.0}%  ·  {:.0}% wide", shape.left, 100.0 - shape.left - shape.right) } else { "full width".to_string() });
+        if let Some((pos, size, _)) = quake_place_area(&window, Some(&x), &shape) {
+            let _ = window.request_inner_size(size);
+            window.set_outer_position(pos);
+        }
+        self.full = true;
+        self.redraw();
+    }
+
+    /// A side let go: where both are kept.
+    pub(super) fn quake_side_end(&mut self) {
+        self.drag = None;
+        self.quake_readout = None;
+        self.quake_sides_keep();
+    }
+
+    /// The quake window full width again (its bar's button).
+    pub(super) fn quake_full_width(&mut self) {
+        self.config.quake_left = 0.0;
+        self.config.quake_right = 0.0;
+        self.quake_sides_keep();
+    }
+
+    /// Its sides as they are now kept, for the next time it is shown, and
+    /// the window put where they say.
+    fn quake_sides_keep(&mut self) {
+        let shape = Shape::of(&self.config);
+        self.config.quake_left = shape.left;
+        self.config.quake_right = shape.right;
+        persist::set_config_value("quake-left", &format!("{:.2}", shape.left));
+        persist::set_config_value("quake-right", &format!("{:.2}", shape.right));
+        if let Some(window) = self.window.clone() {
+            let x = x11::X::open();
+            if let Some((pos, size, _)) = quake_place_area(&window, x.as_ref(), &shape) {
+                let _ = window.request_inner_size(size);
+                window.set_outer_position(pos);
+            }
+        }
+        self.full = true;
+        self.redraw();
+    }
+
+    /// Over the quake window's text, after it is drawn: the handle at the
+    /// side the pointer is at (or held), and while one is dragged, where it
+    /// is, at the top.
+    pub(super) fn draw_quake_sides(&mut self) {
+        if !crate::quake_mode() {
+            return;
+        }
+        let accent = 0x4A9EFF;
+        if let Some(left) = self.quake_side_lit {
+            let (w, h) = (self.px(4.0), (self.canvas.height / 3).max(self.px(40.0)));
+            let held = matches!(self.drag, Some(Drag::QuakeSide(_)));
+            let x = if left { self.px(1.0) } else { self.canvas.width - w - self.px(1.0) };
+            let r = Rect { x, y: (self.canvas.height - self.quake_bar_h() - h) / 2, w, h };
+            self.canvas.round_fill(r, w / 2, if held { accent } else { 0xFFFFFF }, if held { 255 } else { 70 });
+            self.damage.push(r);
+        }
+        if let Some(text) = self.quake_readout.clone() {
+            let c = self.cur_theme.chrome();
+            let tw = self.fonts.ui.width(&text);
+            let pad = self.px(10.0);
+            let r = Rect { x: (self.canvas.width - tw) / 2 - pad, y: self.px(10.0), w: tw + 2 * pad, h: self.fonts.ui.height + self.px(10.0) };
+            self.canvas.round_fill(r, self.px(6.0), c.panel, 255);
+            self.canvas.ring(r, self.px(6.0), 1, accent);
+            let ty = r.y + self.px(5.0);
+            self.canvas.text(&mut self.fonts.ui, &text, (r.x + pad) as f32, ty, c.text, r);
+            self.damage.push(r);
+        }
+    }
+}
+
+impl App {
+    /// Its width or alignment set in Settings: the sides as dragged give
+    /// way to them.
+    pub(super) fn quake_sides_unset(&mut self) {
+        self.config.quake_left = persist::unset_side();
+        self.config.quake_right = persist::unset_side();
+        persist::unset_config_value("quake-left");
+        persist::unset_config_value("quake-right");
     }
 }

@@ -456,6 +456,9 @@ impl App {
                 *v = ((*v as i32 + by * 5).clamp(10, 100)) as u32;
                 let v = *v;
                 persist::set_config_value(config_key(key), &v.to_string());
+                if key == Key::QuakeWidth {
+                    self.quake_sides_unset();
+                }
             }
             // Its choices, the arrows going round them.
             Hit::Step(key @ (Key::QuakePosition | Key::QuakeAlign | Key::QuakeMonitor | Key::EditorColors), by) => {
@@ -469,6 +472,9 @@ impl App {
                 let next = choices[(i + by).rem_euclid(choices.len() as i32) as usize];
                 *now = next.to_string();
                 persist::set_config_value(config_key(key), &format!("{next:?}"));
+                if key == Key::QuakeAlign {
+                    self.quake_sides_unset();
+                }
             }
             Hit::Step(_, by) => {
                 self.config.ui_font_size = (self.config.ui_font_size + by as f32).clamp(8.0, 32.0);
