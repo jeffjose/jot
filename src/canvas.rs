@@ -373,7 +373,6 @@ pub mod icons {
     pub const CHEVRON_RIGHT: char = '\u{e304}';
     pub const SETTINGS: char = '\u{e305}';
     pub const LAYERS: char = '\u{e306}';
-    pub const PIN: char = '\u{e307}';
     pub const CHEVRON_UP: char = '\u{e308}';
 }
 

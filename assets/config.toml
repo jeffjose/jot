@@ -44,15 +44,14 @@
 # The quake window: `jot --quake` shows it, and hides it again (bind a key to
 # it). Its height and width as a share of the monitor, in percent; top or
 # bottom; left, center or right; on the monitor the pointer is on, or the
-# primary one; on every workspace; over every window; hidden when it loses
-# focus.
+# primary one; on every workspace; hidden when it loses focus. It is always
+# over every other window.
 # quake-height = 40
 # quake-width = 100
 # quake-position = "top"
 # quake-align = "center"
 # quake-monitor = "pointer"
 # quake-all-workspaces = true
-# quake-on-top = true
 # quake-hide-on-blur = false
 
 # Characters joined as the font draws them: => and != in Fira Code.

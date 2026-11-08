@@ -25,7 +25,6 @@ pub(super) struct Shape {
     align: i32,
     pointer: bool,
     pub all_workspaces: bool,
-    pub on_top: bool,
 }
 
 impl Shape {
@@ -41,7 +40,6 @@ impl Shape {
             },
             pointer: !c.quake_monitor.eq_ignore_ascii_case("primary"),
             all_workspaces: c.quake_all_workspaces,
-            on_top: c.quake_on_top,
         }
     }
 }
@@ -49,7 +47,7 @@ impl Shape {
 impl App {
     /// `jot --quake`: shown, or hidden if it shows.
     /// Hidden only when it is the window you are in: shown but under
-    /// another (not kept on top), it is brought forward instead, as Tilix
+    /// another window that is also kept on top, it is brought forward instead, as Tilix
     /// does, so the key never seems to do nothing.
     pub(super) fn quake_toggle(&mut self) {
         if self.quake_shown && self.focused_window {
@@ -69,7 +67,6 @@ impl App {
         self.config.quake_align = c.quake_align;
         self.config.quake_monitor = c.quake_monitor;
         self.config.quake_all_workspaces = c.quake_all_workspaces;
-        self.config.quake_on_top = c.quake_on_top;
         self.config.quake_hide_on_blur = c.quake_hide_on_blur;
     }
 
@@ -85,7 +82,8 @@ impl App {
             let _ = window.request_inner_size(size);
             window.set_outer_position(pos);
         }
-        window.set_window_level(if shape.on_top { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal });
+        // Over every other window, always.
+        window.set_window_level(WindowLevel::AlwaysOnTop);
         if let (Some(x), Some(id)) = (&x, xid) {
             x.before_map(id, &shape);
         }
@@ -235,13 +233,11 @@ mod x11 {
             Some((a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32))
         }
 
-        /// Its states as set: out of the taskbar and pager always; over the
-        /// others, and on every workspace, if so.
+        /// Its states: over every other window and out of the taskbar and
+        /// pager always; on every workspace, if so.
         fn states(&self, shape: &Shape) -> Vec<c_ulong> {
             let mut names = vec!["_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER"];
-            if shape.on_top {
-                names.push("_NET_WM_STATE_ABOVE");
-            }
+            names.push("_NET_WM_STATE_ABOVE");
             if shape.all_workspaces {
                 names.push("_NET_WM_STATE_STICKY");
             }
@@ -319,7 +315,6 @@ pub(super) enum QuakeHit {
     Workspaces,
     Pane(PaneId),
     Grip,
-    Pin,
     Hide,
 }
 
@@ -388,11 +383,9 @@ impl App {
         let gw = px(36.0);
         let gc = if lit == Some(QuakeHit::Grip) || matches!(self.drag, Some(Drag::QuakeGrip)) { dim } else { faint };
         self.canvas.round_fill(Rect { x: mid - gw / 2, y: bar.y + bar.h / 2 - px(1.5), w: gw, h: px(3.0).max(2) }, px(1.5), gc, 255);
-        // The right: kept on top (lit while it is), and hide.
-        let on_top = self.config.quake_on_top;
+        // The right: hide.
         let accent = mix(self.cur_accent, lift, 64);
-        let right = bar.x + bar.w - px(6.0) - 2 * (b + px(4.0));
-        let x = button(self, right, QuakeHit::Pin, crate::canvas::icons::PIN, if on_top { accent } else { dim });
+        let x = bar.x + bar.w - px(6.0) - (b + px(4.0));
         let hide = if self.quake_bar_on_top() { crate::canvas::icons::CHEVRON_DOWN } else { crate::canvas::icons::CHEVRON_UP };
         button(self, x, QuakeHit::Hide, hide, dim);
         // The left: the sidebar, the workspaces.
@@ -512,15 +505,6 @@ impl App {
                 self.redraw();
             }
             Some(QuakeHit::Grip) => self.drag = Some(Drag::QuakeGrip),
-            Some(QuakeHit::Pin) => {
-                self.config.quake_on_top = !self.config.quake_on_top;
-                persist::set_config_value("quake-on-top", if self.config.quake_on_top { "true" } else { "false" });
-                if let Some(w) = &self.window {
-                    w.set_window_level(if self.config.quake_on_top { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal });
-                }
-                self.full = true;
-                self.redraw();
-            }
             Some(QuakeHit::Hide) => self.quake_hide(),
             None => {}
         }
@@ -596,7 +580,7 @@ thread_local! {
 impl App {
     /// The quake bar, drawn when the frame is drawn whole, or when what it
     /// shows has changed: the workspace, the pane gone to (keys move it
-    /// without a whole frame), its panes and their names, kept on top.
+    /// without a whole frame), its panes and their names.
     pub(super) fn quake_bar_frame(&mut self, full: bool) {
         if !crate::quake_mode() {
             return;
@@ -604,7 +588,7 @@ impl App {
         let mut ids = Vec::new();
         self.ws().root.panes(&mut ids);
         let names: Vec<String> = ids.iter().filter_map(|id| self.panes.get(id).map(tab_name)).collect();
-        let key = format!("{} {} {:?} {:?} {:?} {}", self.current, self.ws().name, self.ws().focus, ids, names, self.config.quake_on_top);
+        let key = format!("{} {} {:?} {:?} {:?}", self.current, self.ws().name, self.ws().focus, ids, names);
         let changed = BAR_SEEN.with(|s| *s.borrow() != key);
         if full || changed {
             self.draw_quake_bar();

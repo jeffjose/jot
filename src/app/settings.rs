@@ -39,11 +39,10 @@ pub enum Key {
     QuakeAlign,
     QuakeMonitor,
     QuakeAllWorkspaces,
-    QuakeOnTop,
     QuakeHideOnBlur,
 }
 
-const ALL_KEYS: [Key; 22] = [Key::Bold, Key::WsColors, Key::CommandBars, Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine, Key::QuakeHeight, Key::QuakeWidth, Key::QuakePosition, Key::QuakeAlign, Key::QuakeMonitor, Key::QuakeAllWorkspaces, Key::QuakeOnTop, Key::QuakeHideOnBlur];
+const ALL_KEYS: [Key; 21] = [Key::Bold, Key::WsColors, Key::CommandBars, Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine, Key::QuakeHeight, Key::QuakeWidth, Key::QuakePosition, Key::QuakeAlign, Key::QuakeMonitor, Key::QuakeAllWorkspaces, Key::QuakeHideOnBlur];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
@@ -183,7 +182,6 @@ fn config_key(key: Key) -> &'static str {
         Key::QuakeAlign => "quake-align",
         Key::QuakeMonitor => "quake-monitor",
         Key::QuakeAllWorkspaces => "quake-all-workspaces",
-        Key::QuakeOnTop => "quake-on-top",
         Key::QuakeHideOnBlur => "quake-hide-on-blur",
     }
 }
@@ -230,7 +228,6 @@ impl App {
             Key::QuakeAlign => !c.quake_align.eq_ignore_ascii_case(&persist::default_quake_align()),
             Key::QuakeMonitor => !c.quake_monitor.eq_ignore_ascii_case(&persist::default_quake_monitor()),
             Key::QuakeAllWorkspaces => !c.quake_all_workspaces,
-            Key::QuakeOnTop => !c.quake_on_top,
             Key::QuakeHideOnBlur => c.quake_hide_on_blur,
         }
     }
@@ -321,7 +318,6 @@ impl App {
             Key::QuakeAlign => self.config.quake_align = persist::default_quake_align(),
             Key::QuakeMonitor => self.config.quake_monitor = persist::default_quake_monitor(),
             Key::QuakeAllWorkspaces => self.config.quake_all_workspaces = true,
-            Key::QuakeOnTop => self.config.quake_on_top = true,
             Key::QuakeHideOnBlur => self.config.quake_hide_on_blur = false,
         }
         persist::unset_config_value(config_key(key));
@@ -394,10 +390,6 @@ impl App {
                     Key::QuakeAllWorkspaces => {
                         self.config.quake_all_workspaces = !self.config.quake_all_workspaces;
                         self.config.quake_all_workspaces
-                    }
-                    Key::QuakeOnTop => {
-                        self.config.quake_on_top = !self.config.quake_on_top;
-                        self.config.quake_on_top
                     }
                     Key::QuakeHideOnBlur => {
                         self.config.quake_hide_on_blur = !self.config.quake_hide_on_blur;
@@ -819,7 +811,7 @@ impl App {
         let bold_text = self.config.bold_text;
         let command_bars = self.config.command_bars;
         let q = &self.config;
-        let quake = (q.quake_height, q.quake_width, capitalize(&q.quake_position), capitalize(&q.quake_align), capitalize(&q.quake_monitor), q.quake_all_workspaces, q.quake_on_top, q.quake_hide_on_blur);
+        let quake = (q.quake_height, q.quake_width, capitalize(&q.quake_position), capitalize(&q.quake_align), capitalize(&q.quake_monitor), q.quake_all_workspaces, q.quake_hide_on_blur);
         let version = crate::version();
         let canvas_h = self.canvas.height;
         let canvas = &mut self.canvas;
@@ -1204,7 +1196,7 @@ impl App {
         y += sh_ + px(4.0);
         canvas.text(&mut fonts.small, "your desktop's keyboard settings. Changes hold from the next time it is shown.", body.x as f32, y - px(8.0), c.dim, view);
         y += sh_ + px(12.0);
-        let (height, width, position, align, monitor, all, top, blur) = quake;
+        let (height, width, position, align, monitor, all, blur) = quake;
         for (name, what, key, value) in [
             ("Height", "Its share of the monitor's height.", Key::QuakeHeight, format!("{height}%")),
             ("Width", "Its share of the monitor's width.", Key::QuakeWidth, format!("{width}%")),
@@ -1219,7 +1211,6 @@ impl App {
         }
         for (name, what, key, value) in [
             ("On every workspace", "Shown on whichever workspace you are on.", Key::QuakeAllWorkspaces, all),
-            ("Keep on top", "Over every other window, even one you click.", Key::QuakeOnTop, top),
             ("Hide when focus leaves", "Hidden when you click another window, not only on its key.", Key::QuakeHideOnBlur, blur),
         ] {
             let mid = title(canvas, fonts, &mut page, y, name, what, key);
