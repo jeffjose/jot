@@ -180,8 +180,6 @@ enum Drag {
     Side(sidebar::SideCarry),
     /// The quake window's grip, for its height.
     QuakeGrip,
-    /// A side of the quake window (true the left), held to drag.
-    QuakeSide(bool),
     /// A pane's scrollbar, held where it was grabbed (from its top).
     Scroll { pane: PaneId, grab: i32 },
 }
@@ -440,11 +438,6 @@ pub struct App {
     /// name clicked, for a double click.
     inline: Option<inline::Inline>,
     inline_clicked: Option<(inline::Target, Instant)>,
-    /// The quake window's side the pointer is at (true the left); while one
-    /// is dragged, where it is; its last press, for a double click.
-    quake_side_lit: Option<bool>,
-    quake_readout: Option<String>,
-    quake_side_click: Option<(bool, Instant)>,
     /// What the sidebar showed last, as `sidebar_moved` counts it.
     side_sig: u64,
     /// What the project bar said when last drawn: drawn again when it changes.
@@ -720,9 +713,6 @@ impl App {
             scroll_lit: None,
             inline: None,
             inline_clicked: None,
-            quake_side_lit: None,
-            quake_readout: None,
-            quake_side_click: None,
             side_sig: 0,
             foot_said: String::new(),
             foot_dots: Vec::new(),
@@ -1930,10 +1920,6 @@ impl App {
             }
             self.inline_done(true);
         }
-        // A side of the quake window: held to drag, or double-clicked.
-        if button == MouseButton::Left && self.menu.is_none() && self.quake_side_press() {
-            return;
-        }
         // A menu open takes the click first: on a row it runs it, elsewhere
         // it goes, whatever was under it.
         if (self.menu.is_some() && self.overlay_click(button, event_loop)) || (button == MouseButton::Left && (self.quake_bar_click() || self.offer_click(event_loop) || self.toast_click() || self.mini_click() || self.pin_click() || self.editor_run_click() || self.editor_press() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
@@ -2114,7 +2100,7 @@ impl App {
         if matches!(self.drag, Some(Drag::Sidebar)) {
             return self.sidebar_drag_to(x);
         }
-        if self.drag.is_none() && (self.quake_side_hover(x, y) || self.sidebar_hover(x, y) || self.scroll_hover(x, y)) {
+        if self.drag.is_none() && (self.sidebar_hover(x, y) || self.scroll_hover(x, y)) {
             return;
         }
         match &self.drag {
@@ -2131,7 +2117,6 @@ impl App {
             Some(Drag::Sidebar) => {}
             Some(Drag::QuakeGrip) => self.quake_grip_move(),
             Some(Drag::Scroll { .. }) => self.scroll_drag(y),
-            Some(Drag::QuakeSide(_)) => self.quake_side_move(),
             Some(Drag::Side(_)) => self.side_drag_move(x, y),
             None if self.mouse_held.is_some() => {
                 let (id, b) = self.mouse_held.unwrap();
@@ -2180,9 +2165,6 @@ impl App {
     }
 
     fn mouse_release(&mut self) {
-        if matches!(self.drag, Some(Drag::QuakeSide(_))) {
-            return self.quake_side_end();
-        }
         if self.scroll_release() {
             return;
         }
@@ -2641,7 +2623,6 @@ impl App {
         self.side_dirty = false;
         self.draw_titlebar(full);
         self.quake_bar_frame(full);
-        self.draw_quake_sides();
         if full {
             self.draw_minimized();
         }
