@@ -58,7 +58,9 @@ impl Local {
     /// Starts `command` (or, when empty, a login shell) in `cwd`. A
     /// command is run by the shell, and the shell stays on after it ends,
     /// in the same folder, as if it had been typed.
-    pub fn spawn(command: &str, cwd: &Path, cols: u16, rows: u16, px: (u32, u32)) -> io::Result<Local> {
+    /// `desktop`: the display the window asking for it is on, set (or, when
+    /// that window has none of a name, unset) over what the session has.
+    pub fn spawn(command: &str, cwd: &Path, cols: u16, rows: u16, px: (u32, u32), desktop: &[(CString, Option<CString>)]) -> io::Result<Local> {
         let shell = shell();
         let name = Path::new(&shell).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "sh".into());
         // Everything the child needs is made before the fork: after it,
@@ -104,6 +106,12 @@ impl Local {
                 // "ssh" by these would say so on this machine's own panes.
                 for k in [c"SSH_CONNECTION", c"SSH_CLIENT", c"SSH_TTY"] {
                     libc::unsetenv(k.as_ptr());
+                }
+                for (k, v) in desktop {
+                    match v {
+                        Some(v) => libc::setenv(k.as_ptr(), v.as_ptr(), 1),
+                        None => libc::unsetenv(k.as_ptr()),
+                    };
                 }
                 libc::execvp(program.as_ptr(), argv_ptrs.as_ptr());
                 libc::_exit(127);

@@ -591,7 +591,8 @@ impl Server {
     fn spawn(&mut self, tx: &Sender<Ev>, c: u64, cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32)) -> (u64, i32) {
         let pane = self.next_pane;
         self.next_pane += 1;
-        let pid = match Local::spawn(&cmd, Path::new(&cwd), cols, rows, px) {
+        let desktop = self.conns.get(&c).map(desktop_of).unwrap_or_default();
+        let pid = match Local::spawn(&cmd, Path::new(&cwd), cols, rows, px, &desktop) {
             Ok(pty) => {
                 let pid = pty.pid;
                 let keys = start_io(tx, pane, &pty);
@@ -903,6 +904,33 @@ fn merge<'a>(texts: impl Iterator<Item = &'a str>) -> Option<crate::persist::Ses
 /// A pane's terminal read on a thread of its own (its output, then its
 /// end, told to the loop) and written to on another: what is typed goes
 /// to the returned sender.
+
+/// What a pane's programs need of the desktop: the display, the session's
+/// bus and what kind it is. The session has them as whatever started it
+/// had them, and that may have been an SSH login (`jot bridge`, a
+/// window's `jot restart` over SSH), with none: a window that asks for a
+/// pane gives it its own.
+const DESKTOP: [&str; 8] = ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DESKTOP_SESSION", "DBUS_SESSION_BUS_ADDRESS"];
+
+/// The desktop of the process at the other end of `s`, if it is on one
+/// (a window here; not `jot bridge`, for a window on another machine,
+/// whose panes keep the session's).
+fn desktop_of(s: &UnixStream) -> Vec<(std::ffi::CString, Option<std::ffi::CString>)> {
+    use std::os::fd::AsRawFd;
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let got = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) };
+    if got != 0 || cred.pid <= 0 {
+        return Vec::new();
+    }
+    let Ok(raw) = std::fs::read(format!("/proc/{}/environ", cred.pid)) else { return Vec::new() };
+    let vars: HashMap<&[u8], &[u8]> = raw.split(|b| *b == 0).filter_map(|kv| kv.iter().position(|b| *b == b'=').map(|i| (&kv[..i], &kv[i + 1..]))).collect();
+    let on = |k: &str| vars.get(k.as_bytes()).is_some_and(|v| !v.is_empty());
+    if !on("DISPLAY") && !on("WAYLAND_DISPLAY") {
+        return Vec::new();
+    }
+    DESKTOP.iter().filter_map(|k| Some((std::ffi::CString::new(*k).ok()?, vars.get(k.as_bytes()).and_then(|v| std::ffi::CString::new(*v).ok())))).collect()
+}
 fn start_io(tx: &Sender<Ev>, pane: u64, pty: &Local) -> Sender<Vec<u8>> {
     let tx2 = tx.clone();
     pty.read_on_thread(pane, move |out| {
