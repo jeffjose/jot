@@ -3,7 +3,7 @@
 A terminal emulator with built-in splits and workspaces, for Linux (X11
 and Wayland). Built on [libghostty-vt](https://mitchellh.com/writing/libghostty-1-0).
 
-<p align="center"><img src="docs/hero.png" width="760" alt="A corner of jot: the sidebar's terminals, two panes, and the bar with the workspace you are in"></p>
+<p align="center"><img src="docs/hero.png" width="900" alt="jot: the sidebar with each machine's terminals, three panes, and the bar with the workspace you are in"></p>
 
 ```sh
 git clone --recurse-submodules git@github.com:jeffjose/jot.git
