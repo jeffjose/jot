@@ -226,6 +226,32 @@ impl App {
                 self.quake_toggle();
                 String::new()
             }
+            // `jot restart`, to the quake window: itself again as the jot
+            // installed now (`exe`), in this same process. Its workspaces
+            // told to the session first; its connections and its socket
+            // close with the exec, and the new one takes them up, and its
+            // terminals, as the quake window coming back. Hidden, it stays
+            // hidden.
+            Some("restart") if crate::quake_mode() => match args.get(1).filter(|e| !e.is_empty()) {
+                Some(exe) => {
+                    self.save();
+                    let exe = std::ffi::CString::new(exe.as_str()).unwrap_or_default();
+                    let mut argv = vec![c"jot".to_owned(), c"--quake-window".to_owned()];
+                    if !self.quake_shown {
+                        argv.push(c"--quake-hidden".to_owned());
+                    }
+                    // After the answer has gone, and what was saved with it.
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        let mut ptrs: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
+                        ptrs.push(std::ptr::null());
+                        unsafe { libc::execv(exe.as_ptr(), ptrs.as_ptr()) };
+                        eprintln!("jot: the quake window could not start again: {}", std::io::Error::last_os_error());
+                    });
+                    "restarting\n".into()
+                }
+                None => "jot: restart needs the jot to start\n".into(),
+            },
             _ => format!("jot: one of {} is needed\n", crate::remote::COMMANDS.join(", ")),
         };
         let _ = event_loop;

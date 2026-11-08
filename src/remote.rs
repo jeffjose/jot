@@ -122,3 +122,16 @@ pub fn quake() -> i32 {
         }
     }
 }
+
+/// `jot restart`, to the quake window if one runs: started again as `exe`
+/// (see the window's "restart"). Whether it said it would.
+pub fn quake_restart(exe: &str) -> bool {
+    let Ok(mut stream) = UnixStream::connect(quake_socket_path()) else { return false };
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+    if stream.write_all(format!("restart\t{}\n", exe.replace('\t', "\\t").replace('\n', "\\n")).as_bytes()).is_err() {
+        return false;
+    }
+    let mut answer = String::new();
+    let _ = stream.read_to_string(&mut answer);
+    answer.starts_with("restarting")
+}

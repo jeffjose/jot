@@ -801,6 +801,9 @@ fn restart() -> i32 {
             let same = before.is_some() && server_pid(&path) == before;
             let panes = if panes == 1 { "1 pane".to_string() } else { format!("{panes} panes") };
             println!("The session's server is now {}: {panes} running on{}.", crate::version(), if same { "" } else { " (in a new process)" });
+            if crate::remote::quake_restart(&exe) {
+                println!("The quake window: started again as this jot, its terminals kept.");
+            }
             return 0;
         }
     }

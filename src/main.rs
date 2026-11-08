@@ -53,6 +53,13 @@ pub fn restored() -> bool {
 }
 
 static QUAKE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static QUAKE_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The quake window started again by jot restart while it was hidden
+/// (--quake-hidden): it stays so until the key shows it.
+pub fn quake_hidden() -> bool {
+    QUAKE_HIDDEN.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Whether this is the quake window (`jot --quake` started it).
 pub fn quake_mode() -> bool {
@@ -169,6 +176,7 @@ fn main() {
         match arg.as_str() {
             "--fresh" => fresh = true,
             "--quake-window" => QUAKE.store(true, std::sync::atomic::Ordering::Relaxed),
+            "--quake-hidden" => QUAKE_HIDDEN.store(true, std::sync::atomic::Ordering::Relaxed),
             "--debug" => DEBUG.store(true, std::sync::atomic::Ordering::Relaxed),
             "--restored" => RESTORED.store(true, std::sync::atomic::Ordering::Relaxed),
             "--show" => {

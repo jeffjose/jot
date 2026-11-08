@@ -3041,8 +3041,9 @@ impl ApplicationHandler<()> for App {
         self.load_recent();
         self.set_title();
         self.relayout();
-        // The quake window, just started by jot --quake: shown.
-        if crate::quake_mode() {
+        // The quake window, just started by jot --quake: shown (started
+        // again by jot restart while hidden, not until the key asks).
+        if crate::quake_mode() && !crate::quake_hidden() {
             self.quake_show();
         }
     }
