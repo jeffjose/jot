@@ -120,7 +120,8 @@ pub enum ToClient {
     /// server.
     /// `free` and `list` (each window: what it is, the workspace it shows and its
     /// panes) were added after that.
-    Info { attached: bool, panes: u32, names: String, version: String, windows: u32, free: u32, list: Vec<(String, String, u32)> },
+    /// `detail`, after that: the session's state in full, for jot status -v.
+    Info { attached: bool, panes: u32, names: String, version: String, windows: u32, free: u32, list: Vec<(String, String, u32)>, detail: String },
     /// What a pane's program is doing, when it changes.
     Proc { pane: u64, proc: crate::pty::Proc },
     /// For List: its workspaces this window does not show.
@@ -377,11 +378,12 @@ impl ToClient {
             ToClient::TeeEnd { pane, lines, error } => {
                 o.u8(8).u64(*pane).u64(*lines).str(error);
             }
-            ToClient::Info { attached, panes, names, version, windows, free, list } => {
+            ToClient::Info { attached, panes, names, version, windows, free, list, detail } => {
                 o.u8(9).u8(*attached as u8).u32(*panes).str(names).str(version).u32(*windows).u32(*free).u32(list.len() as u32);
                 for (about, names, panes) in list {
                     o.str(about).str(names).u32(*panes);
                 }
+                o.str(detail);
             }
             ToClient::Proc { pane, proc } => {
                 o.u8(10).u64(*pane).str(&proc.cwd).str(&proc.fg).u32(proc.pgrp as u32).u8(proc.busy as u8);
@@ -442,7 +444,7 @@ impl ToClient {
                 let (attached, panes, names, version, windows, free) = (i.u8()? != 0, i.u32()?, i.str()?, i.str().unwrap_or_default(), i.u32().unwrap_or(0), i.u32().unwrap_or(0));
                 let n = i.u32().unwrap_or(0);
                 let list = (0..n).map_while(|_| Some((i.str().ok()?, i.str().ok()?, i.u32().ok()?))).collect();
-                ToClient::Info { attached, panes, names, version, windows, free, list }
+                ToClient::Info { attached, panes, names, version, windows, free, list, detail: i.str().unwrap_or_default() }
             }
             10 => ToClient::Proc { pane: i.u64()?, proc: crate::pty::Proc { cwd: i.str()?, fg: i.str()?, pgrp: i.u32()? as i32, busy: i.u8()? != 0 } },
             11 => {
@@ -849,7 +851,7 @@ pub fn command(args: &[String]) -> i32 {
             // workspace it shows, its terminals and whether it runs this jot
             // (a window says which when it connects; one from before windows
             // did says nothing: older); and the session's jot.
-            Ok(ToClient::Info { panes, version, windows, free, list, .. }) if !list.is_empty() || windows == 0 && !version.is_empty() => {
+            Ok(ToClient::Info { panes, version, windows, free, list, detail, .. }) if !list.is_empty() || windows == 0 && !version.is_empty() => {
                 let short = |v: &str| v.split_once('(').and_then(|(_, r)| r.split_once(')')).map(|(s, _)| s.to_string()).unwrap_or_else(|| v.trim_start_matches("jot ").to_string());
                 let me = crate::version();
                 let host = std::fs::read_to_string("/proc/sys/kernel/hostname").map(|h| h.trim().to_string()).unwrap_or_default();
@@ -890,6 +892,11 @@ pub fn command(args: &[String]) -> i32 {
                     println!("{dim}session  jot {}, up to date ({exe}){off}", short(&me));
                 } else {
                     println!("session  {warn}jot {}, jot restart updates it to {}{off}", short(&version), short(&me));
+                }
+                // -v: the session's state in full, for working out what went wrong.
+                if args.iter().any(|a| a == "-v") && !detail.is_empty() {
+                    println!();
+                    print!("{detail}");
                 }
                 0
             }

@@ -166,11 +166,18 @@ impl App {
                     let mut ids = Vec::new();
                     ws.root.panes(&mut ids);
                     for (n, id) in ids.iter().enumerate() {
-                        let p = &self.panes[id];
+                        let Some(p) = self.panes.get(id) else {
+                            out += &format!("  {}.{}  (no pane {id:x})\n", wi + 1, n + 1);
+                            continue;
+                        };
                         let cwd = p.pty.cwd().map(|c| persist::shorten(&c)).unwrap_or_default();
                         let focus = if *id == ws.focus { " *" } else { "" };
                         out += &format!("  {}.{}  {}  {}{focus}\n", wi + 1, n + 1, cwd, p.caption);
                     }
+                }
+                // -v: what is behind it, for working out what went wrong.
+                if args.iter().any(|a| a == "-v") {
+                    out += &self.debug_state();
                 }
                 out
             }

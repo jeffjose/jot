@@ -73,7 +73,9 @@ impl App {
                         },
                         None => false,
                     };
-                    if !ours && self.ws_spec(wi, k).shared_shape() != shape {
+                    let mine = self.ws_spec(wi, k).shared_shape();
+                    crate::debuglog::log(format!("shared: {} rev {} -> {rev}: {}", spec.name, self.workspaces[wi].rev, if ours { "told back, this window's own" } else if mine == shape { "the same here" } else { "changed in another window, made again" }));
+                    if !ours && mine != shape {
                         self.reshape(wi, k, spec, &mut missing);
                     }
                     self.workspaces[wi].rev = rev;
@@ -329,6 +331,68 @@ impl App {
         }
         if let Some(wi) = showing.and_then(|id| self.workspaces.iter().position(|w| w.id == id)) {
             self.current = wi;
+        }
+    }
+}
+
+impl App {
+    /// The window's state in full (`jot list -v`): each workspace with its
+    /// id, rev and machine, its layout as the session has it, and each pane
+    /// with its terminal (machine:session name, its view), sidebar number,
+    /// what it shows; the terminals in no pane here; the machines and
+    /// whether their sessions share.
+    pub(super) fn debug_state(&self) -> String {
+        let mut out = String::from("\n-- workspaces\n");
+        for (wi, ws) in self.workspaces.iter().enumerate() {
+            let k = self.ws_machine(wi);
+            out += &format!("{} {}  id {:x} rev {}  machine {k}{}\n", wi + 1, ws.name, ws.id, ws.rev, if wi == self.current { "  (here)" } else { "" });
+            self.debug_tree(&ws.root, ws, 3, &mut out);
+        }
+        out += "-- terminals in no pane here\n";
+        for f in self.free_terminals() {
+            let n = self.term_numbers.get(&(f.k, f.sid)).map_or(String::from("-"), |n| n.to_string());
+            out += &format!("   {}:{}  #{n}  {}{}\n", f.k, f.sid, f.label, if f.elsewhere { "  (another window's)" } else { "" });
+        }
+        out += "-- machines\n";
+        for (k, m) in self.machines.iter().enumerate() {
+            out += &format!("   {k} {}  {}{}{}\n", m.host.as_deref().unwrap_or("(this one)"), if m.client.connected() { "reached" } else { "not reached" }, if self.shares_with.contains(&k) { ", shares" } else { "" }, if self.sync_waiting.contains_key(&k) { ", waiting for terminals" } else { "" });
+        }
+        if let Some(r) = self.roam {
+            out += &format!("-- roaming {r:x}\n");
+        }
+        for p in &self.popouts {
+            out += &format!("-- popped out {:x}\n", p.pane);
+        }
+        out
+    }
+}
+
+impl App {
+    /// A workspace's layout, one line a split or pane, nested: each split
+    /// its direction and shares, each pane its terminal (machine:session
+    /// name, view), sidebar number, size, caption and marks.
+    fn debug_tree(&self, node: &Node, ws: &Workspace, indent: usize, out: &mut String) {
+        let pad = " ".repeat(indent);
+        match node {
+            Node::Split { dir, children, sizes } => {
+                let way = if matches!(dir, Dir::Across) { "side by side" } else { "stacked" };
+                let shares = sizes.iter().map(|s| format!("{:.0}%", s * 100.0)).collect::<Vec<_>>().join(" ");
+                *out += &format!("{pad}{way} [{shares}]\n");
+                for c in children {
+                    self.debug_tree(c, ws, indent + 3, out);
+                }
+            }
+            Node::Pane(id) => {
+                let (m, sid) = crate::mux::split_id(*id);
+                let view = id >> 56;
+                let n = self.term_numbers.get(&(m, sid)).map_or(String::from("-"), |n| n.to_string());
+                let state = match self.panes.get(id) {
+                    Some(p) => format!("{}x{} {}{}", p.cols, p.rows, p.caption, if p.pty.end { " (ended)" } else { "" }),
+                    None => "(no pane)".into(),
+                };
+                let marks = [(ws.focus == *id, "focus"), (ws.zoom == Some(*id), "zoom"), (ws.spaces.contains(id), "space"), (ws.minimized.contains(id), "minimized")].iter().filter(|(on, _)| *on).map(|(_, w)| *w).collect::<Vec<_>>().join(",");
+                *out += &format!("{pad}#{n}  terminal {m}:{sid}{}  {state}  {marks}\n", if view > 0 { format!(" (view {view})") } else { String::new() });
+            }
         }
     }
 }

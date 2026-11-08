@@ -583,8 +583,14 @@ impl Server {
             match self.shared.iter().position(|s| s.id == Some(id)) {
                 Some(i) => {
                     let current = self.shared[i].rev.unwrap_or(0);
+                    if rev < current && self.changed_by.get(&id) != Some(&c) {
+                        crate::debuglog::log(format!("session: window {c}: {} rev {rev}, older than the list's {current}: not taken", ws.name));
+                    }
                     if rev >= current || self.changed_by.get(&id) == Some(&c) {
                         let moved = ws.shared_shape() != self.shared[i].shared_shape();
+                        if moved {
+                            crate::debuglog::log(format!("session: window {c}: {} rev {rev} (the list's {current}), changed: taken", ws.name));
+                        }
                         let mut w = ws.clone();
                         w.rev = Some(if moved { current + 1 } else { current });
                         self.shared[i] = w;
@@ -600,6 +606,7 @@ impl Server {
                     w.rev = Some(1);
                     let at = after.and_then(|a| self.shared.iter().position(|s| s.id == Some(a))).map_or(self.shared.len(), |i| i + 1);
                     self.shared.insert(at, w);
+                    crate::debuglog::log(format!("session: window {c}: {} new, shared", ws.name));
                     self.changed_by.insert(id, c);
                     changed = true;
                 }
@@ -611,6 +618,7 @@ impl Server {
         // Closed in this window.
         for id in before.iter().filter(|id| !now.contains(id)) {
             if let Some(i) = self.shared.iter().position(|s| s.id == Some(*id)) {
+                crate::debuglog::log(format!("session: window {c}: {} gone from its layout: closed", self.shared[i].name));
                 self.shared.remove(i);
                 changed = true;
             }
@@ -785,7 +793,7 @@ impl Server {
             })
             .collect();
         let free = self.panes.values().filter(|p| p.viewers.is_empty()).count() as u32;
-        ToClient::Info { attached: !self.windows.is_empty(), panes: self.panes.len() as u32, names, version: crate::version(), windows: self.windows.len() as u32, free, list }
+        ToClient::Info { attached: !self.windows.is_empty(), panes: self.panes.len() as u32, names, version: crate::version(), windows: self.windows.len() as u32, free, list, detail: self.detail() }
     }
 
     /// The desktop window `c`'s new pane is given: the window's own,
@@ -1357,4 +1365,52 @@ fn resume(file: &Path, tx: &Sender<Ev>) -> io::Result<(Server, i32)> {
 fn layout_ids(text: &str) -> Vec<u64> {
     let Ok(s) = toml::from_str::<crate::persist::Session>(text) else { return Vec::new() };
     s.workspaces.iter().filter_map(|w| w.layout.as_ref()).chain(s.popouts.iter()).flat_map(crate::persist::ids_in_order).collect()
+}
+
+impl Server {
+    /// The session's state in full (jot status -v): the workspaces it
+    /// shares, each window (connection, name, what it is, whether it
+    /// shares, the shared ones it has seen, the workspace it shows), each
+    /// terminal (who shows it, whose it is, its size), and the windows gone
+    /// whose workspaces wait.
+    fn detail(&self) -> String {
+        use crate::persist::{shape, Session};
+        let mut out = String::from("-- shared workspaces\n");
+        for w in &self.shared {
+            let by = w.id.and_then(|id| self.changed_by.get(&id)).map_or(String::new(), |c| format!(", last by window {c}"));
+            out += &format!("   {}  id {:x} rev {}{by}\n      {}\n", w.name, w.id.unwrap_or(0), w.rev.unwrap_or(0), w.layout.as_ref().map(shape).unwrap_or_default());
+        }
+        out += "-- windows (connections)\n";
+        for c in &self.windows {
+            let name = self.names.get(c).copied().unwrap_or(0);
+            let sharing = if self.sharing.contains(c) { "shares" } else { "does not share" };
+            let seen = self.seen.get(c).map(|s| s.iter().map(|id| format!("{id:x}")).collect::<Vec<_>>().join(" ")).unwrap_or_default();
+            out += &format!("   window {c}  name {name:x}  {}  {sharing}  seen [{seen}]\n", self.abouts.get(c).map_or("", String::as_str));
+            if let Some(s) = self.layouts.get(c).and_then(|l| toml::from_str::<Session>(l).ok()) {
+                for (i, w) in s.workspaces.iter().enumerate() {
+                    let here = if i == s.current { " (shown)" } else { "" };
+                    out += &format!("      {}  id {:x} rev {}{here}  {}\n", w.name, w.id.unwrap_or(0), w.rev.unwrap_or(0), w.layout.as_ref().map(shape).unwrap_or_default());
+                }
+            }
+        }
+        out += "-- terminals\n";
+        let mut ids: Vec<&u64> = self.panes.keys().collect();
+        ids.sort();
+        for id in ids {
+            let p = &self.panes[id];
+            let viewers = p.viewers.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+            let windows = p.windows.iter().map(|w| format!("{w:x}")).collect::<Vec<_>>().join(",");
+            let proc = p.pty.proc();
+            out += &format!("   {id}  pid {}  {}x{}  shown by [{viewers}]  windows [{windows}]  {}\n", p.pty.pid, p.size.0, p.size.1, if proc.busy { proc.fg.clone() } else { crate::persist::shorten(Path::new(&proc.cwd)) });
+        }
+        if !self.left.is_empty() {
+            out += "-- windows gone, their workspaces waiting\n";
+            for (name, l) in &self.left {
+                let s = toml::from_str::<Session>(l).ok();
+                let names = s.map(|s| s.workspaces.iter().map(|w| w.name.clone()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+                out += &format!("   name {name:x}: {names}\n");
+            }
+        }
+        out
+    }
 }

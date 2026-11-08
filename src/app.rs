@@ -3171,6 +3171,9 @@ impl ApplicationHandler<()> for App {
         self.load_recent();
         self.set_title();
         self.relayout();
+        // Its workspaces said to its sessions at once: shared, every other
+        // window has them now, not at the first change or half a minute on.
+        self.unsaved = true;
         // The quake window, just started by jot --quake: shown (started
         // again by jot restart while hidden, not until the key asks).
         if crate::quake_mode() && !crate::quake_hidden() {
@@ -3808,8 +3811,12 @@ impl App {
         for h in held {
             self.held.insert(crate::mux::app_id(k, h.pane), h);
         }
-        let Some(i) = self.taking.iter().position(|(m, s, _)| *m == k && s.layout.as_ref().is_some_and(|l| first.is_some_and(|f| persist::ids_in_order(l).contains(&f)))) else { return };
+        let Some(i) = self.taking.iter().position(|(m, s, _)| *m == k && s.layout.as_ref().is_some_and(|l| first.is_some_and(|f| persist::ids_in_order(l).contains(&f)))) else {
+            crate::debuglog::log(format!("taken {k}: {first:?}, which nothing here waited for"));
+            return;
+        };
         let (_, spec, place) = self.taking.remove(i);
+        crate::debuglog::log(format!("taken {k}: {:?} for {place:?}", spec.layout.as_ref().map(persist::ids_in_order).unwrap_or_default()));
         // Where it was to go: a pane still there, a workspace to put it in.
         let at = match place {
             terminals::Place::Into(p) | terminals::Place::Back(p) | terminals::Place::Split(p, ..) => {
@@ -3863,6 +3870,7 @@ impl App {
     /// one it showed running on: kept under the new one when `keep`, to
     /// come back to; coming back to one, it is taken off.
     pub(super) fn stand_in(&mut self, wi: usize, old: PaneId, new: PaneId, keep: bool) {
+        crate::debuglog::log(format!("workspace {}: pane {old:x} is {new:x} now{}", self.workspaces.get(wi).map_or("?", |w| w.name.as_str()), if keep { ", the one before kept under it" } else { "" }));
         // What the pane showed before, kept under the new one (most
         // recent last, each once); coming back, taken off.
         let mut under = self.under.remove(&old).unwrap_or_default();

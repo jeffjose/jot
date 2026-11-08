@@ -90,6 +90,7 @@ impl App {
     /// A terminal of machine `k`'s session brought into this window, `place`
     /// saying where; it comes when the session gives it.
     pub(super) fn take_terminal(&mut self, k: usize, sid: u64, place: Place) {
+        crate::debuglog::log(format!("take {k}:{sid} {place:?}"));
         if !self.machines.get(k).is_some_and(|m| m.client.connected()) {
             return;
         }
@@ -158,6 +159,7 @@ impl App {
         let i = ring.iter().position(|t| *t == here).unwrap_or(0) as i32;
         let n = ring.len() as i32;
         let (k, sid) = ring[(i + by).rem_euclid(n) as usize];
+        crate::debuglog::log(format!("step {by:+}: pane {at:x} shows {}:{}, ring {ring:?}, to {k}:{sid}", here.0, here.1));
         self.stepping = Some((at, (k, sid)));
         self.take_terminal(k, sid, Place::Into(at));
     }
