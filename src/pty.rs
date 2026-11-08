@@ -96,6 +96,13 @@ impl Local {
                 for (k, v) in env.iter().chain(std::iter::once(&pwd)) {
                     libc::setenv(k.as_ptr(), v.as_ptr(), 1);
                 }
+                // Not logged in over SSH, whatever started the session (a
+                // window opened from an SSH login, or `jot bridge`): the
+                // session outlives that connection, and prompts that say
+                // "ssh" by these would say so on this machine's own panes.
+                for k in [c"SSH_CONNECTION", c"SSH_CLIENT", c"SSH_TTY"] {
+                    libc::unsetenv(k.as_ptr());
+                }
                 libc::execvp(program.as_ptr(), argv_ptrs.as_ptr());
                 libc::_exit(127);
             }
