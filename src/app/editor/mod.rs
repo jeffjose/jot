@@ -10,7 +10,7 @@
 //! command is (`syntax`, which colors it now and is there for more:
 //! completing, explaining, linking), and its drawing (`view`).
 
-mod syntax;
+pub(super) mod syntax;
 mod view;
 
 use super::*;
@@ -35,13 +35,141 @@ pub struct Editor {
     /// Its Run button, where it was drawn, and whether the pointer is on it.
     pub run_at: Rect,
     pub run_lit: bool,
+    /// Its close button (×, top right), the same.
+    pub close_at: Rect,
+    pub close_lit: bool,
+    /// Where its text shows (inside the box, past the line numbers), and
+    /// how many rows and columns of it fit there.
+    pub text_at: Rect,
+    pub fits: (usize, usize),
+    /// The first row and column shown: the text scrolls, to keep the
+    /// cursor in sight, and with the wheel.
+    pub scroll: (usize, usize),
+    /// The column Up and Down keep to, across shorter lines.
+    pub goal: Option<usize>,
+    /// Scrolled to the cursor when next drawn: after a key or an edit,
+    /// not after the wheel.
+    pub follow_next: bool,
+    /// What it was before each change, to go back to (Ctrl Z), and what
+    /// was undone, to do again (Ctrl Shift Z, Ctrl Y).
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    /// The last change and when: typing or deleting runs together into
+    /// one step to undo.
+    last: Option<(Change, Instant)>,
+}
+
+/// The text and cursor, as they were.
+#[derive(Clone)]
+struct Snapshot {
+    lines: Vec<Vec<char>>,
+    row: usize,
+    col: usize,
+}
+
+/// What a key did to the text, for undoing it in sensible steps.
+#[derive(Clone, Copy, PartialEq)]
+enum Change {
+    Type,
+    Delete,
+    Other,
 }
 
 impl Editor {
     fn new(pane: PaneId, lines: Vec<Vec<char>>, into_bar: bool) -> Editor {
         let row = lines.len() - 1;
         let col = lines[row].len();
-        Editor { pane, lines, row, col, into_bar, anchor: None, at: Rect::default(), origin: (0, 0), drag: false, clicks: None, run_at: Rect::default(), run_lit: false }
+        Editor {
+            pane,
+            lines,
+            row,
+            col,
+            into_bar,
+            anchor: None,
+            at: Rect::default(),
+            origin: (0, 0),
+            drag: false,
+            clicks: None,
+            run_at: Rect::default(),
+            run_lit: false,
+            close_at: Rect::default(),
+            close_lit: false,
+            text_at: Rect::default(),
+            fits: (1, 1),
+            scroll: (0, 0),
+            goal: None,
+            follow_next: true,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            last: None,
+        }
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot { lines: self.lines.clone(), row: self.row, col: self.col }
+    }
+
+    fn restore(&mut self, s: Snapshot) {
+        self.lines = s.lines;
+        self.row = s.row.min(self.lines.len() - 1);
+        self.col = s.col.min(self.lines[self.row].len());
+        self.anchor = None;
+        self.goal = None;
+    }
+
+    /// A change about to be made: what was there kept to undo to, unless
+    /// it carries on the typing or deleting just before.
+    fn checkpoint(&mut self, change: Change, before: Snapshot) {
+        let runs_on = change != Change::Other && self.last.is_some_and(|(c, t)| c == change && t.elapsed() < Duration::from_millis(1500));
+        if !runs_on {
+            self.undo.push(before);
+            if self.undo.len() > 500 {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.last = Some((change, Instant::now()));
+    }
+
+    /// Ctrl Z: back a step.
+    pub fn undo(&mut self) {
+        if let Some(s) = self.undo.pop() {
+            self.redo.push(self.snapshot());
+            self.restore(s);
+        }
+        self.last = None;
+    }
+
+    /// Ctrl Shift Z, Ctrl Y: the step undone, done again.
+    pub fn redo(&mut self) {
+        if let Some(s) = self.redo.pop() {
+            self.undo.push(self.snapshot());
+            self.restore(s);
+        }
+        self.last = None;
+    }
+
+    /// A change from outside the keys (the menu's cut and paste), to undo
+    /// as one step.
+    pub fn changing(&mut self) {
+        let before = self.snapshot();
+        self.checkpoint(Change::Other, before);
+    }
+
+    /// The scroll moved so the cursor is in sight, given what fits.
+    pub fn follow(&mut self) {
+        let (rows, cols) = (self.fits.0.max(1), self.fits.1.max(1));
+        if self.row < self.scroll.0 {
+            self.scroll.0 = self.row;
+        } else if self.row >= self.scroll.0 + rows {
+            self.scroll.0 = self.row + 1 - rows;
+        }
+        if self.col < self.scroll.1 {
+            self.scroll.1 = self.col.saturating_sub(4);
+        } else if self.col >= self.scroll.1 + cols {
+            self.scroll.1 = self.col + 1 - cols;
+        }
+        self.scroll.0 = self.scroll.0.min(self.lines.len().saturating_sub(1));
     }
 
     /// The command as the shell gets it: the lines joined by spaces.
@@ -206,8 +334,63 @@ impl Editor {
     }
 
     /// A key; what is cut or copied goes to `set`, what is pasted comes
-    /// from `get`.
+    /// from `get`. Each change can be undone; typing and deleting run
+    /// together into a step.
     pub fn key(&mut self, code: KeyCode, mods: winit::keyboard::ModifiersState, text: Option<&str>, get: &mut dyn FnMut() -> Option<String>, set: &mut dyn FnMut(String)) {
+        let (ctrl, shift, alt) = (mods.control_key(), mods.shift_key(), mods.alt_key());
+        match code {
+            KeyCode::KeyZ if ctrl && shift => return self.redo(),
+            KeyCode::KeyZ if ctrl => return self.undo(),
+            KeyCode::KeyY if ctrl => return self.redo(),
+            // Up and Down keep to the column they started from.
+            KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::PageUp | KeyCode::PageDown if !ctrl && !alt => {
+                let goal = *self.goal.get_or_insert(self.col);
+                let step = if matches!(code, KeyCode::PageUp | KeyCode::PageDown) { self.fits.0.saturating_sub(1).max(1) } else { 1 };
+                let last = self.lines.len() - 1;
+                let to = if matches!(code, KeyCode::ArrowUp | KeyCode::PageUp) {
+                    if self.row == 0 { (0, 0) } else { (self.row.saturating_sub(step), goal) }
+                } else if self.row == last {
+                    (last, self.lines[last].len())
+                } else {
+                    ((self.row + step).min(last), goal)
+                };
+                let keep = self.goal;
+                self.go(to, shift);
+                // At the very top or bottom the column changes; the goal
+                // does not.
+                self.goal = keep;
+                return;
+            }
+            // Home: to where the line's words start, then to its start.
+            KeyCode::Home if !ctrl => {
+                let line = &self.lines[self.row];
+                let first = line.iter().position(|c| !c.is_whitespace()).unwrap_or(line.len());
+                let to = if self.col == first { 0 } else { first };
+                self.goal = None;
+                return self.go((self.row, to), shift);
+            }
+            _ => {}
+        }
+        self.goal = None;
+        let before = self.snapshot();
+        // Tab: two spaces (the shell's completion is not here).
+        if code == KeyCode::Tab && !ctrl && !alt {
+            self.insert("  ");
+        } else {
+            self.apply_key(code, mods, text, get, set);
+        }
+        if self.lines != before.lines {
+            let change = match code {
+                KeyCode::Backspace | KeyCode::Delete => Change::Delete,
+                _ if !ctrl && !alt && text.is_some_and(|t| !t.is_empty() && !t.chars().any(char::is_control)) && !t_is_space(text) => Change::Type,
+                _ => Change::Other,
+            };
+            self.checkpoint(change, before);
+        }
+    }
+
+    /// A key as the text editor has it, before undo and the like.
+    fn apply_key(&mut self, code: KeyCode, mods: winit::keyboard::ModifiersState, text: Option<&str>, get: &mut dyn FnMut() -> Option<String>, set: &mut dyn FnMut(String)) {
         let (ctrl, shift, alt) = (mods.control_key(), mods.shift_key(), mods.alt_key());
         let word = ctrl || alt;
         match code {
@@ -322,8 +505,17 @@ impl App {
         !self.roam_shown && self.ws().root.contains(e.pane) && !self.ws().minimized.contains(&e.pane) && self.ws().zoom.is_none_or(|z| z == e.pane)
     }
 
+    /// A menu, the palette or the settings over everything: their clicks,
+    /// not the editors'.
+    fn overlay_up(&self) -> bool {
+        self.menu.is_some() || self.palette.is_some() || self.settings.is_some()
+    }
+
     /// The editor drawn under a point, by its place among them.
     fn editor_under(&self, x: i32, y: i32) -> Option<usize> {
+        if self.overlay_up() {
+            return None;
+        }
         self.editors.iter().position(|e| self.editor_shown(e) && e.at.contains(x, y))
     }
 
@@ -331,8 +523,9 @@ impl App {
     /// point is in its text (or anywhere, without `inside`).
     fn editor_pos_at(&self, e: &Editor, x: i32, y: i32, inside: bool) -> Option<Pos> {
         let (cw, ch) = (self.fonts.cell_w, self.fonts.cell_h);
+        // Row 0, column 0, where they would be drawn, scrolled.
         let (ox, oy) = e.origin;
-        if inside && (y < oy || y >= oy + e.lines.len() as i32 * ch || x < ox - cw || !e.at.contains(x, y)) {
+        if inside && !e.text_at.contains(x, y) {
             return None;
         }
         let row = ((y - oy).max(0) / ch).min(e.lines.len() as i32 - 1) as usize;
@@ -433,8 +626,13 @@ impl App {
             return false;
         }
         match code {
+            // Esc: the selection gone, if there is one; else the editor.
             KeyCode::Escape => {
-                if let Some(f) = self.focused() {
+                if let Some(e) = self.editor_mut().filter(|e| e.selection().is_some()) {
+                    e.anchor = None;
+                    self.full = true;
+                    self.redraw();
+                } else if let Some(f) = self.focused() {
                     self.close_editor(f);
                 }
                 return true;
@@ -455,6 +653,7 @@ impl App {
         if let Some(e) = self.editor_mut() {
             let copied = &copied;
             e.key(code, mods, event.text.as_deref(), &mut || pasted.clone(), &mut |t| *copied.borrow_mut() = Some(t));
+            e.follow_next = true;
         }
         if let Some(t) = copied.into_inner() {
             self.clip_set(t, false);
@@ -470,6 +669,9 @@ impl App {
     /// pane's terminal under it gets nothing: the editor holds it.
     pub(super) fn editor_press(&mut self) -> bool {
         let (x, y) = self.pointer;
+        if self.overlay_up() {
+            return false;
+        }
         // A divider's reach, into the pane: the divider's.
         if self.editor_under(x, y).is_none() && self.divider_at(x, y).is_some() {
             return false;
@@ -542,7 +744,7 @@ impl App {
         let icon = match self.editor_under(x, y) {
             Some(i) if self.editor_pos_at(&self.editors[i], x, y, true).is_some() => CursorIcon::Text,
             Some(_) => CursorIcon::Default,
-            None if self.pane_at(x, y).is_some_and(|(id, _)| self.editors.iter().any(|e| e.pane == id)) => CursorIcon::Default,
+            None if !self.overlay_up() && self.pane_at(x, y).is_some_and(|(id, _)| self.editors.iter().any(|e| e.pane == id)) => CursorIcon::Default,
             None => return false,
         };
         if let Some(w) = &self.window {
@@ -582,17 +784,22 @@ impl App {
         match action {
             Action::FieldCut => {
                 copied = e.selected();
-                e.delete_selection();
+                if copied.is_some() {
+                    e.changing();
+                    e.delete_selection();
+                }
             }
             Action::FieldCopy => copied = e.selected(),
             Action::FieldPaste => {
                 if let Some(s) = pasted {
+                    e.changing();
                     e.insert(&s);
                 }
             }
             Action::FieldSelectAll => e.select_all(),
             _ => {}
         }
+        e.follow_next = true;
         if let Some(s) = copied {
             self.clip_set(s, false);
         }
@@ -601,9 +808,16 @@ impl App {
     }
 
     /// A click on an editor's Run button: its pane gone to, and run, as
-    /// Ctrl Enter.
+    /// Ctrl Enter. On its ×: closed.
     pub(super) fn editor_run_click(&mut self) -> bool {
         let (x, y) = self.pointer;
+        if self.overlay_up() {
+            return false;
+        }
+        if let Some(pane) = self.editors.iter().find(|e| self.editor_shown(e) && e.close_at.contains(x, y)).map(|e| e.pane) {
+            self.close_editor(pane);
+            return true;
+        }
         let Some(pane) = self.editors.iter().find(|e| self.editor_shown(e) && e.run_at.contains(x, y)).map(|e| e.pane) else { return false };
         if self.focused() != Some(pane) {
             self.set_focus(pane);
@@ -612,18 +826,36 @@ impl App {
         true
     }
 
+    /// The wheel over an editor: its text scrolled, by rows. True when it
+    /// was over one.
+    pub(super) fn editor_wheel(&mut self, rows: isize) -> bool {
+        let (x, y) = self.pointer;
+        let Some(i) = self.editor_under(x, y) else { return false };
+        let e = &mut self.editors[i];
+        let most = e.lines.len().saturating_sub(e.fits.0.max(1));
+        e.scroll.0 = (e.scroll.0 as isize + rows).clamp(0, most as isize) as usize;
+        self.full = true;
+        self.redraw();
+        true
+    }
+
     /// The pointer over a Run button: lit, and the hand.
     pub(super) fn editor_run_hover(&mut self, x: i32, y: i32) -> bool {
+        if self.overlay_up() {
+            return false;
+        }
         let shown: Vec<bool> = self.editors.iter().map(|e| self.editor_shown(e)).collect();
         let mut on_any = false;
         let mut changed = false;
         for (e, shown) in self.editors.iter_mut().zip(shown) {
             let on = shown && e.run_at.contains(x, y);
-            if on != e.run_lit {
+            let on_close = shown && e.close_at.contains(x, y);
+            if on != e.run_lit || on_close != e.close_lit {
                 e.run_lit = on;
+                e.close_lit = on_close;
                 changed = true;
             }
-            on_any |= on;
+            on_any |= on || on_close;
         }
         if changed {
             self.full = true;
@@ -635,5 +867,115 @@ impl App {
             }
         }
         on_any
+    }
+}
+
+/// A space typed: the end of a word, so typing after it is undone apart.
+fn t_is_space(text: Option<&str>) -> bool {
+    text == Some(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::keyboard::ModifiersState as M;
+
+    fn ed(text: &str) -> Editor {
+        Editor::new(0, text.split('\n').map(|l| l.chars().collect()).collect(), false)
+    }
+
+    fn text(e: &Editor) -> String {
+        e.lines.iter().map(|l| l.iter().collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    /// A key with no clipboard; what is copied, returned.
+    fn key(e: &mut Editor, code: KeyCode, mods: M, t: Option<&str>) -> Option<String> {
+        let mut copied = None;
+        e.key(code, mods, t, &mut || Some("PASTE".into()), &mut |s| copied = Some(s));
+        copied
+    }
+
+    fn typed(e: &mut Editor, s: &str) {
+        for c in s.chars() {
+            let t = c.to_string();
+            key(e, KeyCode::KeyA, M::empty(), Some(&t));
+        }
+    }
+
+    #[test]
+    fn typing_and_undo_by_words() {
+        let mut e = ed("");
+        typed(&mut e, "git log");
+        assert_eq!(text(&e), "git log");
+        key(&mut e, KeyCode::KeyZ, M::CONTROL, None);
+        assert_eq!(text(&e), "git ");
+        key(&mut e, KeyCode::KeyZ, M::CONTROL, None);
+        assert_eq!(text(&e), "git");
+        key(&mut e, KeyCode::KeyZ, M::CONTROL, None);
+        assert_eq!(text(&e), "");
+        // Redo, both ways of asking.
+        key(&mut e, KeyCode::KeyZ, M::CONTROL | M::SHIFT, None);
+        assert_eq!(text(&e), "git");
+        key(&mut e, KeyCode::KeyY, M::CONTROL, None);
+        assert_eq!(text(&e), "git ");
+        // A change after undoing: nothing left to redo.
+        typed(&mut e, "x");
+        key(&mut e, KeyCode::KeyY, M::CONTROL, None);
+        assert_eq!(text(&e), "git x");
+    }
+
+    #[test]
+    fn up_and_down_keep_their_column() {
+        let mut e = ed("abcdefgh\nab\nabcdefgh");
+        e.go((0, 6), false);
+        key(&mut e, KeyCode::ArrowDown, M::empty(), None);
+        assert_eq!((e.row, e.col), (1, 2));
+        key(&mut e, KeyCode::ArrowDown, M::empty(), None);
+        assert_eq!((e.row, e.col), (2, 6));
+        // Past the bottom: to the end, and back up keeps the column.
+        key(&mut e, KeyCode::ArrowDown, M::empty(), None);
+        assert_eq!((e.row, e.col), (2, 8));
+        key(&mut e, KeyCode::ArrowUp, M::empty(), None);
+        assert_eq!((e.row, e.col), (1, 2));
+    }
+
+    #[test]
+    fn home_tab_and_selection() {
+        let mut e = ed("    ls -la");
+        key(&mut e, KeyCode::Home, M::empty(), None);
+        assert_eq!(e.col, 4);
+        key(&mut e, KeyCode::Home, M::empty(), None);
+        assert_eq!(e.col, 0);
+        key(&mut e, KeyCode::Tab, M::empty(), Some("\t"));
+        assert_eq!(text(&e), "      ls -la");
+        // Shift End selects to the end; Ctrl C copies it, Ctrl X cuts it.
+        e.go((0, 6), false);
+        key(&mut e, KeyCode::End, M::SHIFT, None);
+        assert_eq!(key(&mut e, KeyCode::KeyC, M::CONTROL, None).as_deref(), Some("ls -la"));
+        assert_eq!(key(&mut e, KeyCode::KeyX, M::CONTROL, None).as_deref(), Some("ls -la"));
+        assert_eq!(text(&e), "      ");
+        key(&mut e, KeyCode::KeyV, M::CONTROL, None);
+        assert_eq!(text(&e), "      PASTE");
+        key(&mut e, KeyCode::KeyZ, M::CONTROL, None);
+        assert_eq!(text(&e), "      ");
+    }
+
+    #[test]
+    fn words_and_lines() {
+        let mut e = ed("echo one two");
+        key(&mut e, KeyCode::Backspace, M::CONTROL, None);
+        assert_eq!(text(&e), "echo one ");
+        key(&mut e, KeyCode::Enter, M::empty(), None);
+        typed(&mut e, "| wc");
+        assert_eq!(text(&e), "echo one \n| wc");
+        // Backspace at a line's start joins it to the one above.
+        e.go((1, 0), false);
+        key(&mut e, KeyCode::Backspace, M::empty(), None);
+        assert_eq!(text(&e), "echo one | wc");
+        // Select all, type over it.
+        key(&mut e, KeyCode::KeyA, M::CONTROL, None);
+        typed(&mut e, "x");
+        assert_eq!(text(&e), "x");
+        assert_eq!(ed("a  b\nc").command(), "a  b c");
     }
 }

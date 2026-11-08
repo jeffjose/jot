@@ -40,9 +40,11 @@ pub enum Key {
     QuakeMonitor,
     QuakeAllWorkspaces,
     QuakeHideOnBlur,
+    /// The long-command editor's colors.
+    EditorColors,
 }
 
-const ALL_KEYS: [Key; 21] = [Key::Bold, Key::WsColors, Key::CommandBars, Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine, Key::QuakeHeight, Key::QuakeWidth, Key::QuakePosition, Key::QuakeAlign, Key::QuakeMonitor, Key::QuakeAllWorkspaces, Key::QuakeHideOnBlur];
+const ALL_KEYS: [Key; 22] = [Key::Bold, Key::WsColors, Key::CommandBars, Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::EditorColors, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine, Key::QuakeHeight, Key::QuakeWidth, Key::QuakePosition, Key::QuakeAlign, Key::QuakeMonitor, Key::QuakeAllWorkspaces, Key::QuakeHideOnBlur];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
@@ -183,6 +185,7 @@ fn config_key(key: Key) -> &'static str {
         Key::QuakeMonitor => "quake-monitor",
         Key::QuakeAllWorkspaces => "quake-all-workspaces",
         Key::QuakeHideOnBlur => "quake-hide-on-blur",
+        Key::EditorColors => "editor-colors",
     }
 }
 
@@ -229,6 +232,7 @@ impl App {
             Key::QuakeMonitor => !c.quake_monitor.eq_ignore_ascii_case(&persist::default_quake_monitor()),
             Key::QuakeAllWorkspaces => !c.quake_all_workspaces,
             Key::QuakeHideOnBlur => c.quake_hide_on_blur,
+            Key::EditorColors => !c.editor_colors.eq_ignore_ascii_case(&persist::default_editor_colors()),
         }
     }
 
@@ -315,6 +319,7 @@ impl App {
             Key::QuakeHeight => self.config.quake_height = persist::default_quake_height(),
             Key::QuakeWidth => self.config.quake_width = persist::default_quake_width(),
             Key::QuakePosition => self.config.quake_position = persist::default_quake_position(),
+            Key::EditorColors => self.config.editor_colors = persist::default_editor_colors(),
             Key::QuakeAlign => self.config.quake_align = persist::default_quake_align(),
             Key::QuakeMonitor => self.config.quake_monitor = persist::default_quake_monitor(),
             Key::QuakeAllWorkspaces => self.config.quake_all_workspaces = true,
@@ -437,8 +442,9 @@ impl App {
                 persist::set_config_value(config_key(key), &v.to_string());
             }
             // Its choices, the arrows going round them.
-            Hit::Step(key @ (Key::QuakePosition | Key::QuakeAlign | Key::QuakeMonitor), by) => {
+            Hit::Step(key @ (Key::QuakePosition | Key::QuakeAlign | Key::QuakeMonitor | Key::EditorColors), by) => {
                 let (choices, now): (&[&str], &mut String) = match key {
+                    Key::EditorColors => (super::editor::syntax::SCHEMES, &mut self.config.editor_colors),
                     Key::QuakePosition => (QUAKE_POSITIONS, &mut self.config.quake_position),
                     Key::QuakeAlign => (QUAKE_ALIGNS, &mut self.config.quake_align),
                     _ => (QUAKE_MONITORS, &mut self.config.quake_monitor),
@@ -807,6 +813,7 @@ impl App {
         let ws_rows: Vec<(String, Option<String>, Option<String>, bool)> = self.workspaces.iter().enumerate().map(|(i, w)| (w.name.clone(), w.accent.clone(), w.theme.clone(), i == self.current)).collect();
         let (ws_given, ws_colors) = (self.ws_accents(), self.config.workspace_colors);
         let min_contrast = self.config.min_contrast;
+        let editor_scheme = super::editor::syntax::scheme(&self.config.editor_colors, self.cur_theme);
         let ligatures = self.config.ligatures;
         let bold_text = self.config.bold_text;
         let command_bars = self.config.command_bars;
@@ -976,6 +983,46 @@ impl App {
             let mid = title(canvas, fonts, &mut page, y, "Minimum contrast", "Adjusts text that is hard to read on its background. VS Code uses 4.5; 1 turns it off.", Key::Contrast);
             stepper(canvas, fonts, &mut page, mid, Key::Contrast, &format!("{min_contrast:.1}"));
             y += row_h;
+            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
+        }
+        {
+            // The long-command editor's colors, with a command in them.
+            let mid = title(canvas, fonts, &mut page, y, "Edit command colors", "Syntax colors in the long-command editor (Ctrl Shift E).", Key::EditorColors);
+            {
+                // Its name before − and +, side by side: names are wider than a
+                // stepper's number.
+                let b = field_h;
+                let plus = Rect { x: right - b, y: mid - b / 2, w: b, h: b };
+                let minus = Rect { x: plus.x - b - px(6.0), ..plus };
+                for (rect, by, glyph) in [(minus, -1, "−"), (plus, 1, "+")] {
+                    let hit = Hit::Step(Key::EditorColors, by);
+                    canvas.round_fill(rect, px(7.0), if hover == Some(hit) { c.hover } else { c.field }, 255);
+                    canvas.ring(rect, px(7.0), 1, c.edge);
+                    let gw = fonts.ui.width(glyph);
+                    canvas.text(&mut fonts.ui, glyph, (rect.x + (b - gw) / 2) as f32, rect.y + (b - uh) / 2, c.text, rect);
+                    page.push((rect, hit));
+                }
+                let nw = fonts.ui.width(editor_scheme.name);
+                canvas.text(&mut fonts.ui, editor_scheme.name, (minus.x - px(12.0) - nw) as f32, mid - uh / 2, c.text, view);
+            }
+            y += row_h;
+            let sample = "FOO=1 git log --oneline -n 5 | grep \"fix\" > ~/out.txt # recent";
+            let lines = vec![sample.chars().collect::<Vec<char>>()];
+            let (cw, ch) = (fonts.cell_w, fonts.cell_h);
+            let pad = px(12.0);
+            let strip = Rect { x: body.x, y: y - row_pad / 2, w: (sample.len() as i32 * cw + 2 * pad).min(body.w), h: ch + 2 * pad };
+            canvas.round_fill(strip, px(8.0), editor_scheme.bg, 255);
+            canvas.ring(strip, px(8.0), 1, c.edge);
+            for tok in super::editor::syntax::tokens(&lines).into_iter().flatten() {
+                for k in tok.start..tok.end {
+                    let x = strip.x + pad + k as i32 * cw;
+                    if lines[0][k] != ' ' && x + cw <= strip.x + strip.w - pad {
+                        let g = fonts.glyph(lines[0][k], 0);
+                        canvas.glyph(g, x, strip.y + pad, editor_scheme.color(tok.kind), strip);
+                    }
+                }
+            }
+            y = strip.y + strip.h + px(18.0);
             canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
         }
         for (name, what, key, value) in [

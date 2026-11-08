@@ -258,22 +258,65 @@ fn is_assignment(word: &str) -> bool {
     !name.is_empty() && !name.starts_with(|c: char| c.is_ascii_digit()) && name.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// A kind's color in a theme's palette, from its sixteen colors: what a
-/// shell's highlighter (fish, zsh's) uses, so it reads as one.
-pub fn color(kind: Kind, t: &crate::theme::Theme) -> u32 {
-    let a = &t.ansi;
-    let faint = crate::canvas::mix(t.bg, t.fg, if t.dark { 120 } else { 140 });
-    match kind {
-        Kind::Command => a[4],
-        Kind::Assign => a[5],
-        Kind::Flag => a[6],
-        Kind::Arg => t.fg,
-        Kind::Path => crate::canvas::mix(t.fg, a[6], 90),
-        Kind::Str => a[2],
-        Kind::Var => a[3],
-        Kind::Op | Kind::Redirect => a[5],
-        Kind::Comment => faint,
-        Kind::Escape => a[1],
+/// The editor's colors: its ground and plain text, and a color for each
+/// kind. The first, "Terminal", is the terminal theme's own; the rest
+/// are editors' well-known schemes, the same whatever the terminal's.
+pub struct Scheme {
+    pub name: &'static str,
+    pub bg: u32,
+    pub fg: u32,
+    pub command: u32,
+    pub assign: u32,
+    pub flag: u32,
+    pub path: u32,
+    pub string: u32,
+    pub var: u32,
+    pub op: u32,
+    pub comment: u32,
+    pub escape: u32,
+}
+
+/// The schemes Settings offers, by name, "Terminal" first.
+pub const SCHEMES: &[&str] = &["Terminal", "One Dark", "Dracula", "Tokyo Night", "Nord", "Gruvbox Dark", "Monokai", "GitHub Light", "Solarized Light"];
+
+/// The scheme named, in terminal theme `t` (which "Terminal", and any name
+/// not known, takes its colors from).
+pub fn scheme(name: &str, t: &crate::theme::Theme) -> Scheme {
+    let s = |name, bg, fg, command, assign, flag, path, string, var, op, comment, escape| Scheme { name, bg, fg, command, assign, flag, path, string, var, op, comment, escape };
+    match SCHEMES.iter().find(|n| n.eq_ignore_ascii_case(name.trim())).copied().unwrap_or("Terminal") {
+        "One Dark" => s("One Dark", 0x282C34, 0xABB2BF, 0x61AFEF, 0xC678DD, 0x56B6C2, 0xD7DAE0, 0x98C379, 0xE5C07B, 0xC678DD, 0x7F848E, 0xE06C75),
+        "Dracula" => s("Dracula", 0x282A36, 0xF8F8F2, 0x50FA7B, 0xFF79C6, 0x8BE9FD, 0xF8F8F2, 0xF1FA8C, 0xBD93F9, 0xFF79C6, 0x6272A4, 0xFFB86C),
+        "Tokyo Night" => s("Tokyo Night", 0x1A1B26, 0xC0CAF5, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xA9B1D6, 0x9ECE6A, 0xE0AF68, 0x89DDFF, 0x565F89, 0xF7768E),
+        "Nord" => s("Nord", 0x2E3440, 0xD8DEE9, 0x88C0D0, 0xB48EAD, 0x8FBCBB, 0xE5E9F0, 0xA3BE8C, 0xEBCB8B, 0x81A1C1, 0x616E88, 0xBF616A),
+        "Gruvbox Dark" => s("Gruvbox Dark", 0x282828, 0xEBDBB2, 0xB8BB26, 0xD3869B, 0x83A598, 0xEBDBB2, 0xFABD2F, 0x8EC07C, 0xFE8019, 0x928374, 0xFB4934),
+        "Monokai" => s("Monokai", 0x272822, 0xF8F8F2, 0xA6E22E, 0xAE81FF, 0x66D9EF, 0xF8F8F2, 0xE6DB74, 0xFD971F, 0xF92672, 0x75715E, 0xAE81FF),
+        "GitHub Light" => s("GitHub Light", 0xFFFFFF, 0x24292F, 0x8250DF, 0xCF222E, 0x0550AE, 0x24292F, 0x0A3069, 0x953800, 0xCF222E, 0x6E7781, 0x116329),
+        "Solarized Light" => s("Solarized Light", 0xFDF6E3, 0x586E75, 0x268BD2, 0x6C71C4, 0x2AA198, 0x657B83, 0x859900, 0xB58900, 0xD33682, 0x93A1A1, 0xCB4B16),
+        // The terminal theme's sixteen colors: what a shell's highlighter
+        // (fish, zsh's) uses, so it reads as the terminal does.
+        _ => {
+            let a = &t.ansi;
+            let faint = crate::canvas::mix(t.bg, t.fg, if t.dark { 120 } else { 140 });
+            s("Terminal", t.bg, t.fg, a[4], a[5], a[6], crate::canvas::mix(t.fg, a[6], 90), a[2], a[3], a[5], faint, a[1])
+        }
+    }
+}
+
+impl Scheme {
+    /// A kind's color.
+    pub fn color(&self, kind: Kind) -> u32 {
+        match kind {
+            Kind::Command => self.command,
+            Kind::Assign => self.assign,
+            Kind::Flag => self.flag,
+            Kind::Arg => self.fg,
+            Kind::Path => self.path,
+            Kind::Str => self.string,
+            Kind::Var => self.var,
+            Kind::Op | Kind::Redirect => self.op,
+            Kind::Comment => self.comment,
+            Kind::Escape => self.escape,
+        }
     }
 }
 
