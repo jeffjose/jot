@@ -53,7 +53,7 @@ impl App {
         let Some(offer) = self.offered.take() else { return };
         self.find = None;
         self.copy_mode = None;
-        self.editor = None;
+        self.editors.clear();
         self.popouts.clear();
         self.focused_popout = None;
         self.workspaces.clear();

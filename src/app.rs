@@ -295,7 +295,8 @@ pub struct App {
     focused_popout: Option<WindowId>,
     /// The main window has the focus: what happens in it is seen.
     focused_window: bool,
-    editor: Option<commands::Editor>,
+    /// The long-command editors, each over its pane.
+    editors: Vec<editor::Editor>,
     /// Where the right-click menu was opened.
     menu_at: (i32, i32),
     /// What was run from the palette lately, the latest first.
@@ -514,7 +515,7 @@ impl App {
             popouts: Vec::new(),
             focused_popout: None,
             focused_window: true,
-            editor: None,
+            editors: Vec::new(),
             menu_at: (0, 0),
             recent: Vec::new(),
             closed: Vec::new(),
@@ -1467,7 +1468,7 @@ impl App {
         }
         // A pane's command line open: the keys are its, all but its own key
         // and the other bindings, which shut it or act over it.
-        if self.bar.is_some() && self.editor.is_none() && event.state == ElementState::Pressed {
+        if self.bar.is_some() && self.editor().is_none() && event.state == ElementState::Pressed {
             if self.mods.alt_key() && code == KeyCode::Semicolon {
                 self.toggle_bar();
                 return;
@@ -1478,10 +1479,9 @@ impl App {
                 return;
             }
         }
-        if self.editor.is_some() {
-            if event.state == ElementState::Pressed {
-                self.editor_key(&event);
-            }
+        // The pane you are in has an editor: the keys are its, but for those
+        // that go about the window.
+        if self.editor().is_some() && (event.state != ElementState::Pressed || self.editor_key(&event)) {
             return;
         }
         if self.copy_mode.is_some() && self.palette.is_none() && self.settings.is_none() {
@@ -2124,7 +2124,9 @@ impl App {
         // Under the palette, the menu or the roaming terminal, panes are
         // drawn only when all of it is, so that what they write does not
         // land on top.
-        let floating = self.palette.is_some() || self.menu.is_some() || self.settings.is_some() || self.editor.is_some();
+        let floating = self.palette.is_some() || self.menu.is_some() || self.settings.is_some();
+        // Panes drawn again this frame: their editors go over them again.
+        let mut drawn: Vec<PaneId> = Vec::new();
         if full || !(self.roam_shown || floating) {
             for (n, id) in ids.iter().enumerate() {
                 // Empty space: plain ground, no more.
@@ -2141,7 +2143,11 @@ impl App {
                 if self.ws().minimized.contains(id) {
                     continue;
                 }
+                let before = self.damage.len();
                 self.draw_pane(*id, n + 1, full, Some(*id) == focus && !self.roam_shown);
+                if self.damage.len() > before {
+                    drawn.push(*id);
+                }
             }
         }
         if self.roam_shown && (full || !floating) {
@@ -2169,6 +2175,7 @@ impl App {
             self.draw_carry();
             self.draw_side_carry();
         }
+        self.draw_editors(full, &drawn);
         if self.find.is_some() && (full || !floating) {
             self.draw_find();
         }
@@ -2176,7 +2183,6 @@ impl App {
             self.draw_palette();
             self.draw_menu();
             self.draw_settings();
-            self.draw_editor();
             self.draw_toasts();
             self.draw_offer();
             self.draw_slash();
