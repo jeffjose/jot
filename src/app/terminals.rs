@@ -115,39 +115,31 @@ impl App {
         }
         // Down the sidebar's list, every terminal in it, round the end: from
         // the one this pane shows (or is about to, a step still on its way)
-        // to the next (Alt .) or the one before (Alt ,). One no pane shows
-        // here comes into this pane (one shown in another workspace too);
-        // one another pane here shows trades places with this one; so the
-        // pane always shows n+1, or n-1.
+        // to the next (Alt .) or the one before (Alt ,), whatever shows it: it
+        // comes into this pane, as a second view when another pane shows it
+        // (here or in another workspace, which keep it), so the pane always
+        // shows n+1, or n-1. Each terminal once, in the order of its number.
         let at = self.replaced_by(at);
         let here = self.stepping.filter(|(p, _)| *p == at).map(|(_, t)| t).unwrap_or_else(|| crate::mux::split_id(at));
-        let mut ring: Vec<(usize, u64, Option<PaneId>)> = self.side_terminals().into_iter().map(|t| (t.k, t.sid, t.pane)).collect();
-        if !ring.iter().any(|t| (t.0, t.1) == here) {
-            ring.push((here.0, here.1, Some(at)));
-            ring.sort_by_key(|t| (t.0, t.1));
+        let mut ring: Vec<(usize, u64)> = Vec::new();
+        for t in self.side_terminals() {
+            if !ring.contains(&(t.k, t.sid)) {
+                ring.push((t.k, t.sid));
+            }
         }
+        if !ring.contains(&here) {
+            ring.push(here);
+        }
+        let numbers = &self.term_numbers;
+        ring.sort_by_key(|t| (t.0, numbers.get(t).copied().unwrap_or(usize::MAX), t.1));
         if ring.len() < 2 {
             return self.toast("No other terminals", "This is the only one", None, None);
         }
-        let i = ring.iter().position(|t| (t.0, t.1) == here).unwrap_or(0) as i32;
+        let i = ring.iter().position(|t| *t == here).unwrap_or(0) as i32;
         let n = ring.len() as i32;
-        let (k, sid, shown) = ring[(i + by).rem_euclid(n) as usize];
-        match shown.filter(|p| *p != at) {
-            // In another pane of this workspace: the two trade places.
-            Some(p) if self.ws().root.contains(p) => {
-                let ws = self.ws_mut();
-                ws.root.swap(at, p);
-                ws.focus = p;
-                self.stepping = None;
-                self.changed();
-            }
-            // Shown by no pane here, or only in another workspace (which
-            // keeps it): shown in this one.
-            _ => {
-                self.stepping = Some((at, (k, sid)));
-                self.take_terminal(k, sid, Place::Into(at));
-            }
-        }
+        let (k, sid) = ring[(i + by).rem_euclid(n) as usize];
+        self.stepping = Some((at, (k, sid)));
+        self.take_terminal(k, sid, Place::Into(at));
     }
 
     /// The pane that stands where `id` stood, a step having put another
