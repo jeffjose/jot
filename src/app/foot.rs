@@ -41,12 +41,10 @@ fn project(cwd: &str) -> String {
 }
 
 impl App {
-    /// The machine a workspace is on: that of its first pane.
+    /// The machine a workspace is on: its home, where it was made (its
+    /// session shares it), whatever machines its terminals are on.
     pub(super) fn ws_machine(&self, wi: usize) -> usize {
-        let Some(ws) = self.workspaces.get(wi) else { return 0 };
-        let mut ids = Vec::new();
-        ws.root.panes(&mut ids);
-        ids.first().map_or(0, |id| self.machine_of(*id))
+        self.workspaces.get(wi).map_or(0, |ws| ws.home)
     }
 
     /// The machine whose workspaces the bar shows: the one the workspace

@@ -140,10 +140,11 @@ impl App {
         // shows n+1, or n-1. Each terminal once, in the order of its number.
         let at = self.replaced_by(at);
         let here = self.stepping.filter(|(p, _)| *p == at).map(|(_, t)| t).unwrap_or_else(|| crate::mux::split_id(at));
-        // Only the machine the pane is on: another's terminals are stepped
-        // through from a workspace on it.
+        // Only the workspace's machine's (whatever machine the pane's terminal
+        // is on): another's are stepped through from a workspace on it.
+        let machine = self.ws_machine(self.current);
         let mut ring: Vec<(usize, u64)> = Vec::new();
-        for t in self.side_terminals().into_iter().filter(|t| t.k == here.0) {
+        for t in self.side_terminals().into_iter().filter(|t| t.k == machine) {
             if !ring.contains(&(t.k, t.sid)) {
                 ring.push((t.k, t.sid));
             }
@@ -440,8 +441,15 @@ impl App {
         if self.roam == Some(at) || self.roam_shown {
             return;
         }
-        let (k, _) = crate::mux::split_id(at);
-        let cwd = if k > 0 { PathBuf::from("~") } else { self.panes.get(&at).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home) };
+        // On the workspace's machine, whatever machine the pane's terminal is
+        // on (one brought in from another): in the pane's folder when it is
+        // that machine's, here; else its home.
+        let k = self.ws_machine(self.current);
+        let cwd = match (k, crate::mux::split_id(at).0 == k) {
+            (0, true) => self.panes.get(&at).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home),
+            (0, false) => pty::home(),
+            _ => PathBuf::from("~"),
+        };
         self.target = k;
         let new = self.spawn(Start { cmd: String::new(), cwd, pane: None, host: None });
         let wi = self.current;

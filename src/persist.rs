@@ -82,6 +82,11 @@ pub struct WorkspaceSpec {
     pub id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<u64>,
+    /// The machine whose session shares it, when not the session this is
+    /// written for (one window says all its workspaces to its own machine's
+    /// session, to be brought back; each is shared by its home's only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
 }
 
 /// A pane to be started: its command and folder.
@@ -747,7 +752,7 @@ pub fn save_folded(hosts: &std::collections::HashSet<String>) {
 pub fn shape(spec: &Spec) -> String {
     match spec {
         Spec::Command(c) => format!("c{c:?}"),
-        Spec::Pane { id, empty, .. } => format!("p{}{}", id.map_or(String::from("-"), |i| i.to_string()), if *empty { "e" } else { "" }),
+        Spec::Pane { id, empty, host, .. } => format!("p{}{}{}", host.as_deref().map_or(String::new(), |h| format!("{h}:")), id.map_or(String::from("-"), |i| i.to_string()), if *empty { "e" } else { "" }),
         Spec::Across { v, .. } => format!("a({})", v.iter().map(shape).collect::<Vec<_>>().join(",")),
         Spec::Down { h, .. } => format!("d({})", h.iter().map(shape).collect::<Vec<_>>().join(",")),
     }
@@ -760,17 +765,19 @@ impl WorkspaceSpec {
         format!("{}|{:?}|{:?}|{}", self.name, self.accent, self.theme, self.layout.as_ref().map(shape).unwrap_or_default())
     }
 
-    /// Whether the session it is in can share it: all its terminals are
-    /// that session's (none on another machine), and it is not empty.
+    /// Whether the session it is written for shares it: its home (it was
+    /// made there), with an id and a terminal in it, on any machine.
     pub fn shareable(&self) -> bool {
-        self.id.is_some() && self.host.is_none() && self.layout.as_ref().is_some_and(|l| !ids_in_order(l).is_empty() && no_hosts(l))
+        self.id.is_some() && self.home.is_none() && self.host.is_none() && self.layout.as_ref().is_some_and(|l| !panes_in_order(l).is_empty())
     }
 }
 
-fn no_hosts(spec: &Spec) -> bool {
+/// Every terminal a layout has, in order, with the machine it is on (None:
+/// the session's own), empty space and all.
+pub fn panes_in_order(spec: &Spec) -> Vec<(Option<String>, u64)> {
     match spec {
-        Spec::Command(_) => true,
-        Spec::Pane { host, .. } => host.is_none(),
-        Spec::Across { v: kids, .. } | Spec::Down { h: kids, .. } => kids.iter().all(no_hosts),
+        Spec::Command(_) => Vec::new(),
+        Spec::Pane { id, host, .. } => id.map(|i| (host.clone(), i)).into_iter().collect(),
+        Spec::Across { v: kids, .. } | Spec::Down { h: kids, .. } => kids.iter().flat_map(panes_in_order).collect(),
     }
 }

@@ -50,7 +50,7 @@ impl App {
         for wi in gone.into_iter().rev() {
             self.drop_workspace(wi);
         }
-        let mut missing: Vec<u64> = Vec::new();
+        let mut missing: Vec<(usize, u64)> = Vec::new();
         for spec in &specs {
             let Some(id) = spec.id else { continue };
             let rev = spec.rev.unwrap_or(0);
@@ -107,38 +107,73 @@ impl App {
                 }
             }
         }
-        // A terminal shown twice here wants a view of its own, which only
-        // the session can give (with what it printed): asked for, and the
-        // list taken in again when it comes; meanwhile this window says
-        // nothing of its workspaces to that machine, so as not to say them
-        // without it.
+        // Terminals this window can not show yet: one on another machine (a
+        // workspace mixing machines), or one shown here already that wants a
+        // view of its own. Only its machine's session can give it (with what
+        // it printed): asked for, and the list taken in again when it comes;
+        // meanwhile this window says nothing of its workspaces to machine
+        // `k`, so as not to say them without it.
         if missing.is_empty() {
             self.sync_waiting.remove(&k);
+            self.refused.retain(|(m, _)| *m != k);
         } else {
             missing.sort();
             missing.dedup();
-            crate::debuglog::log(format!("machine {k}: {} terminals asked for, to show twice", missing.len()));
-            if let Some(m) = self.machines.get(k) {
-                m.client.take(missing.clone());
-            }
-            self.sync_waiting.insert(k, (missing, specs));
+            crate::debuglog::log(format!("machine {k}: terminals asked for, to take its shared workspaces in: {missing:?}"));
+            self.sync_waiting.insert(k, (missing.clone(), specs));
+            self.ask_for(&missing);
         }
         self.full = true;
         self.changed();
     }
 
-    /// Terminals taken (ToClient::Taken) that a list waits for: in, and the
-    /// list taken in again. Given back when they are not.
-    pub(super) fn shared_taken(&mut self, k: usize, held: Vec<crate::mux::Held>) -> Option<Vec<crate::mux::Held>> {
-        let waited = self.sync_waiting.get(&k).is_some_and(|(wanted, _)| !held.is_empty() && held.iter().all(|h| wanted.contains(&h.pane)));
-        if !waited {
-            return Some(held);
+    /// Terminals asked of their machines' sessions, each of those reached
+    /// (one not yet reached is asked once it is: see ask_waiting).
+    fn ask_for(&self, wanted: &[(usize, u64)]) {
+        let mut by: std::collections::BTreeMap<usize, Vec<u64>> = Default::default();
+        for (m, sid) in wanted {
+            by.entry(*m).or_default().push(*sid);
         }
-        let (_, specs) = self.sync_waiting.remove(&k)?;
+        for (m, sids) in by {
+            if let Some(x) = self.machines.get(m).filter(|x| x.client.connected()) {
+                x.client.take(sids);
+            }
+        }
+    }
+
+    /// Machine `m` reached: what lists of shared workspaces wait for of it,
+    /// asked for now.
+    pub(super) fn ask_waiting(&self, m: usize) {
+        let wanted: Vec<(usize, u64)> = self.sync_waiting.values().flat_map(|(w, _)| w.iter().copied()).filter(|(x, _)| *x == m).collect();
+        if !wanted.is_empty() {
+            crate::debuglog::log(format!("machine {m} reached: asked for {wanted:?}"));
+            self.ask_for(&wanted);
+        }
+    }
+
+    /// Terminals taken from machine `m` (ToClient::Taken) that a list of
+    /// shared workspaces waits for: in, and the list taken in again once
+    /// it has all it asked for. One asked for and not given has ended: it is
+    /// left out, and not asked for again. Given back when no list waits for
+    /// them.
+    pub(super) fn shared_taken(&mut self, m: usize, held: Vec<crate::mux::Held>) -> Option<Vec<crate::mux::Held>> {
+        let k = self.sync_waiting.iter().find(|(_, (wanted, _))| wanted.iter().any(|(x, _)| *x == m) && held.iter().all(|h| wanted.contains(&(m, h.pane)))).map(|(k, _)| *k);
+        let Some(k) = k else { return Some(held) };
+        let (mut wanted, specs) = self.sync_waiting.remove(&k)?;
+        let given: Vec<u64> = held.iter().map(|h| h.pane).collect();
         for h in held {
-            self.held.insert(app_id(k, h.pane), h);
+            self.held.insert(app_id(m, h.pane), h);
         }
-        self.apply_shared(k, specs, &[]);
+        for (x, sid) in wanted.iter().filter(|(x, sid)| *x == m && !given.contains(sid)) {
+            crate::debuglog::log(format!("shared: terminal {x}:{sid} asked for and not given: ended, left out"));
+            self.refused.push((*x, *sid));
+        }
+        wanted.retain(|(x, _)| *x != m);
+        if wanted.is_empty() {
+            self.apply_shared(k, specs, &[]);
+        } else {
+            self.sync_waiting.insert(k, (wanted, specs));
+        }
         None
     }
 
@@ -147,7 +182,7 @@ impl App {
         let ws = &self.workspaces[wi];
         let describe = |id: PaneId| {
             let m = crate::mux::split_id(id).0;
-            let host = (m != k).then(|| self.machines.get(m).and_then(|x| x.host.clone())).flatten();
+            let host = self.host_for(m, k);
             let empty = ws.spaces.contains(&id);
             match self.panes.get(&id) {
                 Some(p) => (p.cmd.clone(), p.pty.cwd(), p.pins.iter().map(|pin| pin.cmd.clone()).collect(), empty, host),
@@ -169,7 +204,7 @@ impl App {
     }
 
     /// A shared workspace new to this window, made from its terminals.
-    fn make_shared(&mut self, k: usize, spec: &WorkspaceSpec, missing: &mut Vec<u64>) {
+    fn make_shared(&mut self, k: usize, spec: &WorkspaceSpec, missing: &mut Vec<(usize, u64)>) {
         let Some(layout) = &spec.layout else { return };
         let mut used = self.shown_ids();
         let Some(root) = self.node_for(layout, k, &mut used, missing) else { return };
@@ -178,14 +213,14 @@ impl App {
         crate::debuglog::log(format!("shared: workspace {} made, on machine {k}, {} panes", spec.name, ids.len()));
         let id = spec.id.unwrap_or_else(new_ws_id);
         let name = if spec.name.is_empty() { sidebar::random_name() } else { spec.name.clone() };
-        self.workspaces.push(Workspace { id, rev: spec.rev.unwrap_or(0), name, focus: ids[0], root, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new(), open: true });
+        self.workspaces.push(Workspace { id, rev: spec.rev.unwrap_or(0), home: k, name, focus: ids[0], root, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new(), open: true });
     }
 
     /// Workspace `wi` made again as another window changed it: its name,
     /// colors, and its panes as the change has them, the terminals this
     /// window shows reused; focus and zoom kept where they still can be.
     /// The terminals it shows no more, let go.
-    fn reshape(&mut self, wi: usize, k: usize, spec: &WorkspaceSpec, missing: &mut Vec<u64>) {
+    fn reshape(&mut self, wi: usize, k: usize, spec: &WorkspaceSpec, missing: &mut Vec<(usize, u64)>) {
         {
             let ws = &mut self.workspaces[wi];
             ws.name = if spec.name.is_empty() { ws.name.clone() } else { spec.name.clone() };
@@ -270,22 +305,31 @@ impl App {
     /// from what the session gave; one this window can not show yet (shown
     /// here already, and not given again) added to `missing`, and left out
     /// until it comes; one gone (an ended shell, empty space), left out.
-    fn node_for(&mut self, spec: &Spec, k: usize, used: &mut Vec<PaneId>, missing: &mut Vec<u64>) -> Option<Node> {
+    fn node_for(&mut self, spec: &Spec, k: usize, used: &mut Vec<PaneId>, missing: &mut Vec<(usize, u64)>) -> Option<Node> {
         match spec {
-            Spec::Pane { id: Some(sid), host: None, .. } => {
-                let base = app_id(k, *sid);
+            Spec::Pane { id: Some(sid), host, .. } => {
+                // On the session's machine, or another's (a workspace mixing
+                // machines), by the name it was written with.
+                let m = match host {
+                    None => k,
+                    Some(h) => self.machine_for(h),
+                };
+                let base = app_id(m, *sid);
                 if let Some(v) = self.views(base).into_iter().find(|v| !used.contains(v)) {
                     used.push(v);
                     return Some(Node::Pane(v));
                 }
                 if self.held.contains_key(&base) {
-                    self.target = k;
+                    self.target = m;
                     let v = self.spawn(Start { cmd: String::new(), cwd: pty::home(), pane: Some(*sid), host: None });
                     used.push(v);
                     return Some(Node::Pane(v));
                 }
-                if !self.views(base).is_empty() {
-                    missing.push(*sid);
+                // Asked of its machine: another's, or one shown here already
+                // that wants a view of its own; not one asked for already
+                // and not given (ended).
+                if !self.refused.contains(&(m, *sid)) && (m != k || !self.views(base).is_empty()) {
+                    missing.push((m, *sid));
                 }
                 None
             }
@@ -393,6 +437,28 @@ impl App {
                 let marks = [(ws.focus == *id, "focus"), (ws.zoom == Some(*id), "zoom"), (ws.spaces.contains(id), "space"), (ws.minimized.contains(id), "minimized")].iter().filter(|(on, _)| *on).map(|(_, w)| *w).collect::<Vec<_>>().join(",");
                 *out += &format!("{pad}#{n}  terminal {m}:{sid}{}  {state}  {marks}\n", if view > 0 { format!(" (view {view})") } else { String::new() });
             }
+        }
+    }
+}
+
+impl App {
+    /// The machine a host name in a shared layout is: this one when it is
+    /// this machine's own name (a window here, the layout written by one on
+    /// another machine), else that machine, reached if it is not already.
+    pub(super) fn machine_for(&mut self, host: &str) -> usize {
+        if host == hostname() {
+            return 0;
+        }
+        self.machine(host)
+    }
+
+    /// How machine `m` is named to machine `k`'s session: none for its own,
+    /// this machine by its name, another as this window reaches it.
+    pub(super) fn host_for(&self, m: usize, k: usize) -> Option<String> {
+        match m {
+            _ if m == k => None,
+            0 => Some(hostname()),
+            _ => self.machines.get(m).and_then(|x| x.host.clone()),
         }
     }
 }

@@ -141,6 +141,9 @@ pub struct Workspace {
     /// and the change there this window's is of (0: not shared yet).
     id: u64,
     rev: u64,
+    /// The machine whose session shares it: where it was made. Its
+    /// terminals can be on any.
+    home: usize,
     name: String,
     root: Node,
     focus: PaneId,
@@ -395,7 +398,10 @@ pub struct App {
     /// terminals asked for to take a list in, with that list.
     sent: HashMap<u64, Vec<String>>,
     want_current: Option<u64>,
-    sync_waiting: HashMap<usize, (Vec<u64>, Vec<WorkspaceSpec>)>,
+    sync_waiting: HashMap<usize, (Vec<(usize, u64)>, Vec<WorkspaceSpec>)>,
+    /// Terminals asked for to take a list in and not given: ended, and
+    /// not asked for again.
+    refused: Vec<(usize, u64)>,
     /// Windows of the last session to open again (--restore), once this one
     /// has said its workspaces.
     open_later: Vec<PathBuf>,
@@ -661,6 +667,7 @@ impl App {
             sent: HashMap::new(),
             want_current: None,
             sync_waiting: HashMap::new(),
+            refused: Vec::new(),
             open_later: Vec::new(),
             shares_with: Default::default(),
             unclaimed: HashMap::new(),
@@ -856,10 +863,10 @@ impl App {
         // Each pane on the machine it was on (the workspace's, for one
         // written with a machine for all), reached in the background if it
         // is not already.
-        let base = spec.host.clone().map_or(0, |h| self.machine(&h));
+        let base = spec.host.clone().map_or(0, |h| self.machine_for(&h));
         let mut ids = Vec::new();
         let root = spec.build(&mut |start| {
-            self.target = start.host.clone().map_or(base, |h| self.machine(&h));
+            self.target = start.host.clone().map_or(base, |h| self.machine_for(&h));
             let id = self.spawn(start);
             ids.push(id);
             id
@@ -893,7 +900,14 @@ impl App {
             (true, _) => sidebar::random_name(),
         };
         let id = spec.id.unwrap_or_else(new_ws_id);
-        self.workspaces.push(Workspace { id, rev: spec.rev.unwrap_or(0), name, root, focus, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces, open: true });
+        // Its home: as written, else the machine written for all its panes,
+        // else its first pane's.
+        let home = match (&spec.home, &spec.host) {
+            (Some(h), _) => self.machine_for(h),
+            (None, Some(_)) => base,
+            (None, None) => ids.first().map_or(0, |i| self.machine_of(*i)),
+        };
+        self.workspaces.push(Workspace { id, rev: spec.rev.unwrap_or(0), home, name, root, focus, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces, open: true });
         self.run_hook(self.workspaces.len() - 1, true);
     }
 
@@ -1261,7 +1275,7 @@ impl App {
             }
             // Its workspace was closed with it: it comes back as one.
             None => {
-                self.workspaces.push(Workspace { id: new_ws_id(), rev: 0, name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new(), open: true });
+                self.workspaces.push(Workspace { id: new_ws_id(), rev: 0, home: self.machine_of(id), name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new(), open: true });
                 self.go_to(self.workspaces.len() - 1);
             }
         }
@@ -3052,7 +3066,13 @@ impl App {
         let describe_for = |k: usize| {
             move |id: PaneId| {
                 let m = crate::mux::split_id(id).0;
-                let host = (m != k).then(|| machines.get(m).and_then(|x| x.host.clone())).flatten();
+                // This machine by its name to another's session, a workspace
+                // there mixing machines.
+                let host = match m {
+                    _ if m == k => None,
+                    0 => Some(hostname()),
+                    _ => machines.get(m).and_then(|x| x.host.clone()),
+                };
                 match panes.get(&id) {
                     Some(p) => (p.cmd.clone(), p.pty.cwd(), p.pins.iter().map(|pin| pin.cmd.clone()).collect(), spaces.contains(&id), host),
                     None => (String::new(), None, Vec::new(), spaces.contains(&id), host),
@@ -3061,7 +3081,13 @@ impl App {
         };
         let describe = describe_for(0);
         let spec_of = |ws: &Workspace, d: &dyn Fn(PaneId) -> (String, Option<PathBuf>, Vec<String>, bool, Option<String>)| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &d)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), id: Some(ws.id), rev: Some(ws.rev), ..Default::default() };
-        let mut workspaces: Vec<WorkspaceSpec> = self.workspaces.iter().map(|ws| spec_of(ws, &describe)).collect();
+        // Every one, to be brought back; each marked with its home when it is
+        // not this machine (its home's session shares it, not this one).
+        let mut workspaces: Vec<WorkspaceSpec> = self
+            .workspaces
+            .iter()
+            .map(|ws| WorkspaceSpec { home: (ws.home != 0).then(|| machines.get(ws.home).and_then(|x| x.host.clone())).flatten(), ..spec_of(ws, &describe) })
+            .collect();
         workspaces.extend(self.unreached.iter().cloned());
         let roam = self.roam.and_then(|r| panes.get(&r)).and_then(|p| p.pty.cwd()).or(self.roam_cwd.clone()).map(|p| persist::shorten(&p));
         let popouts = self.popouts.iter().filter(|po| crate::mux::split_id(po.pane).0 == 0).map(|po| persist::spec(&Node::Pane(po.pane), &describe)).collect();
@@ -3085,16 +3111,13 @@ impl App {
             if waits(k) {
                 continue;
             }
-            // Its workspaces: those all of whose panes are on it.
+            // Its workspaces: those it is the home of, whatever machines
+            // their terminals are on.
             let d = describe_for(k);
             let own: Vec<WorkspaceSpec> = self
                 .workspaces
                 .iter()
-                .filter(|ws| {
-                    let mut ids = Vec::new();
-                    ws.root.panes(&mut ids);
-                    ids.iter().all(|id| crate::mux::split_id(*id).0 == k)
-                })
+                .filter(|ws| ws.home == k)
                 .map(|ws| spec_of(ws, &d))
                 .collect();
             said.extend(own.iter().filter(|w| w.shareable()).filter_map(|w| Some((w.id?, w.shared_shape()))));
@@ -3740,6 +3763,8 @@ impl App {
 
     /// Machine `k` reached: the panes waiting on it become shells there.
     fn connected(&mut self, k: usize) {
+        // Terminals of it a list of shared workspaces waits for.
+        self.ask_waiting(k);
         let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.connecting).into_iter().partition(|(m, _)| *m == k);
         self.connecting = later;
         for (_, at) in now {
