@@ -45,12 +45,16 @@ impl Shape {
 }
 
 impl App {
-    /// `jot --quake`: shown, or hidden if it shows.
-    /// Hidden only when it is the window you are in: shown but under
-    /// another window that is also kept on top, it is brought forward instead, as Tilix
-    /// does, so the key never seems to do nothing.
+    /// `jot --quake`: shown, or hidden if it shows: when it is the window
+    /// you are in, or in sight though you clicked elsewhere. Shown but
+    /// under another window that is also kept on top, it is brought
+    /// forward instead, as Tilix does, so the key never seems to do nothing.
     pub(super) fn quake_toggle(&mut self) {
-        if self.quake_shown && self.focused_window {
+        let covered = || {
+            let w = self.window.as_ref()?;
+            Some(x11::X::open()?.covered(x11_id(w)?))
+        };
+        if self.quake_shown && (self.focused_window || covered() == Some(false)) {
             self.quake_hide();
         } else {
             self.quake_show();
@@ -251,6 +255,54 @@ mod x11 {
             } else {
                 self.cardinals("_NET_CURRENT_DESKTOP").first().copied().unwrap_or(0)
             }
+        }
+
+        /// A property of window `win`, as numbers (windows, atoms or
+        /// cardinals, as `kind` says).
+        fn longs(&self, win: c_ulong, name: &str, kind: c_ulong) -> Vec<c_ulong> {
+            let (mut got_kind, mut format, mut n, mut after) = (0, 0, 0, 0);
+            let mut data: *mut c_uchar = std::ptr::null_mut();
+            let got = unsafe { (self.lib.XGetWindowProperty)(self.dpy, win, self.atom(name), 0, 4096, xlib::False, kind, &mut got_kind, &mut format, &mut n, &mut after, &mut data) };
+            if got != 0 || data.is_null() {
+                return Vec::new();
+            }
+            let out = if format == 32 { unsafe { std::slice::from_raw_parts(data as *const c_ulong, n as usize) }.to_vec() } else { Vec::new() };
+            unsafe { (self.lib.XFree)(data as *mut _) };
+            out
+        }
+
+        /// Where window `win` is on the screen, and how big.
+        fn rect(&self, win: c_ulong) -> Option<(i32, i32, i32, i32)> {
+            let mut a: xlib::XWindowAttributes = unsafe { std::mem::zeroed() };
+            if unsafe { (self.lib.XGetWindowAttributes)(self.dpy, win, &mut a) } == 0 || a.map_state != xlib::IsViewable {
+                return None;
+            }
+            let (mut x, mut y, mut child) = (0, 0, 0);
+            unsafe { (self.lib.XTranslateCoordinates)(self.dpy, win, self.root(), 0, 0, &mut x, &mut y, &mut child) };
+            Some((x, y, a.width, a.height))
+        }
+
+        /// Whether a window over `win` hides much of it: one above it in
+        /// the window manager's stacking, on the workspace shown and not
+        /// minimized, over a quarter of it or more. Unknown (no such list):
+        /// not covered.
+        pub fn covered(&self, win: u64) -> bool {
+            let win = win as c_ulong;
+            let stack = self.longs(self.root(), "_NET_CLIENT_LIST_STACKING", xlib::XA_WINDOW);
+            let Some(at) = stack.iter().position(|w| *w == win) else { return false };
+            let Some((x, y, w, h)) = self.rect(win) else { return false };
+            let desk = self.cardinals("_NET_CURRENT_DESKTOP").first().copied().unwrap_or(0) as c_ulong;
+            let hidden = self.atom("_NET_WM_STATE_HIDDEN");
+            stack[at + 1..].iter().any(|&o| {
+                let on = self.longs(o, "_NET_WM_DESKTOP", xlib::XA_CARDINAL).first().is_none_or(|d| *d == desk || *d as u32 == u32::MAX);
+                if !on || self.longs(o, "_NET_WM_STATE", xlib::XA_ATOM).contains(&hidden) {
+                    return false;
+                }
+                let Some((ox, oy, ow, oh)) = self.rect(o) else { return false };
+                let iw = (x + w).min(ox + ow) - x.max(ox);
+                let ih = (y + h).min(oy + oh) - y.max(oy);
+                iw > 0 && ih > 0 && (iw as i64 * ih as i64) * 4 >= w as i64 * h as i64
+            })
         }
 
         /// Said before it is mapped, which is when the window manager reads
