@@ -177,6 +177,7 @@ impl App {
         if let Some(m) = self.machines.get_mut(k) {
             if !m.listing.iter().any(|l| l.panes.contains(&sid)) {
                 m.listing.push(crate::mux::Listed { spec: String::new(), panes: vec![sid], elsewhere: false, label, running: running.is_some() });
+                self.let_go_at.push((k, sid, Instant::now()));
             }
         }
     }

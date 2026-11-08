@@ -251,6 +251,9 @@ pub struct App {
     /// runs, its dot): kept when no pane does, so that the row stays as it
     /// was instead of taking the session's word for it.
     term_seen: HashMap<(usize, u64), (String, Option<String>, u8)>,
+    /// Terminals let go of here (none of its panes showing them now), and
+    /// when: listed as free at once, before the session says so.
+    let_go_at: Vec<(usize, u64, Instant)>,
     /// The last step (Alt , or Alt .): the pane, and the terminal on its way
     /// to it; and panes that took another's place, old and new.
     stepping: Option<(PaneId, (usize, u64))>,
@@ -502,6 +505,7 @@ impl App {
             term_names: persist::load_term_names(),
             term_numbers: HashMap::new(),
             term_seen: HashMap::new(),
+            let_go_at: Vec::new(),
             stepping: None,
             replaced: Vec::new(),
             tip_shown: None,
@@ -669,9 +673,14 @@ impl App {
         if let Some(log) = log {
             self.replays.push((id, log));
         }
-        let views = self.views(base).first().and_then(|v| self.panes.get(v)).map(|p| p.pty.views.clone()).unwrap_or_default();
+        // Another view of it here already: what that one knows (its folder,
+        // what runs in front, how it reads keys), which the session tells
+        // only when it changes.
+        let sibling = self.views(base).first().and_then(|v| self.panes.get(v));
+        let views = sibling.map(|p| p.pty.views.clone()).unwrap_or_default();
+        let (raw, proc) = sibling.map(|p| (p.pty.raw, p.pty.proc.clone())).unwrap_or_default();
         views.borrow_mut().push(id);
-        let pty = Pty { pane, machine: m, pid, mux: client.clone(), raw: false, proc: Default::default(), end: false, views: views.clone(), view: id };
+        let pty = Pty { pane, machine: m, pid, mux: client.clone(), raw, proc, end: false, views: views.clone(), view: id };
         // Only the first view answers what the program asks of its terminal
         // (where the cursor is, and such); two would answer twice.
         let mut answer = reply_to(&client, pane);
@@ -2114,7 +2123,22 @@ impl App {
                 }
                 Output::Back(k, held) => back = Some((k, held)),
                 Output::Failed(k, why) => self.not_reached(k, &why),
-                Output::Listing(k, l) => {
+                Output::Listing(k, mut l) => {
+                    // Terminals let go of here a moment ago, which a list asked
+                    // for before then leaves out: kept, until the session lists
+                    // them itself, so that their rows do not blink out.
+                    self.let_go_at.retain(|(_, _, at)| at.elapsed() < Duration::from_secs(5));
+                    let shown_here: Vec<u64> = self.panes.keys().map(|id| crate::mux::split_id(*id)).filter(|t| t.0 == k).map(|t| t.1).collect();
+                    if let Some(m) = self.machines.get(k) {
+                        for (_, sid, _) in self.let_go_at.iter().filter(|t| t.0 == k) {
+                            let listed = l.iter().any(|x| x.panes.contains(sid));
+                            if !listed && !shown_here.contains(sid) {
+                                if let Some(old) = m.listing.iter().find(|x| !x.label.is_empty() && x.panes == [*sid]) {
+                                    l.push(old.clone());
+                                }
+                            }
+                        }
+                    }
                     // Drawn again only when what it lists changed.
                     let changed = self.machines.get(k).is_some_and(|m| m.listing.len() != l.len() || m.listing.iter().zip(&l).any(|(a, b)| a.spec != b.spec || a.label != b.label || a.running != b.running));
                     if let Some(m) = self.machines.get_mut(k) {

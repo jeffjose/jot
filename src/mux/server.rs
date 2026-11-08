@@ -461,6 +461,11 @@ impl Server {
         // Its own, and those it names, whatever other windows show them.
         for (id, p) in self.panes.iter_mut().filter(|(id, p)| p.windows.contains(&window) || want.contains(id)) {
             p.add_viewer(c, window);
+            // Told again on the next tick, to the new window as well: what
+            // runs in front, its folder, how it reads keys (told only when
+            // they change, so it would wait for the next change).
+            p.proc = None;
+            p.raw = None;
             held.push(p.held(*id));
         }
         held.sort_by_key(|h| h.pane);
@@ -521,6 +526,11 @@ impl Server {
         for id in panes {
             let Some(p) = self.panes.get_mut(id) else { continue };
             p.add_viewer(c, window);
+            // Told again on the next tick, to the new window as well: what
+            // runs in front, its folder, how it reads keys (told only when
+            // they change, so it would wait for the next change).
+            p.proc = None;
+            p.raw = None;
             held.push(p.held(*id));
         }
         let taken: Vec<u64> = held.iter().map(|h| h.pane).collect();
