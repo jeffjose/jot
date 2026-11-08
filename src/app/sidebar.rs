@@ -323,6 +323,8 @@ impl App {
             let running = p.shell.running.is_some() && !p.shell.at_prompt;
             (id, running, failed, p.caption.as_str()).hash(&mut h);
         }
+        // The pane you are in, and the workspace: its row picked out.
+        (self.focused(), self.current).hash(&mut h);
         let sig = h.finish();
         let moved = sig != self.side_sig;
         self.side_sig = sig;
