@@ -64,27 +64,28 @@ impl App {
         self.canvas.fill(bar, c.side);
         self.canvas.fill(Rect { x: 0, y: h - 1, w: bar.w, h: 1 }, c.edge);
         // The buttons, from the right: close, maximize, minimize.
-        let (bw, bh) = (px(36.0), h - px(10.0));
-        let icon = px(13.0);
-        let mut right = bar.w - px(6.0);
+        // Small, as Linear's and Vercel's are: 28 by 24, the icons 12.
+        let (bw, bh) = (px(28.0), px(24.0).min(h - px(6.0)));
+        let icon = px(12.0);
+        let mut right = bar.w - px(8.0);
         self.title.hits.clear();
         for (hit, glyph) in [(TitleHit::Close, icons::CLOSE), (TitleHit::Maximize, if maximized { icons::WIN_RESTORE } else { icons::WIN_MAX }), (TitleHit::Minimize, icons::MINUS)] {
             let r = Rect { x: right - bw, y: (h - bh) / 2, w: bw, h: bh };
             let lit = self.title.lit == Some(hit);
             let color = match (hit, lit) {
                 (TitleHit::Close, true) => {
-                    self.canvas.round_fill(r, px(6.0), 0xE5484D, 46);
+                    self.canvas.round_fill(r, px(5.0), 0xE5484D, 46);
                     0xFF6B6F
                 }
                 (_, true) => {
-                    self.canvas.round_fill(r, px(6.0), mix(c.side, c.text, 14), 255);
+                    self.canvas.round_fill(r, px(5.0), mix(c.side, c.text, 14), 255);
                     c.text
                 }
                 _ => c.dim,
             };
             self.canvas.icon_in(glyph, r, icon, color);
             self.title.hits.push((r, hit));
-            right = r.x - px(2.0);
+            right = r.x - px(1.0);
         }
         // At the left: the workspace in its color, its name, the folder.
         let uh = self.fonts.ui.height;
