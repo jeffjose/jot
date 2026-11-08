@@ -228,6 +228,9 @@ struct Pane {
     /// into last.
     sizes: HashMap<u64, (u16, u16, (u32, u32))>,
     size: (u16, u16, (u32, u32)),
+    /// Its number, the same in every window (ToClient::Numbers): the
+    /// lowest free when it started, unless renumbered.
+    number: u32,
 }
 
 impl Pane {
@@ -319,6 +322,8 @@ struct Server {
     /// Which window changed each shared workspace last: its changes after
     /// it are taken, though it has not been told its own yet.
     changed_by: HashMap<u64, u64>,
+    /// The windows told terminals' numbers (Hello's caps).
+    numbering: Vec<u64>,
 }
 
 impl Server {
@@ -495,6 +500,7 @@ impl Server {
         for old in stale {
             self.names.remove(&old);
             self.sharing.retain(|w| *w != old);
+            self.numbering.retain(|w| *w != old);
             self.seen.remove(&old);
             self.windows.retain(|w| *w != old);
             if let Some(l) = self.layouts.remove(&old) {
@@ -828,13 +834,14 @@ impl Server {
         let pane = self.next_pane;
         self.next_pane += 1;
         let desktop = self.desktop(c);
+        let number = self.free_number();
         let pid = match Local::spawn(&cmd, Path::new(&cwd), cols, rows, px, &desktop) {
             Ok(pty) => {
                 let pid = pty.pid;
                 let keys = start_io(tx, pane, &pty);
                 let mut log = Log::default();
                 log.size(cols, rows);
-                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, proc: None, viewers: vec![c], windows: vec![self.names.get(&c).copied().unwrap_or(0)], sizes: HashMap::from([(c, (cols, rows, px))]), size: (cols, rows, px) });
+                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, proc: None, viewers: vec![c], windows: vec![self.names.get(&c).copied().unwrap_or(0)], sizes: HashMap::from([(c, (cols, rows, px))]), size: (cols, rows, px), number });
                 pid
             }
             Err(e) => {
@@ -874,7 +881,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
             return;
         }
         None => match UnixListener::bind(path) {
-            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new() }, l),
+            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new() }, l),
             Err(e) => {
                 eprintln!("jot serve: {}: {e}", path.display());
                 return;
@@ -964,6 +971,9 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 }
                 s.names.insert(c, window);
                 s.abouts.insert(c, about);
+                if caps & super::CAN_NUMBER != 0 && !s.numbering.contains(&c) {
+                    s.numbering.push(c);
+                }
                 if caps & super::CAN_SHARE != 0 && !s.sharing.contains(&c) {
                     s.sharing.push(c);
                 }
@@ -972,11 +982,13 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 } else {
                     s.welcome(c);
                 }
+                s.tell_numbers(Some(c));
             }
             Ev::Said(c, m) if s.windows.contains(&c) => match m {
                 ToServer::Spawn { cmd, cwd, cols, rows, px } => {
                     let (pane, pid) = s.spawn(&tx, c, cmd, cwd, cols, rows, px);
                     s.send(c, ToClient::Spawned { pane, pid });
+                    s.tell_numbers(None);
                 }
                 // Typed into from a window: the size that window gives it, first.
                 ToServer::Input { pane, bytes } => {
@@ -1001,6 +1013,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 ToServer::Close { pane } => {
                     // Dropped: its shell hung up on.
                     s.panes.remove(&pane);
+                    s.tell_numbers(None);
                 }
                 ToServer::Layout { text } => {
                     if s.sharing.contains(&c) {
@@ -1052,6 +1065,12 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                         }
                     }
                 }
+                // A window's renumbering (a row moved in its sidebar): taken,
+                // and told to every window.
+                ToServer::Renumber { numbers } => {
+                    s.renumber(&numbers);
+                    s.tell_numbers(None);
+                }
                 ToServer::Hello { .. } | ToServer::Peek | ToServer::Restart { .. } => {}
             },
             Ev::Said(..) => {}
@@ -1077,6 +1096,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     let name = s.names.remove(&c).unwrap_or(0);
                     s.abouts.remove(&c);
                     s.sharing.retain(|w| *w != c);
+                    s.numbering.retain(|w| *w != c);
                     s.seen.remove(&c);
                     if let Some(l) = s.layouts.remove(&c).filter(|_| any) {
                         s.left.push((name, l));
@@ -1091,6 +1111,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
             Ev::Ended(id) => {
                 s.tell(id, ToClient::Exit { pane: id });
                 s.panes.remove(&id);
+                s.tell_numbers(None);
                 crate::pty::reap();
                 if s.panes.is_empty() && s.windows.is_empty() {
                     break;
@@ -1281,6 +1302,7 @@ impl Server {
         }
         self.names.clear();
         self.sharing.clear();
+        self.numbering.clear();
         self.seen.clear();
         for p in self.panes.values_mut() {
             p.viewers.clear();
@@ -1308,6 +1330,11 @@ impl Server {
         o.u32(self.shared.len() as u32);
         for w in &self.shared {
             o.str(&toml::to_string(w).unwrap_or_default());
+        }
+        // The terminals' numbers, after those.
+        o.u32(self.panes.len() as u32);
+        for (id, p) in &self.panes {
+            o.u64(*id).u32(p.number);
         }
         let file = super::dir().join(format!("handover-{}", std::process::id()));
         if let Err(e) = std::fs::write(&file, &o.0) {
@@ -1359,12 +1386,31 @@ fn resume(file: &Path, tx: &Sender<Ev>) -> io::Result<(Server, i32)> {
         // Its /tee written on to the end of its file.
         let tee = tee.and_then(|(state, told)| std::fs::OpenOptions::new().create(true).append(true).open(&state.path).ok().map(|file| Tee { state, file, told }));
         let keys = start_io(tx, id, &pty);
-        panes.insert(id, Pane { pty, keys, cmd, log, raw: None, tail, at_prompt, queue, tee, proc: None, viewers: Vec::new(), windows, sizes: HashMap::new(), size });
+        panes.insert(id, Pane { pty, keys, cmd, log, raw: None, tail, at_prompt, queue, tee, proc: None, viewers: Vec::new(), windows, sizes: HashMap::new(), size, number: 0 });
     }
     // The shared workspaces, from a jot that shares them.
     let shared = (0..i.u32().unwrap_or(0)).map_while(|_| i.str().ok()).filter_map(|t| toml::from_str::<crate::persist::WorkspaceSpec>(&t).ok()).collect();
+    // The terminals' numbers, from a jot that numbers them; any without one
+    // (from a jot before) numbered as a new one would be, in the order they
+    // were made.
+    for _ in 0..i.u32().unwrap_or(0) {
+        let (Ok(id), Ok(n)) = (i.u64(), i.u32()) else { break };
+        if let Some(p) = panes.get_mut(&id) {
+            p.number = n;
+        }
+    }
+    let mut ids: Vec<u64> = panes.keys().copied().collect();
+    ids.sort();
+    for id in ids {
+        if panes[&id].number == 0 {
+            let n = (1..).find(|n| !panes.values().any(|p| p.number == *n)).unwrap_or(1);
+            if let Some(p) = panes.get_mut(&id) {
+                p.number = n;
+            }
+        }
+    }
     keep_on_exec(listener, false);
-    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane, desktop: None, abouts: HashMap::new(), shared, sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new() }, listener))
+    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane, desktop: None, abouts: HashMap::new(), shared, sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new() }, listener))
 }
 
 /// The session's names of the panes a window's layout has (its workspaces'
@@ -1408,7 +1454,7 @@ impl Server {
             let viewers = p.viewers.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
             let windows = p.windows.iter().map(|w| format!("{w:x}")).collect::<Vec<_>>().join(",");
             let proc = p.pty.proc();
-            out += &format!("   {id}  pid {}  {}x{}  shown by [{viewers}]  windows [{windows}]  {}\n", p.pty.pid, p.size.0, p.size.1, if proc.busy { proc.fg.clone() } else { crate::persist::shorten(Path::new(&proc.cwd)) });
+            out += &format!("   {id}  #{}  pid {}  {}x{}  shown by [{viewers}]  windows [{windows}]  {}\n", p.number, p.pty.pid, p.size.0, p.size.1, if proc.busy { proc.fg.clone() } else { crate::persist::shorten(Path::new(&proc.cwd)) });
         }
         if !self.left.is_empty() {
             out += "-- windows gone, their workspaces waiting\n";
@@ -1432,7 +1478,7 @@ mod tests {
     use crate::persist::{Session, Spec, WorkspaceSpec};
 
     fn server() -> Server {
-        Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new() }
+        Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new() }
     }
 
     /// A window that shares workspaces, connected as `c`.
@@ -1655,5 +1701,44 @@ mod tests {
         assert!(saved.windows[1].workspaces.is_empty(), "the others get them from the session");
         let shows: Vec<Option<u64>> = saved.windows.iter().map(|w| w.current_id).collect();
         assert!(shows.contains(&Some(10)) && shows.contains(&Some(20)), "each the one it showed: {shows:?}");
+    }
+}
+
+impl Server {
+    /// The lowest number no terminal has, for a new one.
+    fn free_number(&self) -> u32 {
+        (1..).find(|n| !self.panes.values().any(|p| p.number == *n)).unwrap_or(1)
+    }
+
+    /// Terminals' numbers as a window says them (each pane and its number):
+    /// each taken, one another terminal had swapping with it, so each
+    /// number is one terminal's.
+    fn renumber(&mut self, numbers: &[(u64, u32)]) {
+        for &(pane, n) in numbers {
+            if n == 0 {
+                continue;
+            }
+            let Some(was) = self.panes.get(&pane).map(|p| p.number) else { continue };
+            if let Some(other) = self.panes.values_mut().find(|p| p.number == n) {
+                other.number = was;
+            }
+            if let Some(p) = self.panes.get_mut(&pane) {
+                p.number = n;
+            }
+        }
+    }
+
+    /// Every terminal's number told to window `to`, or to every window
+    /// that takes them (None).
+    fn tell_numbers(&mut self, to: Option<u64>) {
+        let mut numbers: Vec<(u64, u32)> = self.panes.iter().map(|(id, p)| (*id, p.number)).collect();
+        numbers.sort();
+        let windows: Vec<u64> = match to {
+            Some(c) => self.numbering.iter().copied().filter(|w| *w == c).collect(),
+            None => self.numbering.clone(),
+        };
+        for w in windows {
+            self.send(w, ToClient::Numbers { numbers: numbers.clone() });
+        }
     }
 }

@@ -385,10 +385,17 @@ impl App {
         self.term_numbers.retain(|t, _| live.contains(t));
         self.term_seen.retain(|t, _| live.contains(t));
         let mut changed = self.term_numbers.len() != before;
-        for t in live {
-            if !self.term_numbers.contains_key(&t) {
-                let n = (1..).find(|n| !self.term_numbers.values().any(|v| v == n)).unwrap_or(1);
-                self.term_numbers.insert(t, n);
+        // Each machine's numbered on their own: as its session numbers them,
+        // the same in every window; a session that does not, here, the
+        // lowest free on that machine.
+        for (k, sid) in live {
+            let given = self.session_numbers.get(&k).and_then(|n| n.get(&sid)).copied();
+            let n = match (given, self.term_numbers.get(&(k, sid)).copied()) {
+                (Some(n), _) => n,
+                (None, Some(n)) => n,
+                (None, None) => (1..).find(|n| !self.term_numbers.iter().any(|((m, _), v)| *m == k && v == n)).unwrap_or(1),
+            };
+            if self.term_numbers.insert((k, sid), n) != Some(n) {
                 changed = true;
             }
         }

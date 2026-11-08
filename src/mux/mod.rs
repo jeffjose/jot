@@ -85,6 +85,10 @@ pub enum ToServer {
     /// (the one installed now), its panes kept running. Answered with
     /// Restarting, then the server execs it.
     Restart { exe: String },
+    /// Terminals numbered as the window was told to (a row moved in the
+    /// sidebar): each pane and its number. Said only to a session that told
+    /// numbers (ToClient::Numbers), which knows it.
+    Renumber { numbers: Vec<(u64, u32)> },
 }
 
 /// A pane the session has, as it says on attaching.
@@ -140,6 +144,10 @@ pub enum ToClient {
     /// (CAN_SHARE) when it comes and whenever they change; with the
     /// terminals in them it does not have yet, now its.
     Workspaces { specs: Vec<String>, held: Vec<Held> },
+    /// Each of the session's terminals and its number, the same in every
+    /// window: sent to a window that knows the message (CAN_NUMBER) when it
+    /// comes and whenever they change.
+    Numbers { numbers: Vec<(u64, u32)> },
 }
 
 // The wire: a frame is its length (u32), then a tag, then the fields.
@@ -296,6 +304,13 @@ impl ToServer {
             ToServer::List => o.u8(11),
             ToServer::Release { pane } => o.u8(13).u64(*pane),
             ToServer::Restart { exe } => o.u8(14).str(exe),
+            ToServer::Renumber { numbers } => {
+                o.u8(15).u32(numbers.len() as u32);
+                for (pane, n) in numbers {
+                    o.u64(*pane).u32(*n);
+                }
+                &mut o
+            }
             ToServer::Take { panes } => {
                 o.u8(12).u32(panes.len() as u32);
                 for p in panes {
@@ -330,6 +345,10 @@ impl ToServer {
             11 => ToServer::List,
             13 => ToServer::Release { pane: i.u64()? },
             14 => ToServer::Restart { exe: i.str()? },
+            15 => {
+                let n = i.u32()?;
+                ToServer::Renumber { numbers: (0..n).map(|_| Ok((i.u64()?, i.u32()?))).collect::<io::Result<Vec<_>>>()? }
+            }
             12 => {
                 let n = i.u32()?;
                 ToServer::Take { panes: (0..n).map(|_| i.u64()).collect::<io::Result<Vec<_>>>()? }
@@ -414,6 +433,12 @@ impl ToClient {
                 }
                 o.held(held);
             }
+            ToClient::Numbers { numbers } => {
+                o.u8(16).u32(numbers.len() as u32);
+                for (pane, n) in numbers {
+                    o.u64(*pane).u32(*n);
+                }
+            }
         }
         frame(o)
     }
@@ -465,6 +490,10 @@ impl ToClient {
                 let n = i.u32()?;
                 let specs = (0..n).map(|_| i.str()).collect::<io::Result<Vec<_>>>()?;
                 ToClient::Workspaces { specs, held: i.held()? }
+            }
+            16 => {
+                let n = i.u32()?;
+                ToClient::Numbers { numbers: (0..n).map(|_| Ok((i.u64()?, i.u32()?))).collect::<io::Result<Vec<_>>>()? }
             }
             t => return Err(bad(t)),
         })
@@ -561,6 +590,8 @@ pub enum Heard {
     /// The session's shared workspaces, and the terminals in them now this
     /// window's (see ToClient::Workspaces).
     Workspaces(Vec<String>, Vec<Held>),
+    /// Its terminals' numbers (see ToClient::Numbers).
+    Numbers(Vec<(u64, u32)>),
     /// The size its program writes for now.
     Size(u64, u16, u16),
     /// The server is being swapped for a newer one: the connection about
@@ -716,6 +747,11 @@ impl Client {
         }
     }
 
+    /// Terminals numbered as the window says (see ToServer::Renumber).
+    pub fn renumber(&self, numbers: Vec<(u64, u32)>) {
+        self.send(ToServer::Renumber { numbers });
+    }
+
     pub fn layout(&self, text: String) {
         self.send(ToServer::Layout { text });
     }
@@ -771,6 +807,7 @@ fn listen(mut r: Box<dyn Read + Send>, spawned: Sender<(u64, i32)>, hear: Arc<dy
             Ok(ToClient::Listing { workspaces }) => hear(Heard::Listing(workspaces)),
             Ok(ToClient::Taken { panes }) => hear(Heard::Taken(panes)),
             Ok(ToClient::Workspaces { specs, held }) => hear(Heard::Workspaces(specs, held)),
+            Ok(ToClient::Numbers { numbers }) => hear(Heard::Numbers(numbers)),
             Ok(ToClient::Size { pane, cols, rows }) => hear(Heard::Size(pane, cols, rows)),
             Ok(ToClient::Restarting) => hear(Heard::Restarting),
             Ok(ToClient::Spawned { pane, pid }) => {
@@ -1283,12 +1320,17 @@ fn about() -> String {
 /// (Hello's caps): the session keeps them, and tells it their changes.
 pub const CAN_SHARE: u32 = 1;
 
+/// A window that takes its terminals' numbers from their sessions (the
+/// same in every window), and says a renumbering to them.
+pub const CAN_NUMBER: u32 = 2;
+
 /// What this window can do, said in its hello: a regular window shares
-/// workspaces; the quake window has its own, and does not.
+/// workspaces (the quake window has its own, and does not); every window
+/// takes its terminals' numbers from their sessions.
 fn caps() -> u32 {
     if crate::quake_mode() {
-        0
+        CAN_NUMBER
     } else {
-        CAN_SHARE
+        CAN_SHARE | CAN_NUMBER
     }
 }

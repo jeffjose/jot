@@ -511,3 +511,91 @@ mod tests {
         assert!(s.is_empty());
     }
 }
+
+impl App {
+    /// `jot tree`: machine by machine, its workspaces (those it is home to),
+    /// each one's layout with its terminals (a terminal on another machine
+    /// named with it), and the machine's terminals in no pane here.
+    pub(super) fn tree(&self) -> String {
+        let mut out = String::new();
+        let shown_k: Vec<usize> = (0..self.machines.len()).filter(|&k| k == 0 || self.machines[k].added || (0..self.workspaces.len()).any(|wi| self.ws_machine(wi) == k) || self.free_terminals().iter().any(|f| f.k == k)).collect();
+        for k in shown_k {
+            let state = if k == 0 {
+                "this machine".to_string()
+            } else if self.machines[k].client.connected() {
+                "reached".into()
+            } else {
+                "not reached".into()
+            };
+            out += &format!("{}  ({state})\n", self.machine_name(k));
+            let mut items: Vec<String> = Vec::new();
+            for wi in (0..self.workspaces.len()).filter(|&wi| self.ws_machine(wi) == k) {
+                let ws = &self.workspaces[wi];
+                let mut s = format!("{}{}\n", ws.name, if wi == self.current { "  (shown)" } else { "" });
+                self.tree_node(&ws.root, ws, k, "", &mut s);
+                items.push(s);
+            }
+            let free: Vec<String> = self
+                .free_terminals()
+                .into_iter()
+                .filter(|f| f.k == k)
+                .map(|f| {
+                    let n = self.term_numbers.get(&(f.k, f.sid)).map_or(String::from("-"), |n| format!("#{n}"));
+                    format!("{n} {}{}", f.label, if f.elsewhere { "  (another window's)" } else { "" })
+                })
+                .collect();
+            if !free.is_empty() {
+                let mut s = String::from("in no pane\n");
+                for (i, f) in free.iter().enumerate() {
+                    s += &format!("{}{f}\n", if i + 1 == free.len() { "└─ " } else { "├─ " });
+                }
+                items.push(s);
+            }
+            for (i, item) in items.iter().enumerate() {
+                let last = i + 1 == items.len();
+                for (j, line) in item.lines().enumerate() {
+                    let lead = match (j, last) {
+                        (0, false) => "├─ ",
+                        (0, true) => "└─ ",
+                        (_, false) => "│  ",
+                        (_, true) => "   ",
+                    };
+                    out += &format!("{lead}{line}\n");
+                }
+            }
+        }
+        out
+    }
+
+    /// One layout node as tree lines under `lead`: a split, its way and
+    /// shares, its children under it; a pane, its terminal's number, name
+    /// and machine (when not the workspace's), and what marks it.
+    fn tree_node(&self, node: &Node, ws: &Workspace, k: usize, lead: &str, out: &mut String) {
+        let kids: Vec<&Node> = match node {
+            Node::Split { children, .. } => children.iter().collect(),
+            Node::Pane(_) => Vec::new(),
+        };
+        if let Node::Pane(id) = node {
+            *out += &format!("{lead}{}\n", self.tree_pane(*id, ws, k));
+            return;
+        }
+        let Node::Split { dir, sizes, .. } = node else { return };
+        let way = if matches!(dir, Dir::Across) { "side by side" } else { "stacked" };
+        let shares = sizes.iter().map(|s| format!("{:.0}%", s * 100.0)).collect::<Vec<_>>().join(" ");
+        *out += &format!("{lead}{way} {shares}\n");
+        let inner = lead.replace("├─ ", "│  ").replace("└─ ", "   ");
+        for (i, c) in kids.iter().enumerate() {
+            let last = i + 1 == kids.len();
+            self.tree_node(c, ws, k, &format!("{inner}{}", if last { "└─ " } else { "├─ " }), out);
+        }
+    }
+
+    fn tree_pane(&self, id: PaneId, ws: &Workspace, k: usize) -> String {
+        let (m, sid) = crate::mux::split_id(id);
+        let n = self.term_numbers.get(&(m, sid)).map_or(String::from("-"), |n| format!("#{n}"));
+        let on = if m != k { format!("  on {}", self.machine_name(m)) } else { String::new() };
+        let cwd = self.panes.get(&id).and_then(|p| p.pty.cwd()).map(|c| format!("  {}", persist::shorten(&c))).unwrap_or_default();
+        let marks = [(ws.focus == id, "focus"), (ws.zoom == Some(id), "zoom"), (ws.spaces.contains(&id), "space")].iter().filter(|(on, _)| *on).map(|(_, w)| *w).collect::<Vec<_>>().join(", ");
+        format!("{n} {}{on}{cwd}{}", self.terminal_label(id), if marks.is_empty() { String::new() } else { format!("  ({marks})") })
+    }
+}

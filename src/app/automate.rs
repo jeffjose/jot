@@ -242,6 +242,7 @@ impl App {
                     None => "jot: click needs a terminal, as machine:number (jot list -v)\n".into(),
                 }
             }
+            Some("tree") => self.tree(),
             Some("notify") => {
                 self.toast("jot", &args[1..].join(" "), None, None);
                 String::new()

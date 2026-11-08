@@ -410,6 +410,11 @@ pub struct App {
     /// here had, for its list to take up (else let go).
     shares_with: std::collections::HashSet<usize>,
     unclaimed: HashMap<usize, Vec<u64>>,
+    /// Each machine's terminals' numbers as its session keeps them (one
+    /// that does not, numbered here).
+    session_numbers: HashMap<usize, HashMap<u64, usize>>,
+    /// Panes waiting for their terminals, asked for (see taken_back).
+    filling: Vec<(usize, u64)>,
     /// What the sidebar showed last, as `sidebar_moved` counts it.
     side_sig: u64,
     /// What the project bar said when last drawn: drawn again when it changes.
@@ -671,6 +676,8 @@ impl App {
             open_later: Vec::new(),
             shares_with: Default::default(),
             unclaimed: HashMap::new(),
+            session_numbers: HashMap::new(),
+            filling: Vec::new(),
             side_sig: 0,
             foot_said: String::new(),
             foot_dots: Vec::new(),
@@ -2192,6 +2199,7 @@ impl App {
                 Output::Listing(..) => "heard listing",
                 Output::Taken(..) => "heard taken",
                 Output::Workspaces(..) => "heard workspaces",
+                Output::Numbers(..) => "heard numbers",
                 Output::Size(..) => "heard size",
                 Output::Restarting(..) => "heard restarting",
                 Output::Gone(..) => "heard gone",
@@ -2354,6 +2362,13 @@ impl App {
                         self.connected(k);
                     }
                     self.sync_workspaces(k, specs, held)
+                }
+                // Its terminals' numbers, the same in every window.
+                Output::Numbers(k, numbers) => {
+                    self.session_numbers.insert(k, numbers.into_iter().map(|(p, n)| (p, n as usize)).collect());
+                    self.number_terminals();
+                    self.full = true;
+                    self.redraw();
                 }
             }
         }
@@ -3550,32 +3565,25 @@ impl App {
     fn taken_back(&mut self, k: usize, held: Vec<crate::mux::Held>) -> Vec<PaneId> {
         use crate::mux::app_id;
         let back: Vec<PaneId> = held.iter().map(|h| app_id(k, h.pane)).collect();
-        let gone: Vec<PaneId> = self.panes.keys().copied().filter(|id| self.machine_of(*id) == k && !back.contains(id)).collect();
+        // A pane waiting for its terminal (made before the machine was
+        // reached, the terminal asked for then) has not ended for not being
+        // given: the connection can be made before it is asked for. Asked
+        // for again, and filled when it comes (see taken).
+        let waiting: Vec<u64> = self.panes.iter().filter(|(id, p)| self.machine_of(**id) == k && !back.contains(id) && p.pty.pid == 0 && !p.pty.end).map(|(id, _)| crate::mux::split_id(*id).1).collect();
+        if !waiting.is_empty() {
+            crate::debuglog::log(format!("machine {k}: panes waiting for their terminals, asked for: {waiting:?}"));
+            self.filling.extend(waiting.iter().map(|sid| (k, *sid)));
+            if let Some(m) = self.machines.get(k) {
+                m.client.take(waiting.clone());
+            }
+        }
+        let gone: Vec<PaneId> = self.panes.keys().copied().filter(|id| self.machine_of(*id) == k && !back.contains(id) && !waiting.contains(&crate::mux::split_id(*id).1)).collect();
         let mut new = Vec::new();
         for h in held {
-            let id = app_id(k, h.pane);
-            let Some(p) = self.panes.get_mut(&id) else {
+            if let Err(h) = self.refill(k, h) {
                 new.push(h.pane);
-                self.held.insert(id, h);
-                continue;
-            };
-            // Its size here told again: a session reached again (restarted,
-            // or the connection back) knows none of this window's, and
-            // typed into here, it would keep another window's.
-            let (cw, ch) = (self.fonts.cell_w, self.fonts.cell_h);
-            p.pty.resize(p.want.0, p.want.1, ((p.want.0 as i32 * cw) as u32, (p.want.1 as i32 * ch) as u32));
-            p.term = Terminal::new(p.cols, p.rows, self.config.scrollback, p.theme, reply_to(&p.pty.mux, h.pane, p.pty.speaks.clone()));
-            p.shell = commands::Shell::default();
-            p.shell.queue = h.queue.items.clone();
-            p.shell.paused = h.queue.paused;
-            p.shell.after = h.queue.after.iter().map(|(t, c)| (crate::mux::app_id(k, *t), c.clone())).collect();
-            p.shell.synced = h.queue;
-            p.tee = h.tee.map(|t| watch::Tee { path: PathBuf::from(t.path), lines: t.lines as usize, armed: t.armed });
-            p.pty.raw = false;
-            p.lines.clear();
-            p.has_images = false;
-            p.full = true;
-            self.replays.push((id, h.log));
+                self.held.insert(app_id(k, h.pane), h);
+            }
         }
         // The quake window, given terminals it showed once and swapped out
         // since: left to the session, listed as running on, not gathered
@@ -3636,6 +3644,7 @@ fn hearer(k: usize, tx: std::sync::mpsc::Sender<Output>, proxy: EventLoopProxy<(
             Heard::Listing(l) => Output::Listing(k, l),
             Heard::Taken(h) => Output::Taken(k, h),
             Heard::Workspaces(s, h) => Output::Workspaces(k, s, h),
+            Heard::Numbers(n) => Output::Numbers(k, n),
             Heard::Size(p, cols, rows) => Output::Size(id(p), cols, rows),
             Heard::Restarting => Output::Restarting(k),
             Heard::Gone => Output::Gone(k),
@@ -3832,6 +3841,17 @@ impl App {
     fn taken(&mut self, k: usize, held: Vec<crate::mux::Held>) {
         // Terminals a list of shared workspaces waited for.
         let Some(held) = self.shared_taken(k, held) else { return };
+        // Terminals panes here waited for (see taken_back): in them.
+        if !held.is_empty() && held.iter().all(|h| self.filling.contains(&(k, h.pane))) {
+            for h in held {
+                self.filling.retain(|f| *f != (k, h.pane));
+                crate::debuglog::log(format!("pane {:x}: its terminal come", crate::mux::app_id(k, h.pane)));
+                let _ = self.refill(k, h);
+            }
+            self.replay_held();
+            self.full = true;
+            return self.redraw();
+        }
         let first = held.first().map(|h| h.pane);
         for h in held {
             self.held.insert(crate::mux::app_id(k, h.pane), h);
@@ -4006,3 +4026,36 @@ fn new_ws_id() -> u64 {
 /// How long after a change the window says its workspaces to its session:
 /// soon, as other windows that share them follow, but not on every key.
 const SAVE_AFTER: Duration = Duration::from_millis(250);
+
+impl App {
+    /// A pane here, its terminal as machine `k`'s session gives it (reached
+    /// again, or one it waited for): drawn anew from what it printed, its
+    /// queue, its /tee, its size told again. Given back when no pane here
+    /// shows it.
+    fn refill(&mut self, k: usize, h: crate::mux::Held) -> Result<(), crate::mux::Held> {
+        let id = crate::mux::app_id(k, h.pane);
+        let (cw, ch) = (self.fonts.cell_w, self.fonts.cell_h);
+        let (scrollback, ..) = (self.config.scrollback,);
+        let Some(p) = self.panes.get_mut(&id) else { return Err(h) };
+        // Its size here told again: a session reached again (restarted, or
+        // the connection back) knows none of this window's, and typed into
+        // here, it would keep another window's.
+        p.pty.resize(p.want.0, p.want.1, ((p.want.0 as i32 * cw) as u32, (p.want.1 as i32 * ch) as u32));
+        if h.pid > 0 {
+            p.pty.pid = h.pid;
+        }
+        p.term = Terminal::new(p.cols, p.rows, scrollback, p.theme, reply_to(&p.pty.mux, h.pane, p.pty.speaks.clone()));
+        p.shell = commands::Shell::default();
+        p.shell.queue = h.queue.items.clone();
+        p.shell.paused = h.queue.paused;
+        p.shell.after = h.queue.after.iter().map(|(t, c)| (crate::mux::app_id(k, *t), c.clone())).collect();
+        p.shell.synced = h.queue;
+        p.tee = h.tee.map(|t| watch::Tee { path: PathBuf::from(t.path), lines: t.lines as usize, armed: t.armed });
+        p.pty.raw = false;
+        p.lines.clear();
+        p.has_images = false;
+        p.full = true;
+        self.replays.push((id, h.log));
+        Ok(())
+    }
+}

@@ -36,7 +36,7 @@ cleanup() {
     sleep 0.5
     XDG_RUNTIME_DIR=$R1 "$JOT" kill >/dev/null 2>&1
     XDG_RUNTIME_DIR=$R2 "$JOT" kill >/dev/null 2>&1
-    [ $fail = 0 ] && rm -rf "$T"
+    [ $fail = 0 ] && [ -z "${KEEP:-}" ] && rm -rf "$T"
 }
 trap cleanup EXIT
 
@@ -117,6 +117,19 @@ there restart >/dev/null
 sleep 5
 check "after jot restart of both sessions, the split with the remote terminal is there" '[ "$(panes1 | wc -l)" = 2 ] && [ "$(panes1 | tail -1)" = "$remote" ]'
 check "and still shared" 'shared | grep -q "pfakehost:${remote#1:}"'
+sleep 6
+check "and a while later, still the split with the remote terminal: $(panes1 | tr '\n' ' ')" '[ "$(panes1 | wc -l)" = 2 ] && [ "$(panes1 | tail -1)" = "$remote" ]'
 
+
+# Terminals' numbers: as this machine's session keeps them, in the window.
+win_numbers() { here1 list -v | awk '{for(i=1;i<NF;i++){ if($i ~ /^#[0-9]+$/ && $(i+1)=="terminal" && $(i+2) ~ /^0:/){split($(i+2),a,":"); print a[2], substr($i,2)} } } $1 ~ /^0:[0-9]+$/ && $2 ~ /^#/ {split($1,a,":"); print a[2], substr($2,2)}' | sort -u; }
+session_numbers() { here1 status -v | awk '/^-- terminals/{t=1;next} /^-- /{t=0} t&&$2 ~ /^#/{print $1, substr($2,2)}' | sort -u; }
+check "the window shows each terminal's number as the session keeps it" '[ -n "$(win_numbers)" ] && [ "$(win_numbers)" = "$(comm -12 <(win_numbers) <(session_numbers))" ]'
+
+# jot tree: each machine, its workspaces and their terminals.
+tree=$(here1 tree)
+[ -n "${VERBOSE:-}" ] && echo "$tree"
+check "jot tree has this machine and the other" 'echo "$tree" | grep -q "(this machine)" && echo "$tree" | grep -q "^fakehost"'
+check "and the workspace, the remote terminal in it" 'echo "$tree" | grep -q "on fakehost"'
 if [ $fail = 0 ]; then echo "all passed"; else echo "some FAILED (logs kept: $T/s1/jot/debug.log, $T/s2/jot/debug.log)"; fi
 exit $fail

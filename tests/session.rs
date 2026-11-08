@@ -389,3 +389,117 @@ fn status_shows_the_session_s_shared_workspaces() {
     assert!(out.contains("w1"), "{out}");
     assert!(out.contains("pskyfall:7"), "its layout, the remote terminal in it: {out}");
 }
+
+// Terminals' numbers, the same in every window: the session numbers its
+// terminals and tells every window that takes them (CAN_NUMBER).
+
+const CAN_NUMBER: u32 = 2;
+const CLOSE: u8 = 4;
+const RENUMBER: u8 = 15;
+const NUMBERS: u8 = 16;
+
+impl Window {
+    /// The numbers the session tells it next, each terminal's; the last it
+    /// tells in `wait`.
+    fn numbers(&mut self, wait: Duration) -> Option<Vec<(u64, u32)>> {
+        let mut last = None;
+        while let Some(f) = self.expect(NUMBERS, wait) {
+            let mut i = In(&f[1..]);
+            let n = i.u32();
+            last = Some((0..n).map(|_| (i.u64(), i.u32())).collect());
+        }
+        last
+    }
+
+    fn close(&mut self, pane: u64) {
+        let mut o = vec![CLOSE];
+        o.extend(pane.to_le_bytes());
+        send(&mut self.s, &o);
+    }
+
+    fn renumber(&mut self, numbers: &[(u64, u32)]) {
+        let mut o = vec![RENUMBER];
+        o.extend((numbers.len() as u32).to_le_bytes());
+        for (p, n) in numbers {
+            o.extend(p.to_le_bytes());
+            o.extend(n.to_le_bytes());
+        }
+        send(&mut self.s, &o);
+    }
+}
+
+fn number_of(numbers: &[(u64, u32)], pane: u64) -> Option<u32> {
+    numbers.iter().find(|(p, _)| *p == pane).map(|(_, n)| *n)
+}
+
+#[test]
+fn terminals_are_numbered_one_two_three_and_every_window_hears_the_same() {
+    let s = Session::start();
+    let mut a = Window::hello(&s.socket(), 1, false, CAN_SHARE | CAN_NUMBER);
+    let t1 = a.spawn();
+    let t2 = a.spawn();
+    let t3 = a.spawn();
+    let mine = a.numbers(A_WHILE).expect("told");
+    assert_eq!([t1, t2, t3].map(|t| number_of(&mine, t)), [Some(1), Some(2), Some(3)]);
+    // Another window, and the quake window (which does not share
+    // workspaces, but takes numbers): the same.
+    let mut b = Window::hello(&s.socket(), 2, false, CAN_SHARE | CAN_NUMBER);
+    let mut quake = Window::hello(&s.socket(), 3, false, CAN_NUMBER);
+    assert_eq!(b.numbers(A_WHILE).as_ref(), Some(&mine));
+    assert_eq!(quake.numbers(A_WHILE).as_ref(), Some(&mine));
+}
+
+#[test]
+fn a_terminal_gone_frees_its_number_for_the_next() {
+    let s = Session::start();
+    let mut a = Window::hello(&s.socket(), 1, false, CAN_SHARE | CAN_NUMBER);
+    let _t1 = a.spawn();
+    let t2 = a.spawn();
+    let _t3 = a.spawn();
+    a.close(t2);
+    let left = a.numbers(A_WHILE).expect("told");
+    assert_eq!(number_of(&left, t2), None);
+    let t4 = a.spawn();
+    let now = a.numbers(A_WHILE).expect("told");
+    assert_eq!(number_of(&now, t4), Some(2), "the lowest free: {now:?}");
+}
+
+#[test]
+fn a_window_s_renumbering_reaches_every_window() {
+    let s = Session::start();
+    let mut a = Window::hello(&s.socket(), 1, false, CAN_SHARE | CAN_NUMBER);
+    let t1 = a.spawn();
+    let t2 = a.spawn();
+    let mut b = Window::hello(&s.socket(), 2, false, CAN_SHARE | CAN_NUMBER);
+    b.numbers(A_WHILE);
+    // A row moved in A's sidebar: t2 first.
+    a.renumber(&[(t2, 1), (t1, 2)]);
+    let told = b.numbers(A_WHILE).expect("told");
+    assert_eq!((number_of(&told, t2), number_of(&told, t1)), (Some(1), Some(2)));
+    // Taking a number another has swaps them: never two of one.
+    a.renumber(&[(t1, 1)]);
+    let told = b.numbers(A_WHILE).expect("told");
+    assert_eq!((number_of(&told, t1), number_of(&told, t2)), (Some(1), Some(2)));
+}
+
+#[test]
+fn numbers_go_over_jot_restart() {
+    let s = Session::start();
+    let mut a = Window::hello(&s.socket(), 1, false, CAN_SHARE | CAN_NUMBER);
+    let t1 = a.spawn();
+    let t2 = a.spawn();
+    a.renumber(&[(t2, 1), (t1, 2)]);
+    a.numbers(A_WHILE);
+    s.jot(&["restart"]);
+    let mut again = Window::hello(&s.socket(), 1, true, CAN_SHARE | CAN_NUMBER);
+    let told = again.numbers(A_WHILE).expect("told again");
+    assert_eq!((number_of(&told, t2), number_of(&told, t1)), (Some(1), Some(2)));
+}
+
+#[test]
+fn a_window_from_before_numbering_is_not_told() {
+    let s = Session::start();
+    let mut old = Window::hello(&s.socket(), 1, false, CAN_SHARE);
+    old.spawn();
+    assert!(old.numbers(A_WHILE).is_none(), "it would not know the message");
+}

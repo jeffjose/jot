@@ -774,6 +774,15 @@ impl App {
         order.remove(from);
         let at = if at > from { at - 1 } else { at }.min(order.len());
         order.insert(at, t);
+        // A session that numbers its terminals numbers them again, for every
+        // window; else this window does.
+        if self.session_numbers.contains_key(&k) {
+            let numbers: Vec<(u64, u32)> = order.iter().zip(&numbers).map(|((_, sid), n)| (*sid, *n as u32)).collect();
+            if let Some(m) = self.machines.get(k) {
+                m.client.renumber(numbers);
+            }
+            return;
+        }
         for (o, n) in order.into_iter().zip(numbers) {
             self.term_numbers.insert(o, n);
         }

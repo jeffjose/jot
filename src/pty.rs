@@ -40,6 +40,8 @@ pub enum Output {
     /// A machine's shared workspaces, and the terminals in them now this
     /// window's.
     Workspaces(usize, Vec<String>, Vec<crate::mux::Held>),
+    /// A machine's terminals' numbers, as its session keeps them.
+    Numbers(usize, Vec<(u64, u32)>),
     /// The size its program writes for now, set by whichever window
     /// was typed into last.
     Size(u64, u16, u16),
