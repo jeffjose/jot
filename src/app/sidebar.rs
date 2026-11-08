@@ -68,7 +68,10 @@ impl App {
         if self.sidebar_open && self.sidebar_width < NARROWEST {
             self.sidebar_width = WIDTH;
         }
-        persist::save_sidebar(self.sidebar_open, self.sidebar_width);
+        // The quake window's is its own, not saved for the others.
+        if !crate::quake_mode() {
+            persist::save_sidebar(self.sidebar_open, self.sidebar_width);
+        }
         self.side_lit = None;
         self.side_toggle = None;
         self.full = true;
@@ -89,7 +92,10 @@ impl App {
         } else {
             self.sidebar_width = w.clamp(NARROWEST, 520.0);
         }
-        persist::save_sidebar(self.sidebar_open, self.sidebar_width);
+        // The quake window's is its own, not saved for the others.
+        if !crate::quake_mode() {
+            persist::save_sidebar(self.sidebar_open, self.sidebar_width);
+        }
         self.full = true;
         self.relayout();
     }
@@ -138,7 +144,7 @@ impl App {
         self.side_toggle = None;
         let c = self.cur_theme.chrome();
         let w = self.sidebar_w();
-        let h = self.canvas.height - self.status_h();
+        let h = self.canvas.height - self.status_h() - if self.quake_bar_on_top() { 0 } else { self.quake_bar_h() };
         let area = Rect { x: 0, y: 0, w, h };
         self.canvas.fill(area, c.side);
         self.canvas.fill(Rect { x: w - 1, y: 0, w: 1, h }, c.edge);

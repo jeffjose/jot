@@ -147,6 +147,8 @@ enum Drag {
     Divider(Divider),
     Select { pane: PaneId, from: (u16, u16) },
     Pane(dnd::Carry),
+    /// The quake window's grip, for its height.
+    QuakeGrip,
 }
 
 pub struct App {
@@ -222,6 +224,11 @@ pub struct App {
     float_near: Option<bool>,
     /// The quake window (jot --quake) on screen.
     quake_shown: bool,
+    /// The quake window's bar: what can be clicked on it, the one the
+    /// pointer is on, and the height its grip has made so far.
+    quake_hits: Vec<(Rect, quake::QuakeHit)>,
+    quake_lit: Option<quake::QuakeHit>,
+    quake_drag_h: Option<(i32, i32)>,
     /// Minimized panes' rows, to click, and the one the pointer is on.
     mini_hits: Vec<(Rect, PaneId)>,
     mini_lit: Option<PaneId>,
@@ -447,6 +454,9 @@ impl App {
             float_rect: None,
             float_near: None,
             quake_shown: false,
+            quake_hits: Vec::new(),
+            quake_lit: None,
+            quake_drag_h: None,
             mini_hits: Vec::new(),
             mini_lit: None,
             mini_btns: Vec::new(),
@@ -497,7 +507,8 @@ impl App {
             connecting: Vec::new(),
             taking: Vec::new(),
             listed_at: Instant::now() - Duration::from_secs(60),
-            sidebar_open: persist::load_sidebar().0,
+            // The quake window starts without it; its bar has the button.
+            sidebar_open: persist::load_sidebar().0 && !crate::quake_mode(),
             sidebar_width: persist::load_sidebar().1,
             side_hits: Vec::new(),
             side_lit: None,
@@ -716,10 +727,12 @@ impl App {
                 (s.workspaces, s.current, s.roam)
             }
             None if taking_up => (Vec::new(), 0, None),
-            None if self.fresh_session && !self.config.workspaces.is_empty() => (std::mem::take(&mut self.config.workspaces), 0, None),
+            None if self.fresh_session && !self.config.workspaces.is_empty() && !crate::quake_mode() => (std::mem::take(&mut self.config.workspaces), 0, None),
             None => {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| pty::home());
-                (vec![WorkspaceSpec { name: String::new(), cwd: Some(cwd.display().to_string()), panes: vec![], split: None, layout: None, ..Default::default() }], 0, None)
+                // The quake window's own workspace, which its bar does not name.
+                let name = if crate::quake_mode() { quake::QUAKE_WORKSPACE.to_string() } else { String::new() };
+                (vec![WorkspaceSpec { name, cwd: Some(cwd.display().to_string()), panes: vec![], split: None, layout: None, ..Default::default() }], 0, None)
             }
         };
         for spec in &specs {
@@ -772,7 +785,10 @@ impl App {
     /// Where the panes go: the window but for the sidebar and status line.
     fn area(&self) -> Rect {
         let side = self.sidebar_w().min(self.canvas.width / 2);
-        Rect { x: side, y: 0, w: self.canvas.width - side, h: self.canvas.height - self.status_h() }
+        // The quake window's bar along its open edge.
+        let bar = self.quake_bar_h();
+        let top = if self.quake_bar_on_top() { bar } else { 0 };
+        Rect { x: side, y: top, w: self.canvas.width - side, h: self.canvas.height - self.status_h() - bar }
     }
 
     /// Lays out every workspace, so panes not shown are the right size
@@ -1506,7 +1522,7 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
-        if (button == MouseButton::Left && (self.offer_click(event_loop) || self.toast_click() || self.mini_click() || self.pin_click() || self.editor_run_click() || self.editor_press() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
+        if (button == MouseButton::Left && (self.quake_bar_click() || self.offer_click(event_loop) || self.toast_click() || self.mini_click() || self.pin_click() || self.editor_run_click() || self.editor_press() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
             return;
         }
         if button == MouseButton::Left {
@@ -1665,6 +1681,7 @@ impl App {
             }
             Some(Drag::Pane(_)) => self.carry_move(x, y),
             Some(Drag::Sidebar) => {}
+            Some(Drag::QuakeGrip) => self.quake_grip_move(),
             None if self.mouse_held.is_some() => {
                 let (id, b) = self.mouse_held.unwrap();
                 self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_MOTION, Some(b));
@@ -1681,7 +1698,7 @@ impl App {
                 }
             }
             None => {
-                if self.mini_hover(x, y) || self.pin_hover(x, y) || self.editor_drag(x, y) || self.editor_run_hover(x, y) || self.editor_hover(x, y) || self.bar_field_drag(x, y) || self.bar_field_hover(x, y) || self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
+                if self.quake_bar_hover(x, y) || self.mini_hover(x, y) || self.pin_hover(x, y) || self.editor_drag(x, y) || self.editor_run_hover(x, y) || self.editor_hover(x, y) || self.bar_field_drag(x, y) || self.bar_field_hover(x, y) || self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
                     return;
                 }
                 self.update_link();
@@ -1710,6 +1727,9 @@ impl App {
     }
 
     fn mouse_release(&mut self) {
+        if matches!(self.drag, Some(Drag::QuakeGrip)) {
+            return self.quake_grip_end();
+        }
         if matches!(self.drag, Some(Drag::Sidebar)) {
             self.drag = None;
             return;
@@ -2003,6 +2023,7 @@ impl App {
         }
         if full {
             self.draw_sidebar();
+            self.draw_quake_bar();
         }
         if full {
             self.draw_minimized();

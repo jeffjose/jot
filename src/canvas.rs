@@ -372,6 +372,9 @@ pub mod icons {
     pub const SERVER: char = '\u{e303}';
     pub const CHEVRON_RIGHT: char = '\u{e304}';
     pub const SETTINGS: char = '\u{e305}';
+    pub const LAYERS: char = '\u{e306}';
+    pub const PIN: char = '\u{e307}';
+    pub const CHEVRON_UP: char = '\u{e308}';
 }
 
 /// An icon's mask at `size` pixels square: its letter drawn to fill the
