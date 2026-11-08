@@ -321,6 +321,8 @@ pub struct App {
     side_toggle: Option<Rect>,
     /// The machine heading under the pointer, its + shown.
     side_heading: Option<usize>,
+    /// What the sidebar showed last, as `sidebar_moved` counts it.
+    side_sig: u64,
     /// Panes the session had when this window took it up, until the
     /// layout takes them up.
     held: HashMap<u64, crate::mux::Held>,
@@ -514,6 +516,7 @@ impl App {
             side_lit: None,
             side_toggle: None,
             side_heading: None,
+            side_sig: 0,
             mux: attached.client,
             held,
             replays: Vec::new(),
@@ -1872,11 +1875,15 @@ impl App {
                 Output::Back(k, held) => back = Some((k, held)),
                 Output::Failed(k, why) => self.not_reached(k, &why),
                 Output::Listing(k, l) => {
+                    // Drawn again only when what it lists changed.
+                    let changed = self.machines.get(k).is_some_and(|m| m.listing.len() != l.len() || m.listing.iter().zip(&l).any(|(a, b)| a.spec != b.spec || a.label != b.label || a.running != b.running));
                     if let Some(m) = self.machines.get_mut(k) {
                         m.listing = l;
                     }
-                    self.full = true;
-                    any = true;
+                    if changed {
+                        self.full = true;
+                        self.redraw();
+                    }
                 }
                 Output::Taken(k, held) => self.taken(k, held),
             }
@@ -2649,6 +2656,11 @@ impl ApplicationHandler<()> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Queues changed by what was done: told to the session.
         self.sync_queues();
+        // The sidebar drawn again when what it shows changed by itself.
+        if self.sidebar_moved() {
+            self.full = true;
+            self.redraw();
+        }
         // What the machines hold that this window does not show, for the
         // sidebar, every few seconds.
         if self.sidebar_open && self.listed_at.elapsed() > Duration::from_secs(3) {
