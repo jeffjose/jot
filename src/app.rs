@@ -1741,10 +1741,17 @@ impl App {
                 } else {
                     self.dividers.iter().find(|d| Rect { x: d.rect.x - g, y: d.rect.y - g, w: d.rect.w + 2 * g, h: d.rect.h + 2 * g }.contains(x, y))
                 };
+                // On a pane's caption, the arrow: it is not text to select
+                // (its buttons and tags give the hand, above).
+                let cap = self.caption_h();
+                // Empty space too, with no text in it.
+                let on_caption = self.pane_at(x, y).and_then(|(id, _)| self.panes.get(&id)).is_some_and(|p| y < p.rect.y + cap)
+                    || (!self.roam_shown && self.ws().spaces.iter().any(|s| self.panes.get(s).is_some_and(|p| p.rect.contains(x, y))));
                 if let Some(w) = &self.window {
                     w.set_cursor(match on_divider {
                         Some(d) if d.dir == Dir::Across => CursorIcon::ColResize,
                         Some(_) => CursorIcon::RowResize,
+                        None if on_caption => CursorIcon::Default,
                         None => CursorIcon::Text,
                     });
                 }
@@ -1971,7 +1978,7 @@ impl App {
         self.captions_at = Instant::now();
         let mut changed = false;
         for p in self.panes.values_mut() {
-            let title = p.term.title();
+            let title = plain_title(&p.term.title()).to_string();
             let caption = if !title.trim().is_empty() {
                 title
             } else {
@@ -3209,5 +3216,31 @@ impl App {
         self.listed_at = Instant::now() - Duration::from_secs(60);
         self.unsaved = true;
         self.changed();
+    }
+}
+
+/// A program's title less the status symbols it leads with: Claude Code
+/// turns a spinner there (◐ ◓ ◑ ◒) while it works and puts ✳ when it is
+/// done, and a caption that turns is only distracting. Geometric shapes,
+/// dingbats, miscellaneous symbols, braille spinners and stars are dropped
+/// with the spaces after them; ordinary titles ("~/scripts") are left.
+fn plain_title(title: &str) -> &str {
+    let symbol = |c: char| matches!(c as u32, 0x2022 | 0x2026 | 0x22C6 | 0x25A0..=0x25FF | 0x2600..=0x27BF | 0x2800..=0x28FF | 0x2B00..=0x2BFF | 0x1F300..=0x1FAFF) || c == '*';
+    let rest = title.trim_start_matches(|c: char| symbol(c) || c == '\u{FE0F}' || c.is_whitespace());
+    if rest.is_empty() { title } else { rest }
+}
+
+#[cfg(test)]
+mod plain_title_tests {
+    use super::plain_title;
+
+    #[test]
+    fn drops_leading_status_symbols() {
+        assert_eq!(plain_title("◐ woodwind > jot"), "woodwind > jot");
+        assert_eq!(plain_title("✳ Claude Code"), "Claude Code");
+        assert_eq!(plain_title("⠋ building"), "building");
+        assert_eq!(plain_title("~/scripts/jot"), "~/scripts/jot");
+        assert_eq!(plain_title("vim"), "vim");
+        assert_eq!(plain_title("✳"), "✳");
     }
 }
