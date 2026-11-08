@@ -1546,6 +1546,13 @@ impl App {
     }
 
     /// The pane under a point, and the cell in it.
+    /// The divider under the pointer: grabbed anywhere within 6 px of its
+    /// line either side, though the line is drawn 1 px.
+    fn divider_at(&self, x: i32, y: i32) -> Option<&Divider> {
+        let g = self.px(6.0);
+        self.dividers.iter().find(|d| Rect { x: d.rect.x - g, y: d.rect.y - g, w: d.rect.w + 2 * g, h: d.rect.h + 2 * g }.contains(x, y))
+    }
+
     fn pane_at(&self, x: i32, y: i32) -> Option<(PaneId, (u16, u16))> {
         let ids: Vec<PaneId> = if self.roam_shown {
             self.roam.into_iter().collect()
@@ -1659,9 +1666,8 @@ impl App {
                 return;
             }
             if !self.roam_shown {
-                let grab = self.px(3.0);
-                if let Some(d) = self.dividers.iter().find(|d| Rect { x: d.rect.x - grab, y: d.rect.y - grab, w: d.rect.w + 2 * grab, h: d.rect.h + 2 * grab }.contains(x, y)) {
-                    self.drag = Some(Drag::Divider(d.clone()));
+                if let Some(d) = self.divider_at(x, y).cloned() {
+                    self.drag = Some(Drag::Divider(d));
                     return;
                 }
             }
@@ -1755,12 +1761,7 @@ impl App {
                 if let Some((id, _)) = self.pane_at(x, y).filter(|(id, _)| self.mouse_to_program(*id)) {
                     self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_MOTION, None);
                 }
-                let g = self.px(3.0);
-                let on_divider = if self.roam_shown {
-                    None
-                } else {
-                    self.dividers.iter().find(|d| Rect { x: d.rect.x - g, y: d.rect.y - g, w: d.rect.w + 2 * g, h: d.rect.h + 2 * g }.contains(x, y))
-                };
+                let on_divider = if self.roam_shown { None } else { self.divider_at(x, y) };
                 // On a pane's caption, the arrow: it is not text to select
                 // (its buttons and tags give the hand, above).
                 let cap = self.caption_h();
