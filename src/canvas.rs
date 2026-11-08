@@ -400,6 +400,7 @@ pub mod icons {
     #[allow(dead_code)]
     pub const CHEVRON_RIGHT: char = '\u{e304}';
     pub const SETTINGS: char = '\u{e305}';
+    #[allow(dead_code)]
     pub const LAYERS: char = '\u{e306}';
     pub const CHEVRON_UP: char = '\u{e308}';
     /// The window's maximize and restore, in jot's own title bar.

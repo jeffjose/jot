@@ -244,6 +244,8 @@ pub struct App {
     /// pointer is on, and the height its grip has made so far.
     quake_hits: Vec<(Rect, quake::QuakeHit)>,
     quake_lit: Option<quake::QuakeHit>,
+    /// The machine whose terminals the quake window's bar lists.
+    quake_k: usize,
     quake_drag_h: Option<(i32, i32)>,
     /// Names given to terminals, as the file every window shares holds them.
     term_names: Vec<(String, u64, String)>,
@@ -511,6 +513,7 @@ impl App {
             quake_shown: false,
             quake_hits: Vec::new(),
             quake_lit: None,
+            quake_k: 0,
             quake_drag_h: None,
             term_names: persist::load_term_names(),
             term_numbers: HashMap::new(),

@@ -41,9 +41,8 @@ impl App {
         // The quake window's bar.
         if let Some((r, hit)) = self.quake_hits.iter().find(|(r, _)| r.contains(x, y)) {
             let words = match hit {
-                quake::QuakeHit::Sidebar => if self.sidebar_open { "Hide the sidebar" } else { "Show the sidebar" }.to_string(),
-                quake::QuakeHit::Workspaces => "Workspaces".to_string(),
-                quake::QuakeHit::Pane(id) => self.terminal_label(*id),
+                quake::QuakeHit::Term(_) => return None,
+                quake::QuakeHit::Machine => "Another machine's terminals".to_string(),
                 quake::QuakeHit::Grip => "Drag to make it taller or shorter".to_string(),
                 quake::QuakeHit::Hide => "Hide  ·  jot --quake".to_string(),
             };

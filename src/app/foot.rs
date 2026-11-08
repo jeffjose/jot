@@ -134,8 +134,17 @@ impl App {
     /// The bar's machine clicked: the machines, to show another's
     /// workspaces.
     pub(super) fn machine_menu(&mut self) {
+        if let Some(b) = self.foot_button {
+            self.machine_menu_at(b, true);
+        }
+    }
+
+    /// The machines, in a menu from the button `anchor`, up from it (a bar
+    /// at the foot) or down: the one shown ticked. In the quake window, the
+    /// one whose terminals its bar lists.
+    pub(super) fn machine_menu_at(&mut self, anchor: Rect, up: bool) {
         use crate::palette::{Action, Item};
-        let here = self.foot_machine();
+        let here = if crate::quake_mode() { self.quake_k } else { self.foot_machine() };
         let items: Vec<Option<Item>> = self
             .foot_machines()
             .into_iter()
@@ -157,9 +166,10 @@ impl App {
         let rows = items.len() as i32;
         let pad = self.px(8.0);
         let h = rows * (self.fonts.ui.height + pad) + pad + self.px(4.0);
+        let gap = self.px(4.0);
         self.open_items_menu(items);
-        if let (Some(m), Some(b)) = (&mut self.menu, self.foot_button) {
-            m.at = (b.x, b.y - h);
+        if let Some(m) = &mut self.menu {
+            m.at = if up { (anchor.x, anchor.y - h) } else { (anchor.x, anchor.y + anchor.h + gap) };
         }
     }
 
@@ -167,7 +177,17 @@ impl App {
     /// last there, else its first here; one its session holds, opened here,
     /// when this window has none on it; a new one there when it has none.
     pub(super) fn show_machine(&mut self, k: usize) {
-        if k == self.foot_machine() || k >= self.machines.len() {
+        if k >= self.machines.len() {
+            return;
+        }
+        // The quake window: its bar lists that machine's terminals, its
+        // layout as it is.
+        if crate::quake_mode() {
+            self.quake_k = k;
+            self.full = true;
+            return self.redraw();
+        }
+        if k == self.foot_machine() {
             return;
         }
         if k > 0 && !self.machines[k].client.connected() {

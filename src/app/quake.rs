@@ -311,11 +311,68 @@ mod x11 {
 /// What can be clicked on the quake window's bar.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(super) enum QuakeHit {
-    Sidebar,
-    Workspaces,
-    Pane(PaneId),
+    /// A terminal of the machine listed, as its sidebar row.
+    Term(sidebar::SideHit),
+    /// The machine whose terminals are listed: the others, to pick from.
+    Machine,
+    /// The bar's empty stretch, dragged for the height.
     Grip,
     Hide,
+}
+
+/// jot's own color, its icon's: the quake window's square, which stands
+/// for jot rather than a workspace.
+const JOT_COLOR: u32 = 0xE54D2E;
+
+/// jot's icon `size` pixels square, 0xAARRGGBB: each pixel the mean of the
+/// part of the 256-pixel icon it stands for, its colors weighed by how
+/// opaque they are, so the edges stay clean; kept once made.
+fn app_mark(size: u32) -> std::rc::Rc<Vec<u32>> {
+    thread_local! {
+        static MADE: std::cell::RefCell<Option<(u32, std::rc::Rc<Vec<u32>>)>> = const { std::cell::RefCell::new(None) };
+    }
+    if let Some(m) = MADE.with(|m| m.borrow().as_ref().filter(|(s, _)| *s == size).map(|(_, p)| p.clone())) {
+        return m;
+    }
+    static PNG: &[u8] = include_bytes!("../../assets/jot.png");
+    let out = (|| {
+        let mut reader = png::Decoder::new(std::io::Cursor::new(PNG)).read_info().ok()?;
+        let mut buf = vec![0; reader.output_buffer_size()?];
+        let info = reader.next_frame(&mut buf).ok()?;
+        if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+            return None;
+        }
+        let (w, h, s) = (info.width as usize, info.height as usize, size as usize);
+        let mut out = vec![0u32; s * s];
+        for y in 0..s {
+            let (y0, y1) = (y * h / s, ((y + 1) * h / s).max(y * h / s + 1));
+            for x in 0..s {
+                let (x0, x1) = (x * w / s, ((x + 1) * w / s).max(x * w / s + 1));
+                let mut sum = [0u64; 4];
+                for sy in y0..y1 {
+                    for sx in x0..x1 {
+                        let i = (sy * w + sx) * 4;
+                        let a = buf[i + 3] as u64;
+                        sum[0] += buf[i] as u64 * a;
+                        sum[1] += buf[i + 1] as u64 * a;
+                        sum[2] += buf[i + 2] as u64 * a;
+                        sum[3] += a;
+                    }
+                }
+                let n = ((y1 - y0) * (x1 - x0)) as u64;
+                let a = sum[3] / n;
+                if sum[3] > 0 {
+                    let ch = |v: u64| (v / sum[3]) as u32;
+                    out[y * s + x] = (a as u32) << 24 | ch(sum[0]) << 16 | ch(sum[1]) << 8 | ch(sum[2]);
+                }
+            }
+        }
+        Some(out)
+    })()
+    .unwrap_or_else(|| vec![0; (size * size) as usize]);
+    let out = std::rc::Rc::new(out);
+    MADE.with(|m| *m.borrow_mut() = Some((size, out.clone())));
+    out
 }
 
 /// The workspace the quake window opens with, which its bar does not name.
@@ -344,117 +401,109 @@ impl App {
         Rect { x: 0, y, w: self.canvas.width, h }
     }
 
-    /// The bar: the sidebar's button and the workspaces' (the workspace's
-    /// name too, when it is not the quake one), then its panes as tabs; in
-    /// the middle the grip, dragged for the height; at the right, kept on
-    /// top, and hide.
+    /// The bar, as the main window's along its foot, its look the same: at
+    /// the left jot's own mark (the quake window is jot's, no workspace's);
+    /// then every terminal of one machine, those in its panes numbered, the
+    /// one you are in lit, any clicked shown in the pane you are in (its
+    /// layout, this desk's, never changes: only what its panes show); at
+    /// the right that machine, a button to list another's, and hide. Its
+    /// empty stretch is dragged for the window's height.
     pub(super) fn draw_quake_bar(&mut self) {
         self.quake_hits.clear();
         if !crate::quake_mode() {
             return;
         }
         let bar = self.quake_bar_rect();
-        let t = self.cur_theme;
-        let lift = if t.dark { 0xFFFFFF } else { 0x000000 };
-        let (bg, edge) = (mix(t.bg, lift, 16), mix(t.bg, lift, 34));
-        let (text, dim, faint) = if t.dark { (0xE4E4E6, 0x8A8C92, 0x55575D) } else { (0x17181B, 0x5C5F66, 0x9A9DA4) };
-        self.canvas.fill(bar, bg);
+        let c = self.cur_theme.chrome();
+        let lift = if self.cur_theme.dark { 0xFFFFFF } else { 0x000000 };
+        self.canvas.fill(bar, c.side);
         let line_y = if self.quake_bar_on_top() { bar.y + bar.h - 1 } else { bar.y };
-        self.canvas.fill(Rect { y: line_y, h: 1, ..bar }, edge);
+        self.canvas.fill(Rect { y: line_y, h: 1, ..bar }, c.edge);
         let scale = self.scale;
         let px = move |v: f32| (v * scale).round() as i32;
-        let (b, icon, r5) = (bar.h - px(6.0), px(13.0), px(5.0));
-        let by = bar.y + (bar.h - b) / 2;
-        let ty = bar.y + (bar.h - self.fonts.small.height) / 2;
+        let h = bar.h;
+        let ty = bar.y + (h - self.fonts.ui.height) / 2;
+        let bh = (h - px(5.0)).max(px(16.0));
+        let by = bar.y + (h - bh) / 2;
         let lit = self.quake_lit;
         let mut hits = Vec::new();
-        let mut button = |app: &mut App, x: i32, hit: QuakeHit, glyph: char, color: u32| -> i32 {
-            let r = Rect { x, y: by, w: b + px(2.0), h: b };
-            if lit == Some(hit) {
-                app.canvas.round_fill(r, r5, lift, 22);
+        // The square: jot's mark on jot's color.
+        let tile = Rect { x: bar.x, y: bar.y, w: h, h };
+        self.canvas.fill(tile, JOT_COLOR);
+        let m = (h as f32 * 0.9).round() as i32;
+        let mark = app_mark(m.max(1) as u32);
+        self.canvas.picture(&mark, m as u32, (0, 0, m as u32, m as u32), Rect { x: tile.x + (h - m) / 2, y: tile.y + (h - m) / 2, w: m, h: m }, tile);
+        // The right: hide; the machine, a button.
+        let hw = bh + px(4.0);
+        let hide = Rect { x: bar.x + bar.w - px(4.0) - hw, y: by, w: hw, h: bh };
+        if lit == Some(QuakeHit::Hide) {
+            self.canvas.round_fill(hide, px(5.0), lift, 30);
+        }
+        let chevron = if self.quake_bar_on_top() { crate::canvas::icons::CHEVRON_DOWN } else { crate::canvas::icons::CHEVRON_UP };
+        self.canvas.icon_in(chevron, hide, px(12.0), if lit == Some(QuakeHit::Hide) { c.text } else { c.dim });
+        hits.push((hide, QuakeHit::Hide));
+        let k = self.quake_k.min(self.machines.len().saturating_sub(1));
+        let machine = self.machine_name(k);
+        let ih = px(10.0);
+        let bw = px(8.0) + self.fonts.ui.width(&machine) + px(6.0) + ih + px(7.0);
+        let button = Rect { x: hide.x - px(6.0) - bw, y: by, w: bw, h: bh };
+        let on = lit == Some(QuakeHit::Machine);
+        self.canvas.round_fill(button, px(5.0), lift, if on { 30 } else { 14 });
+        self.canvas.text(&mut self.fonts.ui, &machine, (button.x + px(8.0)) as f32, ty, if on { c.text } else { mix(c.dim, c.text, 128) }, bar);
+        let ix = button.x + button.w - px(7.0) - ih;
+        let open = if self.quake_bar_on_top() { crate::canvas::icons::CHEVRON_DOWN } else { crate::canvas::icons::CHEVRON_UP };
+        self.canvas.icon_in(open, Rect { x: ix, y: button.y + (button.h - ih) / 2, w: ih, h: ih }, ih, c.dim);
+        hits.push((button, QuakeHit::Machine));
+        // The machine's terminals, in the order its session made them: in a
+        // pane of this window its number, the one you are in lit.
+        let end = button.x - px(12.0);
+        let focus = self.focused().map(crate::mux::base_id);
+        let mut x = tile.x + tile.w + px(6.0);
+        for t in self.side_terminals().into_iter().filter(|t| t.k == k) {
+            let num = t.pane.filter(|_| t.here).and_then(|p| self.term_number(p)).map(|n| n.to_string());
+            let label = t.label.clone();
+            let nw = num.as_ref().map_or(px(5.0), |n| self.fonts.small.width(n) + px(8.0));
+            let w = (px(8.0) + nw + px(6.0) + self.fonts.ui.width(&label) + px(9.0)).min(px(180.0));
+            if x + w > end {
+                break;
             }
-            app.canvas.icon_in(glyph, r, icon, if lit == Some(hit) { text } else { color });
+            let r = Rect { x, y: by, w, h: bh };
+            let hit = match t.pane {
+                Some(p) => QuakeHit::Term(sidebar::SideHit::Pane(p)),
+                None => QuakeHit::Term(sidebar::SideHit::Free(t.k, t.sid)),
+            };
+            let current = t.here && t.pane.map(crate::mux::base_id) == focus;
+            if current {
+                self.canvas.round_fill(r, px(5.0), lift, 34);
+            } else if lit == Some(hit) {
+                self.canvas.round_fill(r, px(5.0), lift, 16);
+            }
+            let mut cx = r.x + px(8.0);
+            match &num {
+                // Its number in a small outlined box, as the sidebar has it.
+                Some(n) => {
+                    let sh = self.fonts.small.height;
+                    let nb = Rect { x: cx, y: bar.y + (h - sh - px(2.0)) / 2, w: nw - px(2.0), h: sh + px(2.0) };
+                    self.canvas.ring(nb, px(3.0), 1, c.edge);
+                    let sty = nb.y + (nb.h - sh) / 2;
+                    self.canvas.text(&mut self.fonts.small, n, (nb.x + px(3.0)) as f32, sty, c.dim, r);
+                }
+                // In no pane here: a quiet dot, as a sidebar row has.
+                None => {
+                    let d = 2.5 * scale;
+                    self.canvas.disc(cx as f32 + d, bar.y as f32 + h as f32 / 2.0, d, c.faint);
+                }
+            }
+            cx += nw + px(6.0);
+            let color = if current { c.text } else if t.here { mix(c.dim, c.text, 160) } else { c.dim };
+            self.canvas.text_fit(&mut self.fonts.ui, &label, cx, ty, r.x + r.w - px(9.0) - cx, color, r);
             hits.push((r, hit));
-            r.x + r.w + px(2.0)
-        };
-        // The middle: the grip.
-        let mid = bar.x + bar.w / 2;
-        let grip = Rect { x: mid - px(30.0), y: bar.y, w: px(60.0), h: bar.h };
-        let gw = px(36.0);
-        let gc = if lit == Some(QuakeHit::Grip) || matches!(self.drag, Some(Drag::QuakeGrip)) { dim } else { faint };
-        self.canvas.round_fill(Rect { x: mid - gw / 2, y: bar.y + bar.h / 2 - px(1.5), w: gw, h: px(3.0).max(2) }, px(1.5), gc, 255);
-        // The right: hide.
-        let accent = mix(self.cur_accent, lift, 64);
-        let x = bar.x + bar.w - px(6.0) - (b + px(4.0));
-        let hide = if self.quake_bar_on_top() { crate::canvas::icons::CHEVRON_DOWN } else { crate::canvas::icons::CHEVRON_UP };
-        button(self, x, QuakeHit::Hide, hide, dim);
-        // The left: the sidebar, the workspaces.
-        let mut x = button(self, bar.x + px(6.0), QuakeHit::Sidebar, crate::canvas::icons::SIDEBAR, dim);
-        let ws_name = self.ws().name.clone();
-        let named = !ws_name.eq_ignore_ascii_case(QUAKE_WORKSPACE);
-        {
-            let small = &mut self.fonts.small;
-            let name_w = if named { small.width(&ws_name) + px(8.0) + px(6.0) } else { 0 };
-            let w = px(7.0) + if named { px(6.0) + name_w } else { icon } + px(4.0) + px(9.0) + px(6.0);
-            let r = Rect { x, y: by, w, h: b };
-            self.canvas.round_fill(r, r5, lift, if lit == Some(QuakeHit::Workspaces) { 30 } else { 18 });
-            let mut cx = r.x + px(7.0);
-            if named {
-                let dot = px(6.0);
-                let color = self.cur_accent;
-                self.canvas.round_fill(Rect { x: cx, y: bar.y + (bar.h - dot) / 2, w: dot, h: dot }, px(2.0), color, 255);
-                cx += dot + px(6.0);
-                cx = self.canvas.text(&mut self.fonts.small, &ws_name, cx as f32, ty, text, r) + px(4.0);
-            } else {
-                self.canvas.icon(crate::canvas::icons::LAYERS, icon, cx, bar.y + (bar.h - icon) / 2, text, r);
-                cx += icon + px(4.0);
-            }
-            let ch = px(9.0);
-            self.canvas.icon(crate::canvas::icons::CHEVRON_DOWN, ch, cx, bar.y + (bar.h - ch) / 2, dim, r);
-            hits.push((r, QuakeHit::Workspaces));
-            x = r.x + r.w + px(4.0);
+            x += w + px(2.0);
         }
-        // Its panes, as tabs, in the room up to the grip (a lone pane needs
-        // none), after the workspace's name when it has one.
-        let mut ids = Vec::new();
-        self.ws().root.panes(&mut ids);
-        if named && ids.len() > 1 {
-            x = self.canvas.text(&mut self.fonts.small, "›", (x + px(2.0)) as f32, ty, faint, bar) + px(6.0);
+        // What is left: dragged for the height.
+        if end > x {
+            hits.push((Rect { x, y: bar.y, w: end - x, h }, QuakeHit::Grip));
         }
-        let focus = self.ws().focus;
-        let end = grip.x - px(8.0);
-        let tabs: Vec<(PaneId, String)> = ids.iter().filter_map(|id| self.panes.get(id).map(|_| (*id, self.terminal_label(*id)))).collect();
-        if tabs.len() > 1 && x < end {
-            let group = Rect { x, y: by, w: 0, h: b };
-            let mut tx = x;
-            let mut rects = Vec::new();
-            for (n, (id, name)) in tabs.iter().enumerate() {
-                let num = self.term_number(*id).unwrap_or(n + 1).to_string();
-                let w = (px(9.0) + self.fonts.small.width(&num) + px(5.0) + self.fonts.small.width(name) + px(9.0)).min(px(160.0));
-                if tx + w > end {
-                    break;
-                }
-                rects.push((Rect { x: tx, y: by, w, h: b }, *id, num, name.clone()));
-                tx += w;
-            }
-            let group = Rect { w: tx - x, ..group };
-            self.canvas.ring(group, r5, 1, edge);
-            for (k, (r, id, num, name)) in rects.into_iter().enumerate() {
-                let on = id == focus;
-                if on {
-                    self.canvas.round_fill(Rect { x: r.x + 1, y: r.y + 1, w: r.w - 2, h: r.h - 2 }, r5 - 1, lift, 34);
-                } else if lit == Some(QuakeHit::Pane(id)) {
-                    self.canvas.round_fill(Rect { x: r.x + 1, y: r.y + 1, w: r.w - 2, h: r.h - 2 }, r5 - 1, lift, 16);
-                }
-                if k > 0 {
-                    self.canvas.fill(Rect { x: r.x, y: r.y + px(4.0), w: 1, h: r.h - px(8.0) }, edge);
-                }
-                let nx = self.canvas.text(&mut self.fonts.small, &num, (r.x + px(9.0)) as f32, ty, if on { accent } else { faint }, r) + px(5.0);
-                self.canvas.text_fit(&mut self.fonts.small, &name, nx, ty, r.x + r.w - px(9.0) - nx, if on { text } else { dim }, r);
-                hits.push((r, QuakeHit::Pane(id)));
-            }
-        }
-        hits.push((grip, QuakeHit::Grip));
         self.quake_hits = hits;
         self.damage.push(bar);
     }
@@ -497,13 +546,10 @@ impl App {
             return false;
         }
         match self.quake_hit_at(x, y) {
-            Some(QuakeHit::Sidebar) => self.toggle_sidebar(),
-            Some(QuakeHit::Workspaces) => self.quake_workspaces_menu(),
-            Some(QuakeHit::Pane(id)) => {
-                self.set_focus(id);
-                self.full = true;
-                self.redraw();
-            }
+            // As its row in the sidebar: shown in the pane you are in, or
+            // gone to when a pane here shows it.
+            Some(QuakeHit::Term(hit)) => self.side_row_click(hit),
+            Some(QuakeHit::Machine) => self.quake_machine_menu(),
             Some(QuakeHit::Grip) => self.drag = Some(Drag::QuakeGrip),
             Some(QuakeHit::Hide) => self.quake_hide(),
             None => {}
@@ -511,24 +557,10 @@ impl App {
         true
     }
 
-    /// The workspaces to show in the quake window, each with how many panes
-    /// it has; and a new one.
-    fn quake_workspaces_menu(&mut self) {
-        use crate::palette::{Action, Item};
-        let mut items: Vec<Option<Item>> = self
-            .workspaces
-            .iter()
-            .enumerate()
-            .map(|(i, ws)| {
-                let mut ids = Vec::new();
-                ws.root.panes(&mut ids);
-                let n = ids.len();
-                Some(Item { label: ws.name.clone(), hint: format!("{n} pane{}", if n == 1 { "" } else { "s" }), action: Action::GoTo(i) })
-            })
-            .collect();
-        items.push(None);
-        items.push(Some(Item { label: "New workspace".into(), hint: "Ctrl N".into(), action: Action::NewWorkspace }));
-        self.open_items_menu(items);
+    /// The machines, from the bar's machine: another's terminals listed.
+    fn quake_machine_menu(&mut self) {
+        let Some(&(button, _)) = self.quake_hits.iter().find(|(_, h)| *h == QuakeHit::Machine) else { return };
+        self.machine_menu_at(button, !self.quake_bar_on_top());
     }
 
     /// The grip being dragged: the window as tall as the pointer makes it.

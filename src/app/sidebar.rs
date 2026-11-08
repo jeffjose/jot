@@ -555,7 +555,7 @@ impl App {
     /// A row clicked: a terminal no pane shows into the pane you are in (in
     /// a split beside it, with Ctrl), its own running on; a shown one gone
     /// to.
-    fn side_row_click(&mut self, hit: SideHit) {
+    pub(super) fn side_row_click(&mut self, hit: SideHit) {
         match hit {
             SideHit::Free(k, sid) => {
                 let place = match self.focused() {
