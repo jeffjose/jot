@@ -219,10 +219,46 @@ struct Pane {
     tee: Option<Tee>,
     /// What its program was doing, as last told.
     proc: Option<crate::pty::Proc>,
-    /// The window it is in, if one has it.
-    owner: Option<u64>,
-    /// The name of the window that has it, or last had it.
-    window: u64,
+    /// The windows showing it, by their connections: any number, each a
+    /// view of the same terminal.
+    viewers: Vec<u64>,
+    /// The names of the windows that show it, or last did.
+    windows: Vec<u64>,
+    /// The size each viewer gives it, and the size it has: the one typed
+    /// into last.
+    sizes: HashMap<u64, (u16, u16, (u32, u32))>,
+    size: (u16, u16, (u32, u32)),
+}
+
+impl Pane {
+    /// Shown in window `c` (named `name`) too: told again what it is
+    /// doing.
+    fn add_viewer(&mut self, c: u64, name: u64) {
+        if !self.viewers.contains(&c) {
+            self.viewers.push(c);
+        }
+        if !self.windows.contains(&name) {
+            self.windows.push(name);
+        }
+        self.raw = None;
+        self.proc = None;
+        if let Some(t) = &mut self.tee {
+            t.told = t.state.lines;
+        }
+    }
+
+    fn held(&self, id: u64) -> Held {
+        Held { pane: id, pid: self.pty.pid, cmd: self.cmd.clone(), log: self.log.encode(), tee: self.tee.as_ref().map(|t| t.state.clone()), queue: self.queue.clone() }
+    }
+
+    /// The size viewer `c` gives it, made its own if it is not already.
+    fn size_for(&mut self, c: u64) {
+        if let Some(s) = self.sizes.get(&c).copied().filter(|s| *s != self.size) {
+            self.pty.resize(s.0, s.1, s.2);
+            self.log.size(s.0, s.1);
+            self.size = s;
+        }
+    }
 }
 
 enum Ev {
@@ -258,10 +294,19 @@ impl Server {
         }
     }
 
-    /// Said to the window a pane is in, if one has it.
+    /// Said to every window showing a pane.
     fn tell(&mut self, pane: u64, m: ToClient) {
-        if let Some(c) = self.panes.get(&pane).and_then(|p| p.owner) {
-            self.send(c, m);
+        let viewers = self.panes.get(&pane).map(|p| p.viewers.clone()).unwrap_or_default();
+        if viewers.is_empty() {
+            return;
+        }
+        let frame = m.encode();
+        for c in viewers {
+            if let Some(s) = self.conns.get_mut(&c) {
+                if s.write_all(&frame).is_err() {
+                    let _ = s.shutdown(std::net::Shutdown::Both);
+                }
+            }
         }
     }
 
@@ -326,7 +371,7 @@ impl Server {
         // Commands waiting on this one, in panes no window has, go on.
         if let Some(exit) = ended {
             let failed = exit.is_some_and(|e| e != 0);
-            for (_, other) in self.panes.iter_mut().filter(|(_, o)| o.owner.is_none()) {
+            for (_, other) in self.panes.iter_mut().filter(|(_, o)| o.viewers.is_empty()) {
                 let (go, stay): (Vec<_>, Vec<_>) = std::mem::take(&mut other.queue.after).into_iter().partition(|(t, _)| *t == id);
                 other.queue.after = stay;
                 if !go.is_empty() {
@@ -345,22 +390,12 @@ impl Server {
     /// were in, are its.
     fn welcome(&mut self, c: u64) {
         // The quake window's panes and workspaces wait for the next one.
-        let free = |p: &&Pane| p.owner.is_none() && p.window != super::QUAKE_WINDOW;
-        let mut held: Vec<Held> = self
-            .panes
-            .iter()
-            .filter(|(_, p)| free(p))
-            .map(|(id, p)| Held { pane: *id, pid: p.pty.pid, cmd: p.cmd.clone(), log: p.log.encode(), tee: p.tee.as_ref().map(|t| t.state.clone()), queue: p.queue.clone() })
-            .collect();
+        let free = |p: &&Pane| p.viewers.is_empty() && !p.windows.contains(&super::QUAKE_WINDOW);
+        let mut held: Vec<Held> = self.panes.iter().filter(|(_, p)| free(p)).map(|(id, p)| p.held(*id)).collect();
         held.sort_by_key(|h| h.pane);
+        let name = self.names.get(&c).copied().unwrap_or(0);
         for p in self.panes.values_mut().filter(|p| free(&&**p)) {
-            p.owner = Some(c);
-            p.window = self.names.get(&c).copied().unwrap_or(0);
-            p.raw = None;
-            p.proc = None;
-            if let Some(t) = &mut p.tee {
-                t.told = t.state.lines;
-            }
+            p.add_viewer(c, name);
         }
         let (quake, left): (Vec<_>, Vec<_>) = std::mem::take(&mut self.left).into_iter().partition(|(w, _)| *w == super::QUAKE_WINDOW);
         self.left = quake;
@@ -383,23 +418,19 @@ impl Server {
             if let Some(st) = self.conns.remove(&old) {
                 let _ = st.shutdown(std::net::Shutdown::Both);
             }
+            for p in self.panes.values_mut() {
+                p.viewers.retain(|v| *v != old);
+            }
         }
         if let Some(i) = self.left.iter().position(|(w, _)| *w == window) {
             let (_, l) = self.left.remove(i);
             self.layouts.insert(c, l);
         }
         let mut held = Vec::new();
-        // Its own, and those it names that no other window has.
-        let live: Vec<u64> = self.names.iter().filter(|(_, w)| **w != window).map(|(conn, _)| *conn).collect();
-        for (id, p) in self.panes.iter_mut().filter(|(id, p)| p.window == window || (want.contains(id) && !p.owner.is_some_and(|o| live.contains(&o)))) {
-            p.window = window;
-            p.owner = Some(c);
-            p.raw = None;
-            p.proc = None;
-            if let Some(t) = &mut p.tee {
-                t.told = t.state.lines;
-            }
-            held.push(Held { pane: *id, pid: p.pty.pid, cmd: p.cmd.clone(), log: p.log.encode(), tee: p.tee.as_ref().map(|t| t.state.clone()), queue: p.queue.clone() });
+        // Its own, and those it names, whatever other windows show them.
+        for (id, p) in self.panes.iter_mut().filter(|(id, p)| p.windows.contains(&window) || want.contains(id)) {
+            p.add_viewer(c, window);
+            held.push(p.held(*id));
         }
         held.sort_by_key(|h| h.pane);
         // Its workspaces, as it last said them: a window that kept them
@@ -424,17 +455,17 @@ impl Server {
                 let Some(layout) = &ws.layout else { continue };
                 let ids: Vec<u64> = ids_in_order(layout).into_iter().filter(|id| self.panes.contains_key(id)).collect();
                 // Gone, or this window's already.
-                if ids.is_empty() || ids.iter().all(|id| self.panes.get(id).is_some_and(|p| p.owner == Some(c))) {
+                if ids.is_empty() || ids.iter().all(|id| self.panes.get(id).is_some_and(|p| p.viewers.contains(&c))) {
                     named.extend(&ids);
                     continue;
                 }
                 named.extend(&ids);
                 // Shown elsewhere only if its panes are a live window's.
-                let shown = elsewhere && ids.iter().any(|id| self.panes.get(id).is_some_and(|p| p.owner.is_some_and(|o| o != c)));
+                let shown = elsewhere && ids.iter().any(|id| self.panes.get(id).is_some_and(|p| p.viewers.iter().any(|v| *v != c)));
                 workspaces.push(Listed { spec: toml::to_string(&ws).unwrap_or_default(), panes: ids, elsewhere: shown, label: String::new(), running: false });
             }
         }
-        let mut loose: Vec<u64> = self.panes.iter().filter(|(id, p)| p.owner.is_none() && !named.contains(id)).map(|(id, _)| *id).collect();
+        let mut loose: Vec<u64> = self.panes.iter().filter(|(id, p)| p.viewers.is_empty() && !named.contains(id)).map(|(id, _)| *id).collect();
         loose.sort();
         // Panes in no workspace, each on its own: what it runs, or where.
         for id in loose {
@@ -452,21 +483,12 @@ impl Server {
     /// workspace, if a window gone left it, is the taker's now.
     fn take(&mut self, c: u64, panes: &[u64]) -> ToClient {
         let window = self.names.get(&c).copied().unwrap_or(0);
-        let live: Vec<u64> = self.windows.iter().copied().filter(|w| *w != c).collect();
         let mut held = Vec::new();
+        // Shown here too, whatever other windows show them.
         for id in panes {
             let Some(p) = self.panes.get_mut(id) else { continue };
-            if p.owner.is_some_and(|o| live.contains(&o)) {
-                continue;
-            }
-            p.owner = Some(c);
-            p.window = window;
-            p.raw = None;
-            p.proc = None;
-            if let Some(t) = &mut p.tee {
-                t.told = t.state.lines;
-            }
-            held.push(Held { pane: *id, pid: p.pty.pid, cmd: p.cmd.clone(), log: p.log.encode(), tee: p.tee.as_ref().map(|t| t.state.clone()), queue: p.queue.clone() });
+            p.add_viewer(c, window);
+            held.push(p.held(*id));
         }
         let taken: Vec<u64> = held.iter().map(|h| h.pane).collect();
         self.left.retain(|(_, l)| {
@@ -513,7 +535,7 @@ impl Server {
                 });
                 let mut log = Log::default();
                 log.size(cols, rows);
-                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, proc: None, owner: Some(c), window: self.names.get(&c).copied().unwrap_or(0) });
+                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, proc: None, viewers: vec![c], windows: vec![self.names.get(&c).copied().unwrap_or(0)], sizes: HashMap::from([(c, (cols, rows, px))]), size: (cols, rows, px) });
                 pid
             }
             Err(e) => {
@@ -623,15 +645,17 @@ pub fn run(path: &Path) {
                     let (pane, pid) = s.spawn(&tx, c, cmd, cwd, cols, rows, px);
                     s.send(c, ToClient::Spawned { pane, pid });
                 }
+                // Typed into from a window: the size that window gives it, first.
                 ToServer::Input { pane, bytes } => {
-                    if let Some(p) = s.panes.get(&pane) {
+                    if let Some(p) = s.panes.get_mut(&pane) {
+                        p.size_for(c);
                         let _ = p.keys.send(bytes);
                     }
                 }
                 ToServer::Resize { pane, cols, rows, px } => {
                     if let Some(p) = s.panes.get_mut(&pane) {
-                        p.pty.resize(cols, rows, px);
-                        p.log.size(cols, rows);
+                        p.sizes.insert(c, (cols, rows, px));
+                        p.size_for(c);
                     }
                 }
                 ToServer::Close { pane } => {
@@ -672,8 +696,9 @@ pub fn run(path: &Path) {
                     s.send(c, taken);
                 }
                 ToServer::Release { pane } => {
-                    if let Some(p) = s.panes.get_mut(&pane).filter(|p| p.owner == Some(c)) {
-                        p.owner = None;
+                    if let Some(p) = s.panes.get_mut(&pane) {
+                        p.viewers.retain(|v| *v != c);
+                        p.sizes.remove(&c);
                     }
                 }
                 ToServer::Hello { .. } | ToServer::Peek => {}
@@ -686,8 +711,9 @@ pub fn run(path: &Path) {
                     // Its panes and workspaces, for the next window; none if
                     // all its panes ended.
                     let mut any = false;
-                    for p in s.panes.values_mut().filter(|p| p.owner == Some(c)) {
-                        p.owner = None;
+                    for p in s.panes.values_mut().filter(|p| p.viewers.contains(&c)) {
+                        p.viewers.retain(|v| *v != c);
+                        p.sizes.remove(&c);
                         any = true;
                     }
                     let name = s.names.remove(&c).unwrap_or(0);
@@ -702,12 +728,8 @@ pub fn run(path: &Path) {
             }
             Ev::Out(id, b) => s.output(id, b),
             Ev::Ended(id) => {
-                let owner = s.panes.get(&id).and_then(|p| p.owner);
-                if s.panes.remove(&id).is_some() {
-                    if let Some(c) = owner {
-                        s.send(c, ToClient::Exit { pane: id });
-                    }
-                }
+                s.tell(id, ToClient::Exit { pane: id });
+                s.panes.remove(&id);
                 crate::pty::reap();
                 if s.panes.is_empty() && s.windows.is_empty() {
                     break;
@@ -719,7 +741,7 @@ pub fn run(path: &Path) {
                 for id in ids {
                     s.fire(id);
                     let Some(p) = s.panes.get_mut(&id) else { continue };
-                    if p.owner.is_none() {
+                    if p.viewers.is_empty() {
                         continue;
                     }
                     let raw = p.pty.raw();

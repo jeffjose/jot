@@ -3091,9 +3091,6 @@ impl App {
     /// the workspace made when they come, as it was there.
     pub(super) fn open_listed(&mut self, k: usize, i: usize) {
         let Some(l) = self.machines.get(k).and_then(|m| m.listing.get(i)).cloned() else { return };
-        if l.elsewhere {
-            return self.toast("Open in another window", "Close it there to open it here", None, None);
-        }
         let Ok(mut spec) = toml::from_str::<WorkspaceSpec>(&l.spec) else { return };
         spec.host = (k > 0).then(|| self.machines[k].host.clone()).flatten();
         // A pane on its own comes beside the one you are in; a workspace

@@ -24,7 +24,7 @@ use std::time::Duration;
 /// Bumped when the messages change: a window and a session that differ
 /// do not talk. (Hello and Refused keep their shape across versions, so
 /// that the difference can be told.)
-pub const PROTO: u32 = 6;
+pub const PROTO: u32 = 7;
 
 /// A pane's queue as both ends keep it: commands waiting for the prompt,
 /// whether a failure has held them, and those waiting on another pane's
