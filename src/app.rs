@@ -703,11 +703,12 @@ impl App {
         let sibling = self.views(base).first().and_then(|v| self.panes.get(v));
         let views = sibling.map(|p| p.pty.views.clone()).unwrap_or_default();
         let (raw, proc) = sibling.map(|p| (p.pty.raw, p.pty.proc.clone())).unwrap_or_default();
+        let speaks = sibling.map(|p| p.pty.speaks.clone()).unwrap_or_else(|| std::rc::Rc::new(std::cell::Cell::new(true)));
         views.borrow_mut().push(id);
-        let pty = Pty { pane, machine: m, pid, mux: client.clone(), raw, proc, end: false, views: views.clone(), view: id };
+        let pty = Pty { pane, machine: m, pid, mux: client.clone(), raw, proc, end: false, views: views.clone(), view: id, speaks: speaks.clone() };
         // Only the first view answers what the program asks of its terminal
         // (where the cursor is, and such); two would answer twice.
-        let mut answer = reply_to(&client, pane);
+        let mut answer = reply_to(&client, pane, speaks);
         let reply: vt::Reply = Box::new(move |bytes: &[u8]| {
             if views.borrow().first() == Some(&id) {
                 answer(bytes);
@@ -2097,6 +2098,10 @@ impl App {
                 // foot) lands where it should.
                 Output::Size(id, cols, rows) => {
                     let (cw, ch) = (self.fonts.cell_w as u32, self.fonts.cell_h as u32);
+                    // Answering for it while it is at this window's size.
+                    if let Some(p) = self.views(id).first().and_then(|v| self.panes.get(v)) {
+                        p.pty.speaks.set((cols, rows) == p.want);
+                    }
                     for id in self.views(id) {
                         if let Some(p) = self.panes.get_mut(&id).filter(|p| (p.cols, p.rows) != (cols, rows)) {
                             crate::debuglog::log(format!("pane {id:x}: the session says {cols}x{rows}"));
@@ -3274,7 +3279,7 @@ impl App {
                 self.held.insert(id, h);
                 continue;
             };
-            p.term = Terminal::new(p.cols, p.rows, self.config.scrollback, p.theme, reply_to(&p.pty.mux, h.pane));
+            p.term = Terminal::new(p.cols, p.rows, self.config.scrollback, p.theme, reply_to(&p.pty.mux, h.pane, p.pty.speaks.clone()));
             p.shell = commands::Shell::default();
             p.shell.queue = h.queue.items.clone();
             p.shell.paused = h.queue.paused;
@@ -3372,10 +3377,12 @@ impl App {
 
 /// What a pane's terminal answers its program (cursor reports, colors
 /// asked for), sent to it in its session; not while replaying.
-fn reply_to(client: &Arc<crate::mux::Client>, pane: u64) -> vt::Reply {
+/// What the program asks of its terminal answered, while this window
+/// `speaks` for it (see [`Pty::speaks`]).
+fn reply_to(client: &Arc<crate::mux::Client>, pane: u64, speaks: std::rc::Rc<std::cell::Cell<bool>>) -> vt::Reply {
     let mux = client.clone();
     Box::new(move |bytes: &[u8]| {
-        if !mux.mute.load(Ordering::Acquire) {
+        if speaks.get() && !mux.mute.load(Ordering::Acquire) {
             mux.input(pane, bytes);
         }
     })

@@ -239,6 +239,14 @@ pub struct Pty {
     pub views: std::rc::Rc<std::cell::RefCell<Vec<u64>>>,
     /// Which of them this is (its id in the window).
     pub view: u64,
+    /// Whether this window answers what the program asks of its terminal:
+    /// the session has it at this window's size. Another window showing it
+    /// at another size answers while it has it at that one, and only it: an
+    /// answer reaches the session as a key typed does, and makes the
+    /// answering window's size the pane's, so two answering at two sizes
+    /// resized it back and forth, the program drawing itself again at each
+    /// and asking again.
+    pub speaks: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 impl Pty {
