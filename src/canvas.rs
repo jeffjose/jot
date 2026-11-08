@@ -46,7 +46,11 @@ impl Canvas {
     pub fn resize(&mut self, width: i32, height: i32) {
         self.width = width.max(1);
         self.height = height.max(1);
-        self.pixels = vec![0; (self.width * self.height) as usize];
+        // The memory kept from one size to the next: a drag goes through
+        // many, and a fresh 33 MB at each (at 4K) is a page fault for every
+        // 4 KB of it. Nor is it cleared: what it held is drawn over whole by
+        // the full frame a new size brings.
+        self.pixels.resize((self.width * self.height) as usize, 0);
     }
 
     /// The part of `r` that may be drawn in: on the canvas, inside the clip.
@@ -69,6 +73,30 @@ impl Canvas {
         for y in y0..y1 {
             let row = (y * self.width) as usize;
             self.pixels[row + x0 as usize..row + x1 as usize].fill(color);
+        }
+    }
+
+    /// `r` filled but for the holes in it (which are filled by what is
+    /// drawn there): at 4K the whole canvas is 33 MB written for nothing
+    /// where panes paint their own.
+    pub fn fill_except(&mut self, r: Rect, holes: &[Rect], color: u32) {
+        let (x0, y0, x1, y1) = self.bounds(r);
+        let mut cuts: Vec<(i32, i32)> = Vec::with_capacity(holes.len());
+        for y in y0..y1 {
+            cuts.clear();
+            cuts.extend(holes.iter().filter(|h| h.y <= y && y < h.y + h.h).map(|h| (h.x.max(x0), (h.x + h.w).min(x1))));
+            cuts.sort_unstable();
+            let row = (y * self.width) as usize;
+            let mut x = x0;
+            for &(a, b) in &cuts {
+                if a > x {
+                    self.pixels[row + x as usize..row + a as usize].fill(color);
+                }
+                x = x.max(b);
+            }
+            if x < x1 {
+                self.pixels[row + x as usize..row + x1 as usize].fill(color);
+            }
         }
     }
 

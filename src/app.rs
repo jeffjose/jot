@@ -69,6 +69,8 @@ const ROAM_BG: u32 = 0x6E56CF; // violet 9
 /// How long the window must keep a size before the GPU is set up for it;
 /// until then frames go up the CPU's way, as jog does with its videos.
 const RESIZE_SETTLE: Duration = Duration::from_millis(200);
+/// How long the window keeps a size before its programs are told it.
+const SIZE_SETTLE: Duration = Duration::from_millis(150);
 
 pub struct Pane {
     // The terminal is dropped before the PTY its replies are written to.
@@ -209,6 +211,11 @@ pub struct App {
     /// its size: a new swapchain for each size of a drag stalls each frame
     /// for several milliseconds, where the CPU puts the frame up in one.
     gpu_settle: Option<Instant>,
+    /// While the window is being resized, when its programs are next told
+    /// their size: each telling has every program draw itself again (a
+    /// shell its prompt, Claude Code all it shows), so a drag tells them
+    /// once, when it stops, the panes reflowing here meanwhile.
+    size_settle: Option<Instant>,
     damage: Vec<Rect>,
     mods: ModifiersState,
     pointer: (i32, i32),
@@ -492,6 +499,7 @@ impl App {
             full: true,
             resized: None,
             gpu_settle: None,
+            size_settle: None,
             damage: Vec::new(),
             mods: ModifiersState::empty(),
             pointer: (0, 0),
@@ -929,6 +937,7 @@ impl App {
         if self.gpu.is_some() {
             self.gpu_settle = Some(Instant::now() + RESIZE_SETTLE);
         }
+        self.size_settle = Some(Instant::now() + SIZE_SETTLE);
         // Not relayout: a redraw asked for while drawing is one frame more.
         self.lay_out();
     }
@@ -996,18 +1005,23 @@ impl App {
             (from().map(|s| s.0).min().unwrap_or(1), from().map(|s| s.1).min().unwrap_or(1))
         };
         let sized: Vec<(PaneId, Rect, Rect, u16, u16)> = fit.iter().map(|&(id, rect, content, ..)| { let (c, r) = size_of(id); (id, rect, content, c, r) }).collect();
+        let telling = self.size_settle.is_none();
         for (id, rect, content, cols, rows) in sized {
             let Some(p) = self.panes.get_mut(&id) else { continue };
             // Only a change of rows or columns is told to the program: a
             // shell such as tcsh draws its prompt again on each telling.
             // The session makes this window's size the pane's, and says so
             // to every window showing it (Output::Size); this window takes
-            // it at once.
+            // it at once. While the window is being resized the program is
+            // told only once it holds a size (see size_settle); the pane
+            // reflows here meanwhile.
             if (cols, rows) != p.want {
-                crate::debuglog::log(format!("pane {id:x}: {}x{} -> {cols}x{rows}", p.want.0, p.want.1));
-                p.want = (cols, rows);
-                p.resized = Instant::now();
-                p.pty.resize(cols, rows, ((cols as i32 * cw) as u32, (rows as i32 * ch) as u32));
+                if telling {
+                    crate::debuglog::log(format!("pane {id:x}: {}x{} -> {cols}x{rows}", p.want.0, p.want.1));
+                    p.want = (cols, rows);
+                    p.resized = Instant::now();
+                    p.pty.resize(cols, rows, ((cols as i32 * cw) as u32, (rows as i32 * ch) as u32));
+                }
                 if (cols, rows) != (p.cols, p.rows) {
                     p.term.resize(cols, rows, cw as u32, ch as u32);
                     p.cols = cols;
@@ -1298,6 +1312,9 @@ impl App {
     fn set_font_size(&mut self, size: f32) {
         self.font_size = size.clamp(6.0, 48.0);
         self.fonts = Fonts::new(&self.font_choice(), self.scale);
+        // Its programs told the new size once the presses stop, not at each:
+        // each telling has them draw all they show again.
+        self.size_settle = Some(Instant::now() + SIZE_SETTLE);
         self.relayout();
     }
 
@@ -2282,8 +2299,6 @@ impl App {
         if full {
             // The sidebar's button, tucked away, is placed again this frame.
             self.side_toggle = None;
-            self.canvas.fill(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height }, self.cur_theme.divider());
-            self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
         }
         let ids: Vec<PaneId> = if let Some(z) = self.ws().zoom {
             vec![z]
@@ -2292,6 +2307,22 @@ impl App {
             self.ws().root.panes(&mut v);
             v
         };
+        if full {
+            // The ground, but where a pane paints its own (all of it under
+            // its caption, a full frame drawing every pane).
+            let cap_h = self.caption_h();
+            let holes: Vec<Rect> = ids
+                .iter()
+                .filter(|id| !self.ws().spaces.contains(id) && !self.ws().minimized.contains(id))
+                .filter_map(|id| self.panes.get(id).map(|p| p.rect))
+                .filter(|r| r.h > cap_h && r.w > 0)
+                .map(|r| Rect { x: r.x, y: r.y + cap_h, w: r.w, h: r.h - cap_h })
+                .collect();
+            let whole = Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height };
+            let ground = self.cur_theme.divider();
+            self.canvas.fill_except(whole, &holes, ground);
+            self.damage.push(whole);
+        }
         let focus = self.focused();
         // Under the roaming terminal, panes are drawn only when all of it
         // is, so that what they write does not land on top of it.
@@ -3034,6 +3065,16 @@ impl ApplicationHandler<()> for App {
         let printing = self.print_tick();
         let soon = if due.is_empty() && !printing { Duration::from_secs(1) } else { Duration::from_millis(50) };
         event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + soon));
+        // The window has kept its size: its programs told it, each drawing
+        // itself again once.
+        if let Some(at) = self.size_settle {
+            if at <= Instant::now() {
+                self.size_settle = None;
+                self.relayout();
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(at.min(Instant::now() + soon)));
+            }
+        }
         // The window has kept its size: back to the GPU, set up for it
         // when the frame, all of it, is sent up.
         if let Some(at) = self.gpu_settle {

@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::process::Command;
+use std::rc::Rc;
 
 use fontdue::{Font, FontSettings};
 use swash::scale::{Render, ScaleContext, Source};
@@ -57,10 +58,10 @@ pub struct Fonts {
     pub cell_w: i32,
     pub cell_h: i32,
     baseline: i32,
-    regular: Face,
-    bold: Face,
+    regular: Rc<Face>,
+    bold: Rc<Face>,
     /// Fonts found for characters the terminal's font lacks, by file.
-    fallback: Vec<Face>,
+    fallback: Vec<Rc<Face>>,
     fallback_files: HashMap<String, usize>,
     /// Which font has each character: None for the terminal's own, else
     /// a fallback; a character no font has is drawn with its blank.
@@ -189,29 +190,56 @@ struct Raster {
     lcd: bool,
 }
 
-/// The terminal's font, regular and bold.
-fn terminal_font(family: &str, with_bold: bool) -> (Face, Face) {
-    if !with_bold {
-        let (regular, _) = terminal_font(family, true);
-        let again = Face::new(regular.bytes.clone(), regular.index).unwrap();
-        return (regular, again);
-    }
-    if !family.eq_ignore_ascii_case(TERMINAL_DEFAULT) {
-        if let Some(regular) = find(family, "medium").or_else(|| find(family, "regular")) {
-            let bold = find(family, "bold").unwrap_or_else(|| find(family, "regular").unwrap_or_else(|| Face::new(FIRA.to_vec(), 0).unwrap()));
-            return (regular, bold);
-        }
-    }
-    (Face::new(FIRA.to_vec(), 0).unwrap(), Face::new(FIRA_BOLD.to_vec(), 0).unwrap())
+thread_local! {
+    /// Faces as loaded, by what they were asked for: a font is read and
+    /// parsed once, whatever sizes it is made in afterwards (a change of
+    /// size, or of the screen's scale, makes only the sizes again).
+    static FACES: std::cell::RefCell<HashMap<String, (Rc<Face>, Rc<Face>)>> = Default::default();
+    /// The terminal's fallbacks: for each character fontconfig was asked
+    /// about, the file with it; and those files' faces.
+    static TERM_BY_CHAR: std::cell::RefCell<HashMap<char, Option<String>>> = Default::default();
+    static TERM_BY_FILE: std::cell::RefCell<HashMap<String, Rc<Face>>> = Default::default();
 }
 
-fn interface_font(family: &str) -> Face {
-    if !family.eq_ignore_ascii_case(INTERFACE_DEFAULT) {
-        if let Some(f) = find(family, "medium").or_else(|| find(family, "regular")) {
-            return f;
-        }
+/// A face loaded once, under `key`.
+fn loaded(key: String, load: impl FnOnce() -> (Rc<Face>, Rc<Face>)) -> (Rc<Face>, Rc<Face>) {
+    if let Some(f) = FACES.with(|m| m.borrow().get(&key).cloned()) {
+        return f;
     }
-    Face::new(GEIST.to_vec(), 0).unwrap()
+    let f = load();
+    FACES.with(|m| m.borrow_mut().insert(key, f.clone()));
+    f
+}
+
+/// The terminal's font, regular and bold.
+fn terminal_font(family: &str, with_bold: bool) -> (Rc<Face>, Rc<Face>) {
+    loaded(format!("terminal|{family}|{with_bold}"), || {
+        if !with_bold {
+            let (regular, _) = terminal_font(family, true);
+            return (regular.clone(), regular);
+        }
+        if !family.eq_ignore_ascii_case(TERMINAL_DEFAULT) {
+            if let Some(regular) = find(family, "medium").or_else(|| find(family, "regular")) {
+                let bold = find(family, "bold").unwrap_or_else(|| find(family, "regular").unwrap_or_else(|| Face::new(FIRA.to_vec(), 0).unwrap()));
+                return (Rc::new(regular), Rc::new(bold));
+            }
+        }
+        (Rc::new(Face::new(FIRA.to_vec(), 0).unwrap()), Rc::new(Face::new(FIRA_BOLD.to_vec(), 0).unwrap()))
+    })
+}
+
+fn interface_font(family: &str) -> Rc<Face> {
+    loaded(format!("interface|{family}"), || {
+        if !family.eq_ignore_ascii_case(INTERFACE_DEFAULT) {
+            if let Some(f) = find(family, "medium").or_else(|| find(family, "regular")) {
+                let f = Rc::new(f);
+                return (f.clone(), f);
+            }
+        }
+        let f = Rc::new(Face::new(GEIST.to_vec(), 0).unwrap());
+        (f.clone(), f)
+    })
+    .0
 }
 
 /// The font families installed, by name, each once, A to Z: only those
@@ -277,15 +305,29 @@ impl Fonts {
         w
     }
 
-    /// Asks fontconfig for a font with `c`, once per character.
+    /// Asks fontconfig for a font with `c`, once per character for as
+    /// long as jot runs (not again with each size).
     fn find_fallback(&mut self, c: char) -> Option<usize> {
-        let pattern = format!("monospace:charset={:x}:color=false", c as u32);
-        let out = Command::new("fc-match").args(["-f", "%{file}", &pattern]).output().ok()?;
-        let file = String::from_utf8(out.stdout).ok()?;
+        let file = match TERM_BY_CHAR.with(|m| m.borrow().get(&c).cloned()) {
+            Some(file) => file?,
+            None => {
+                let pattern = format!("monospace:charset={:x}:color=false", c as u32);
+                let file = Command::new("fc-match").args(["-f", "%{file}", &pattern]).output().ok().and_then(|o| String::from_utf8(o.stdout).ok());
+                TERM_BY_CHAR.with(|m| m.borrow_mut().insert(c, file.clone()));
+                file?
+            }
+        };
         if let Some(&i) = self.fallback_files.get(&file) {
             return (self.fallback[i].font.lookup_glyph_index(c) != 0).then_some(i);
         }
-        let font = Face::new(std::fs::read(&file).ok()?, 0)?;
+        let font = match TERM_BY_FILE.with(|m| m.borrow().get(&file).cloned()) {
+            Some(f) => f,
+            None => {
+                let f = Rc::new(Face::new(std::fs::read(&file).ok()?, 0)?);
+                TERM_BY_FILE.with(|m| m.borrow_mut().insert(file.clone(), f.clone()));
+                f
+            }
+        };
         let i = self.fallback.len();
         self.fallback.push(font);
         self.fallback_files.insert(file, i);
@@ -409,7 +451,7 @@ impl Fonts {
 
 /// An interface font at one size, for jot's own words.
 pub struct UiFont {
-    face: Face,
+    face: Rc<Face>,
     scaler: ScaleContext,
     pub lcd: Option<Lcd>,
     pub px: f32,
@@ -419,8 +461,9 @@ pub struct UiFont {
 }
 
 impl UiFont {
-    fn new(face: &Face, px: f32, lcd: Option<Lcd>) -> UiFont {
-        let face = Face::new(face.bytes.clone(), face.index).expect("interface font");
+    fn new(face: &Rc<Face>, px: f32, lcd: Option<Lcd>) -> UiFont {
+        // The face shared, parsed once: only the size is its own.
+        let face = face.clone();
         let m = face.font.horizontal_line_metrics(px).expect("line metrics");
         // The ascent on a whole pixel, as hinting puts the tops of letters.
         UiFont { face, scaler: ScaleContext::new(), lcd, px, ascent: m.ascent.round() as i32, height: (m.ascent - m.descent).ceil() as i32, cache: HashMap::new() }
