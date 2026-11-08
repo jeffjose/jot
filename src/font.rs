@@ -427,16 +427,28 @@ impl UiFont {
     }
 
     /// A character's coverage, hinted as the terminal's are, with the
-    /// font's own advance so words keep their width.
+    /// font's own advance so words keep their width. A character the
+    /// interface's font lacks (a program's title often has symbols: a
+    /// spinner, a star, an emoji) is drawn from a font that has it, as
+    /// fontconfig finds; none has it, it is left out, not drawn as the
+    /// font's box for a missing letter.
     pub fn glyph(&mut self, c: char) -> &(fontdue::Metrics, Vec<u8>) {
         if !self.cache.contains_key(&c) {
-            let mut m = self.face.font.metrics(c, self.px);
-            let r = self.face.raster(&mut self.scaler, self.face.font.lookup_glyph_index(c), self.px, self.lcd);
-            m.xmin = r.left;
-            m.width = r.width;
-            m.height = r.height;
-            m.ymin = r.top - r.height as i32;
-            self.cache.insert(c, (m, r.coverage));
+            let own = self.face.font.lookup_glyph_index(c) != 0 || c.is_whitespace();
+            let fallback = if own { None } else { ui_fallback(c) };
+            let face = fallback.as_deref().unwrap_or(&self.face);
+            let made = if own || fallback.is_some() {
+                let mut m = face.font.metrics(c, self.px);
+                let r = face.raster(&mut self.scaler, face.font.lookup_glyph_index(c), self.px, self.lcd);
+                m.xmin = r.left;
+                m.width = r.width;
+                m.height = r.height;
+                m.ymin = r.top - r.height as i32;
+                (m, r.coverage)
+            } else {
+                (fontdue::Metrics::default(), Vec::new())
+            };
+            self.cache.insert(c, made);
         }
         &self.cache[&c]
     }
@@ -705,4 +717,33 @@ pub fn lcd_for(setting: &str) -> Option<Lcd> {
         }
         from(&run("gsettings", &["get", "org.gnome.desktop.interface", "font-rgba-order"])?)
     })
+}
+
+/// A font with `c` in it for the interface's text, asked of fontconfig
+/// once per character and kept once loaded, shared by every interface
+/// size.
+fn ui_fallback(c: char) -> Option<std::rc::Rc<Face>> {
+    thread_local! {
+        static BY_CHAR: std::cell::RefCell<HashMap<char, Option<std::rc::Rc<Face>>>> = Default::default();
+        static BY_FILE: std::cell::RefCell<HashMap<String, std::rc::Rc<Face>>> = Default::default();
+    }
+    if let Some(f) = BY_CHAR.with(|m| m.borrow().get(&c).cloned()) {
+        return f;
+    }
+    let found = (|| {
+        let pattern = format!("sans:charset={:x}:color=false", c as u32);
+        let out = Command::new("fc-match").args(["-f", "%{file}", &pattern]).output().ok()?;
+        let file = String::from_utf8(out.stdout).ok()?;
+        let face = match BY_FILE.with(|m| m.borrow().get(&file).cloned()) {
+            Some(f) => f,
+            None => {
+                let f = std::rc::Rc::new(Face::new(std::fs::read(&file).ok()?, 0)?);
+                BY_FILE.with(|m| m.borrow_mut().insert(file, f.clone()));
+                f
+            }
+        };
+        (face.font.lookup_glyph_index(c) != 0).then_some(face)
+    })();
+    BY_CHAR.with(|m| m.borrow_mut().insert(c, found.clone()));
+    found
 }
