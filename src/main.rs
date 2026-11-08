@@ -66,7 +66,9 @@ Keys:
   Ctrl r               restart the running command (Ctrl Shift r: kill it first)
   Alt Shift o          move pane to a new window, and back
   Alt arrows, Alt =    resize pane, equalize pane sizes
-  Alt 1-9, Alt , .     go to workspace, previous / next workspace
+  Alt 1-9              go to workspace
+  Alt , / Alt .        the terminal before / after in this pane (those no pane shows)
+  Alt '                show another terminal in this pane
   Ctrl n, Alt Shift n  new workspace, in this pane's folder
   Alt `                toggle roaming terminal
   Alt p                copy mode

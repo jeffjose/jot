@@ -47,6 +47,7 @@ mod restore;
 mod settings;
 mod slash;
 mod sidebar;
+mod terminals;
 mod space;
 mod toast;
 mod watch;
@@ -314,7 +315,7 @@ pub struct App {
     /// The sidebar: shown or tucked away, its width when shown (points),
     /// what can be clicked in it, and what the pointer is on.
     /// Workspaces asked for (Take), to be opened when their panes come.
-    taking: Vec<(usize, WorkspaceSpec, bool)>,
+    taking: Vec<(usize, WorkspaceSpec, terminals::Place)>,
     /// When the machines were last asked what they hold.
     listed_at: Instant,
     sidebar_open: bool,
@@ -986,9 +987,7 @@ impl App {
         let Some(c) = self.closed.pop() else { return };
         // Still running where it was: brought back as it is, beside you.
         if let Some((k, sid)) = c.pane.filter(|(k, _)| self.machines.get(*k).is_some_and(|m| m.client.connected())) {
-            let layout = persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(sid), host: None };
-            self.taking.push((k, WorkspaceSpec { layout: Some(layout), ..Default::default() }, true));
-            self.machines[k].client.take(vec![sid]);
+            self.take_terminal(k, sid, terminals::Place::Beside);
             return;
         }
         self.target = self.focused().map_or(0, |f| self.machine_of(f));
@@ -1349,8 +1348,12 @@ impl App {
                     let n = code as usize - KeyCode::Digit1 as usize;
                     self.go_to(n);
                 }
-                (KeyCode::Comma, _) => self.go_to((self.current + self.workspaces.len() - 1) % self.workspaces.len()),
-                (KeyCode::Period, _) => self.go_to((self.current + 1) % self.workspaces.len()),
+                // As screen's Ctrl a p and Ctrl a n: the pane given the terminal
+                // before, or after, of those no pane shows.
+                (KeyCode::Comma, _) => self.step_terminal(-1),
+                (KeyCode::Period, _) => self.step_terminal(1),
+                // As Ctrl a ": the picker.
+                (KeyCode::Quote, false) => self.terminal_picker(),
                 (KeyCode::KeyN, true) => self.new_workspace(),
                 (KeyCode::KeyM, true) => self.toggle_broadcast(),
                 (KeyCode::KeyO, true) => self.pop_out(event_loop),
@@ -2817,8 +2820,8 @@ impl ApplicationHandler<()> for App {
             self.redraw();
         }
         // What the machines hold that this window does not show, for the
-        // sidebar, every few seconds.
-        if self.sidebar_open && self.listed_at.elapsed() > Duration::from_secs(3) {
+        // sidebar, the picker and Alt , and Alt ., every few seconds.
+        if self.listed_at.elapsed() > Duration::from_secs(3) {
             self.listed_at = Instant::now();
             for m in &self.machines {
                 if m.client.connected() {
@@ -3267,7 +3270,7 @@ impl App {
         spec.host = (k > 0).then(|| self.machines[k].host.clone()).flatten();
         // A pane on its own comes beside the one you are in; a workspace
         // comes as it was.
-        self.taking.push((k, spec, !l.label.is_empty()));
+        self.taking.push((k, spec, if l.label.is_empty() { terminals::Place::Workspace } else { terminals::Place::Beside }));
         self.machines[k].client.take(l.panes);
     }
 
@@ -3278,16 +3281,47 @@ impl App {
             self.held.insert(crate::mux::app_id(k, h.pane), h);
         }
         let Some(i) = self.taking.iter().position(|(m, s, _)| *m == k && s.layout.as_ref().is_some_and(|l| first.is_some_and(|f| persist::ids_in_order(l).contains(&f)))) else { return };
-        let (_, spec, here) = self.taking.remove(i);
-        if here && !self.workspaces.is_empty() {
-            // Beside the pane you are in.
+        let (_, spec, place) = self.taking.remove(i);
+        // Where it was to go: a pane still there, a workspace to put it in.
+        let at = match place {
+            terminals::Place::Into(p) | terminals::Place::Split(p, ..) => self.workspaces.iter().position(|w| w.root.contains(p)).map(|wi| (wi, p)),
+            _ => None,
+        };
+        let placed = !matches!(place, terminals::Place::Workspace) && !self.workspaces.is_empty();
+        if placed {
             self.target = k;
             let new = self.spawn(Start { cmd: String::new(), cwd: pty::home(), pane: first, host: None });
-            let ws = self.ws_mut();
-            let at = ws.focus;
-            ws.zoom = None;
-            ws.root.split(at, new, Dir::Across);
-            ws.focus = new;
+            match (place, at) {
+                // In place of what the pane showed, which runs on.
+                (terminals::Place::Into(_), Some((wi, old))) => {
+                    let ws = &mut self.workspaces[wi];
+                    ws.root.replace(old, new);
+                    if ws.focus == old {
+                        ws.focus = new;
+                    }
+                    if ws.zoom == Some(old) {
+                        ws.zoom = Some(new);
+                    }
+                    self.let_go(old);
+                    if wi != self.current {
+                        self.go_to(wi);
+                    }
+                }
+                (terminals::Place::Split(_, dir, before), Some((wi, near))) => {
+                    let ws = &mut self.workspaces[wi];
+                    ws.zoom = None;
+                    ws.root.split_beside(near, new, dir, before);
+                    ws.focus = new;
+                }
+                // Beside the pane you are in (or where that pane was gone).
+                _ => {
+                    let ws = self.ws_mut();
+                    let at = ws.focus;
+                    ws.zoom = None;
+                    ws.root.split(at, new, Dir::Across);
+                    ws.focus = new;
+                }
+            }
         } else {
             let before = self.workspaces.len();
             self.add_workspace(&spec);

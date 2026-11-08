@@ -258,12 +258,16 @@ impl App {
             Action::Split(dir) => self.split(dir),
             Action::SplitBefore(dir) => self.split_side(dir, true),
             Action::Close => self.close_pane(event_loop),
-            Action::EndPane => {
-                if let Some(p) = self.focused().and_then(|f| self.panes.get_mut(&f)) {
-                    p.pty.end = true;
+            Action::EndPane => self.kill_terminal(false, event_loop),
+            Action::KillTerminalNow => self.kill_terminal(true, event_loop),
+            Action::ShowTerminal(k, sid) => {
+                if let Some(at) = self.focused() {
+                    self.take_terminal(k, sid, terminals::Place::Into(at));
                 }
-                self.close_pane(event_loop);
             }
+            Action::PickTerminal => self.terminal_picker(),
+            Action::NextTerminal => self.step_terminal(1),
+            Action::PrevTerminal => self.step_terminal(-1),
             Action::QuitAll => {
                 // Every pane ended, not left in the session.
                 self.save_scrollback();
@@ -523,7 +527,8 @@ impl App {
                 c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom),
                 c("Minimize", "", Action::Minimize),
                 c("Make empty space", "", Action::MakeSpace),
-                c("End pane", "", Action::EndPane),
+                c("Show another terminal here", "Alt '", Action::PickTerminal),
+                c("Kill terminal", "", Action::EndPane),
                 c("Split left", "Alt Shift V", Action::SplitBefore(Dir::Across)),
                 c("Split up", "Alt Shift S", Action::SplitBefore(Dir::Down)),
                 c("New pane", "Ctrl T", Action::NewPane),
