@@ -37,7 +37,7 @@ impl App {
         let before = self.toasts.len();
         self.toasts.retain(|t| t.at.elapsed() < SHOWN);
         if self.toasts.len() != before {
-            self.full = true;
+            // What they covered comes back with the next frame (floats_off).
             self.redraw();
         }
     }
@@ -72,6 +72,7 @@ impl App {
         for i in (0..self.toasts.len()).rev() {
             let r = Rect { x: self.canvas.width - w - px(16.0), y: bottom - h, w, h };
             let (title, body, color) = (self.toasts[i].title.clone(), self.toasts[i].body.clone(), self.toasts[i].color);
+            self.float_save(Rect { x: r.x - px(16.0), y: r.y - px(16.0), w: r.w + px(32.0), h: r.h + px(32.0) });
             self.canvas.panel(r, px(10.0), c.panel, c.edge);
             self.canvas.round_fill(Rect { x: r.x + px(10.0), y: r.y + px(12.0), w: px(4.0), h: h - px(24.0) }, px(2.0), color, 255);
             let tx = r.x + px(24.0);
@@ -81,5 +82,27 @@ impl App {
             self.damage.push(Rect { x: r.x - px(16.0), y: r.y - px(16.0), w: r.w + px(32.0), h: r.h + px(32.0) });
             bottom = r.y - px(10.0);
         }
+    }
+}
+
+impl App {
+    /// The floating things last drawn (toasts, the tooltip) taken off
+    /// again, what was under them put back: at the start of a frame drawn
+    /// in part. A frame drawn whole draws under them anyway.
+    pub(super) fn floats_off(&mut self, full: bool) {
+        let under = std::mem::take(&mut self.floats_under);
+        if full {
+            return;
+        }
+        for u in under.iter().rev() {
+            self.canvas.restore(u);
+            self.damage.push(u.0);
+        }
+    }
+
+    /// What `r` covers kept, before a floating thing is drawn on it.
+    pub(super) fn float_save(&mut self, r: Rect) {
+        let u = self.canvas.save(r);
+        self.floats_under.push(u);
     }
 }

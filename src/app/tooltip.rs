@@ -86,9 +86,11 @@ impl App {
         let below = anchor.y + anchor.h + self.px(6.0);
         let y = if below + h + margin > self.canvas.height { anchor.y - h - self.px(6.0) } else { below };
         let r = Rect { x, y, w, h };
+        let s = self.px(16.0);
+        let area = Rect { x: r.x - s, y: r.y - s, w: r.w + 2 * s, h: r.h + 2 * s };
+        self.float_save(area);
         self.canvas.panel(r, self.px(6.0), c.panel, c.edge);
         self.canvas.text(&mut self.fonts.small, &words, (x + pad) as f32, y + (h - small) / 2, c.text, r);
-        let s = self.px(16.0);
-        self.damage.push(Rect { x: r.x - s, y: r.y - s, w: r.w + 2 * s, h: r.h + 2 * s });
+        self.damage.push(area);
     }
 }

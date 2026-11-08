@@ -321,6 +321,10 @@ pub struct App {
     menu_relit: bool,
     /// What the open submenu covers, kept to be put back when it goes.
     pub(super) menu_under: Option<(Rect, Vec<u32>)>,
+    /// What toasts and the tooltip cover, kept as they were drawn (each
+    /// before it): put back at the start of the next frame, so that they are
+    /// drawn again over whatever changed, not the window drawn whole.
+    pub(super) floats_under: Vec<(Rect, Vec<u32>)>,
     settings: Option<settings::Settings>,
     find: Option<find::Find>,
     /// The link lit under the pointer, with Ctrl held.
@@ -644,6 +648,7 @@ impl App {
             menu: None,
             menu_relit: false,
             menu_under: None,
+            floats_under: Vec::new(),
             settings: None,
             find: None,
             link: None,
@@ -2521,23 +2526,19 @@ impl App {
         self.retint();
         self.refresh_captions();
         self.number_terminals();
-        // With notices up, the frame is drawn whole, so panes do not draw
-        // over them.
-        // A tooltip come or gone: the frame drawn whole, so that nothing
-        // of it is left behind, and kept whole while one shows.
-        let tip = self.tooltip();
-        if tip != self.tip_shown {
-            self.tip_shown = tip;
-            self.full = true;
-        }
-        let asked = std::mem::take(&mut self.full) || self.tip_shown.is_some();
-        let full = asked || !self.toasts.is_empty() || self.offered.is_some() || self.slash.is_some() || self.bar_list_open();
+        // Toasts and the tooltip float: taken off at the start of each
+        // frame (what they covered put back) and drawn again at its end,
+        // over whatever changed, so that one up does not have every frame
+        // draw the whole window again.
+        self.tip_shown = self.tooltip();
+        let asked = std::mem::take(&mut self.full);
+        let full = asked || self.offered.is_some() || self.slash.is_some() || self.bar_list_open();
         crate::debuglog::count(match (full, asked) {
             (false, _) => "frame partial",
             (true, true) => "frame full (asked)",
-            (true, false) if !self.toasts.is_empty() => "frame full (a notice up)",
             _ => "frame full (an overlay up)",
         });
+        self.floats_off(full);
         if full {
             // The sidebar's button, tucked away, is placed again this frame.
             self.side_toggle = None;
@@ -2633,11 +2634,9 @@ impl App {
             self.draw_palette();
             self.draw_menu(true);
             self.draw_settings();
-            self.draw_toasts();
             self.draw_offer();
             self.draw_slash();
             self.draw_bar_list();
-            self.draw_tooltip();
         } else if self.menu_relit {
             self.draw_menu(false);
         }
@@ -2645,6 +2644,9 @@ impl App {
         if self.menu.is_none() {
             self.menu_under = None;
         }
+        // Last, over all else: the toasts, then the tooltip (see floats_off).
+        self.draw_toasts();
+        self.draw_tooltip();
         let drawn = t0.elapsed();
         self.present();
         if crate::debug() {
