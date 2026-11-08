@@ -1,6 +1,6 @@
 //! The sidebar, at the left of the window: the machines, and under each
 //! what is on it. Its workspaces in this window, each opened or closed by
-//! its chevron, their panes under them; its panes that sit in a workspace
+//! a click, their panes under them on a hairline; its panes that sit in a workspace
 //! under another machine; and the workspaces and panes of it no window
 //! here shows. A click brings any of them into view; nothing is said about
 //! which are shown, as all of them are running all the same.
@@ -21,8 +21,6 @@ pub enum SideHit {
     /// A new workspace on this machine.
     NewWorkspace(usize),
     Workspace(usize),
-    /// A workspace's chevron: its panes shown under it, or not.
-    Chevron(usize),
     Pane(PaneId),
     /// One of a machine's workspaces or panes this window does not show.
     Listed(usize, usize),
@@ -227,7 +225,8 @@ impl App {
             let near = self.side_heading == Some(k);
             button(self, plus, SideHit::NewWorkspace(k), icons::PLUS, near);
             y += head.h;
-            // Its workspaces in this window, each opened by its chevron.
+            // Its workspaces in this window; a click on the one you are in folds
+            // it or opens it again.
             for wi in 0..self.workspaces.len() {
                 if self.ws_machine(wi) != k || y > bottom - row_h {
                     continue;
@@ -243,19 +242,14 @@ impl App {
                 } else if lit == Some(SideHit::Workspace(wi)) {
                     self.canvas.round_fill(row, px(7.0), hover, 255);
                 }
-                let chev = Rect { x: row.x, y: row.y, w: px(22.0), h: row_h };
-                let cv = px(11.0);
-                let chev_icon = if open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
-                self.canvas.icon_in(chev_icon, Rect { x: chev.x + (chev.w - cv) / 2, y: chev.y + (row_h - cv) / 2, w: cv, h: cv }, cv, if lit == Some(SideHit::Chevron(wi)) { c.text } else { c.faint });
                 let sq = px(9.0);
                 let color = accents.get(wi).map_or(self.accent, |a| a.0);
-                self.canvas.round_fill(Rect { x: chev.x + chev.w + px(2.0), y: y + (row_h - sq) / 2, w: sq, h: sq }, px(3.0), color, 255);
-                let tx = chev.x + chev.w + px(2.0) + sq + px(9.0);
+                self.canvas.round_fill(Rect { x: row.x + px(8.0), y: y + (row_h - sq) / 2, w: sq, h: sq }, px(3.0), color, 255);
+                let tx = row.x + px(8.0) + sq + px(9.0);
                 let n = format!("{count}");
                 let cw = self.fonts.side_small.width(&n);
                 self.canvas.text_fit(&mut self.fonts.side, &name, tx, y + (row_h - nh) / 2, row.x + row.w - px(18.0) - cw - tx, if current { c.text } else { c.dim }, clip);
                 self.canvas.text(&mut self.fonts.side_small, &n, (row.x + row.w - px(10.0) - cw) as f32, y + (row_h - dh) / 2, c.faint, clip);
-                self.side_hits.push((chev, SideHit::Chevron(wi)));
                 self.side_hits.push((row, SideHit::Workspace(wi)));
                 y += row_h;
                 if open {
@@ -329,17 +323,15 @@ impl App {
         let scale = self.scale;
         let px = |v: f32| (v * scale).round() as i32;
         let w = clip.w + 1;
-        let row = Rect { x: px(8.0), y, w: w - px(16.0), h: row_h - px(2.0) };
+        let _ = (indent, running);
+        let row = Rect { x: px(26.0), y, w: w - px(34.0), h: row_h - px(2.0) };
         if focused {
             self.canvas.round_fill(row, px(7.0), focus_fill, 255);
         } else if self.side_lit == Some(hit) {
             self.canvas.round_fill(row, px(7.0), hover, 255);
         }
-        let d = px(7.0);
-        let x = row.x + indent;
-        self.canvas.round_fill(Rect { x, y: y + (row.h - d) / 2, w: d, h: d }, d / 2, if running { 0x3DBB7E } else { mix(c.side, c.text, 30) }, 255);
         let nh = self.fonts.side.height;
-        let tx = x + d + px(9.0);
+        let tx = row.x + px(8.0);
         self.canvas.text_fit(&mut self.fonts.side, label, tx, y + (row.h - nh) / 2, row.x + row.w - px(10.0) - tx, if focused { c.text } else { c.dim }, clip);
         self.side_hits.push((row, hit));
         y + row.h
@@ -359,7 +351,10 @@ impl App {
         let focus = if wi == self.current { self.focused() } else { None };
         let w = clip.w + 1;
         let prow = row_h - px(2.0);
-        for (i, id) in ids.iter().enumerate() {
+        // The hairline the panes hang from, under the workspace's square.
+        let line_x = px(20.0);
+        let top = y;
+        for id in ids.iter() {
             // Empty space is room, not a pane: not listed (its number kept, as
             // the captions count it).
             if self.workspaces[wi].spaces.contains(id) {
@@ -368,24 +363,32 @@ impl App {
             let Some(p) = self.panes.get(id) else { continue };
             let running = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.trim().to_string());
             let failed = running.is_none() && p.shell.blocks.last().is_some_and(|b| b.exit.is_some_and(|e| e != 0));
-            let dot = if running.is_some() { 0x3DBB7E } else if failed { 0xE5484D } else { mix(c.side, c.text, 30) };
+            // How long it has run, once that is worth saying.
+            let long = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.0.elapsed()).filter(|d| d.as_secs() >= 30).map(commands::human);
             let caption = p.caption.clone();
             let m = crate::mux::split_id(*id).0;
             let host = (m > 0 && m != k).then(|| self.machines.get(m).and_then(|x| x.host.clone())).flatten();
-            let row = Rect { x: px(8.0), y, w: w - px(16.0), h: prow };
+            let row = Rect { x: line_x + px(6.0), y, w: w - line_x - px(14.0), h: prow };
             let focused = focus == Some(*id);
             if focused {
                 self.canvas.round_fill(row, px(7.0), focus_fill, 255);
             } else if self.side_lit == Some(SideHit::Pane(*id)) {
                 self.canvas.round_fill(row, px(7.0), hover, 255);
             }
-            let mut x = row.x + px(34.0);
-            let num = format!("{}", i + 1);
-            x = self.canvas.text(&mut self.fonts.side_small, &num, x as f32, y + (prow - dh) / 2, if focused { self.cur_accent } else { c.faint }, clip) + px(9.0);
-            let d = px(7.0);
-            self.canvas.round_fill(Rect { x, y: y + (prow - d) / 2, w: d, h: d }, d / 2, dot, 255);
-            x += d + px(9.0);
-            let right = row.x + row.w - px(8.0);
+            let x = row.x + px(8.0);
+            let mut right = row.x + row.w - px(8.0);
+            // At the right, what is worth seeing: a red dot when its last
+            // command failed, how long it has run past half a minute; nothing
+            // when all is well.
+            if failed {
+                let d = px(7.0);
+                self.canvas.round_fill(Rect { x: right - d, y: y + (prow - d) / 2, w: d, h: d }, d / 2, 0xE5484D, 255);
+                right -= d + px(8.0);
+            } else if let Some(t) = &long {
+                let tw = self.fonts.side_small.width(t);
+                self.canvas.text(&mut self.fonts.side_small, t, (right - tw) as f32, y + (prow - dh) / 2, c.faint, clip);
+                right -= tw + px(8.0);
+            }
             let mut end = right;
             if let Some(host) = &host {
                 let tw = self.fonts.side_small.width(host) + px(12.0);
@@ -404,6 +407,9 @@ impl App {
             self.side_hits.push((row, SideHit::Pane(*id)));
             y += prow;
         }
+        if y > top {
+            self.canvas.fill(Rect { x: line_x, y: top + px(2.0), w: px(1.0).max(1), h: y - top - px(4.0) }, mix(c.side, c.text, 18));
+        }
         y + px(4.0)
     }
 
@@ -420,7 +426,7 @@ impl App {
         self.unsaved = true;
     }
 
-    /// What is under the pointer: the narrower first, a chevron or a + over
+    /// What is under the pointer: the narrower first, a + over
     /// its row.
     fn side_hit_at(&self, x: i32, y: i32) -> Option<SideHit> {
         self.side_hits.iter().filter(|(r, _)| r.contains(x, y)).min_by_key(|(r, _)| r.w).map(|(_, h)| *h)
@@ -441,10 +447,17 @@ impl App {
             Some(SideHit::Toggle) => self.toggle_sidebar(),
             Some(SideHit::AddMachine) => self.add_machine_prompt(),
             Some(SideHit::NewWorkspace(k)) => self.new_workspace_on(k),
-            Some(SideHit::Workspace(wi)) => self.go_to(wi),
-            Some(SideHit::Chevron(wi)) => {
-                if let Some(ws) = self.workspaces.get_mut(wi) {
-                    ws.open = !ws.open;
+            // The one you are in: folded or opened. Another: gone to, open.
+            Some(SideHit::Workspace(wi)) => {
+                if wi == self.current {
+                    if let Some(ws) = self.workspaces.get_mut(wi) {
+                        ws.open = !ws.open;
+                    }
+                } else {
+                    if let Some(ws) = self.workspaces.get_mut(wi) {
+                        ws.open = true;
+                    }
+                    self.go_to(wi);
                 }
                 self.full = true;
                 self.redraw();
