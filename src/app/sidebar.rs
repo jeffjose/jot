@@ -467,6 +467,11 @@ impl App {
             right = chip.x - px(6.0);
         }
         let nh = self.fonts.side.height;
+        // Being renamed: the field where its name is.
+        if self.draw_inline(super::inline::Target::Terminal(t.k, t.sid), x, y + (h - nh) / 2, (right - x - self.px(6.0)).max(0), true, clip).is_some() {
+            self.side_hits.push((row, hit));
+            return y + h;
+        }
         let shown = t.pane.is_some();
         let name_color = if focused { c.text } else if shown { c.dim } else { mix(c.side, c.dim, 200) };
         let room = right - x;
@@ -541,6 +546,17 @@ impl App {
     /// a split beside it, with Ctrl), its own running on; a shown one gone
     /// to.
     pub(super) fn side_row_click(&mut self, hit: SideHit) {
+        // Clicked twice: renamed where it is.
+        let terminal = match hit {
+            SideHit::Free(k, sid) => Some((k, sid)),
+            SideHit::Pane(id) => Some(crate::mux::split_id(id)),
+            _ => None,
+        };
+        if let Some((k, sid)) = terminal {
+            if self.inline_click(super::inline::Target::Terminal(k, sid)) {
+                return;
+            }
+        }
         match hit {
             SideHit::Free(k, sid) => {
                 let place = match self.focused() {

@@ -515,7 +515,8 @@ impl App {
             let num = t.pane.filter(|_| t.here).and_then(|p| self.term_number(p)).map(|n| n.to_string());
             let label = t.label.clone();
             let nw = num.as_ref().map_or(px(5.0), |n| self.fonts.small.width(n) + px(8.0));
-            let w = (px(8.0) + nw + px(6.0) + self.fonts.ui.width(&label) + px(9.0)).min(px(180.0));
+            let editing = self.inline.as_ref().is_some_and(|i| i.target == super::inline::Target::Terminal(t.k, t.sid));
+            let w = (px(8.0) + nw + px(6.0) + self.fonts.ui.width(&label) + px(9.0)).min(px(180.0)).max(if editing { px(200.0) } else { 0 });
             if x + w > end {
                 break;
             }
@@ -548,7 +549,9 @@ impl App {
             }
             cx += nw + px(6.0);
             let color = if current { c.text } else if t.here { mix(c.dim, c.text, 160) } else { c.dim };
-            self.canvas.text_fit(&mut self.fonts.ui, &label, cx, ty, r.x + r.w - px(9.0) - cx, color, r);
+            if self.draw_inline(super::inline::Target::Terminal(t.k, t.sid), cx, ty, (r.x + r.w - px(9.0) - cx).max(0), false, bar).is_none() {
+                self.canvas.text_fit(&mut self.fonts.ui, &label, cx, ty, r.x + r.w - px(9.0) - cx, color, r);
+            }
             hits.push((r, hit));
             x += w + px(2.0);
         }

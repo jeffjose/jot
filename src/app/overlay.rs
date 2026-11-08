@@ -281,7 +281,7 @@ impl App {
             }
             Action::OpenInNewWindow(k, sid) => self.open_in_new_window(k, sid),
             Action::KillFree(k, sid) => self.kill_free(k, sid),
-            Action::RenameTerminal(k, sid) => self.rename_terminal_prompt(k, sid),
+            Action::RenameTerminal(k, sid) => self.rename_terminal(k, sid),
             Action::NewTerminalOn(k) => self.new_terminal_on(k),
             Action::Reconnect(k) => {
                 if let Some(m) = self.machines.get(k) {
@@ -342,6 +342,7 @@ impl App {
             }
             Action::Connect(host) => self.connect_pane(&host),
             Action::AddMachine(host) => self.add_machine(&host),
+            Action::Rename if self.rename_workspace() => {}
             Action::Rename => {
                 let name = self.ws().name.clone();
                 // The name is all selected, to type over or to change.

@@ -522,14 +522,15 @@ impl App {
         let mut out = String::new();
         let shown_k: Vec<usize> = (0..self.machines.len()).filter(|&k| k == 0 || self.machines[k].added || (0..self.workspaces.len()).any(|wi| self.ws_machine(wi) == k) || !self.machines[k].listing.is_empty()).collect();
         for k in shown_k {
+            // Said only of this machine, and of one that can not be reached.
             let state = if k == 0 {
-                "this machine"
+                "  (this machine)"
             } else if self.machines[k].client.connected() {
-                "reached"
+                ""
             } else {
-                "not reached"
+                "  (not reached)"
             };
-            out += &format!("{}  ({state})\n", self.machine_name(k));
+            out += &format!("{}{state}\n", self.machine_name(k));
             let mut items: Vec<String> = Vec::new();
             for wi in (0..self.workspaces.len()).filter(|&wi| self.ws_machine(wi) == k) {
                 let ws = &self.workspaces[wi];

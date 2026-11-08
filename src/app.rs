@@ -50,6 +50,7 @@ mod restore;
 mod settings;
 mod slash;
 mod sidebar;
+mod inline;
 mod scrollbar;
 mod shared;
 mod terminals;
@@ -421,6 +422,10 @@ pub struct App {
     /// Each pane's scrollbar as last drawn, and the one under the pointer.
     scrollbars: HashMap<PaneId, scrollbar::Bar>,
     scroll_lit: Option<PaneId>,
+    /// A name being edited where it is drawn (see inline.rs); the last
+    /// name clicked, for a double click.
+    inline: Option<inline::Inline>,
+    inline_clicked: Option<(inline::Target, Instant)>,
     /// What the sidebar showed last, as `sidebar_moved` counts it.
     side_sig: u64,
     /// What the project bar said when last drawn: drawn again when it changes.
@@ -429,6 +434,8 @@ pub struct App {
     foot_dots: Vec<(Rect, foot::FootDot)>,
     /// The project bar's machine, a button opening the machines.
     foot_button: Option<Rect>,
+    /// The workspace's name on the bar, for a double click on it.
+    foot_name: Option<Rect>,
     /// The pointer over it.
     foot_lit: bool,
     /// The workspace you were in last on each machine, to go back to.
@@ -686,10 +693,13 @@ impl App {
             filling: Vec::new(),
             scrollbars: HashMap::new(),
             scroll_lit: None,
+            inline: None,
+            inline_clicked: None,
             side_sig: 0,
             foot_said: String::new(),
             foot_dots: Vec::new(),
             foot_button: None,
+            foot_name: None,
             foot_lit: false,
             foot_last: HashMap::new(),
             dbg_at: Instant::now(),
@@ -1751,6 +1761,13 @@ impl App {
             }
             return;
         }
+        // A name being edited where it is: the keys are its.
+        if self.inline.is_some() {
+            if event.state == ElementState::Pressed {
+                self.inline_key(&event);
+            }
+            return;
+        }
         // A pane's command line open: the keys are its, all but its own key
         // and the other bindings, which shut it or act over it.
         if self.bar.is_some() && self.editor().is_none() && event.state == ElementState::Pressed {
@@ -1876,6 +1893,14 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
+        // A name being edited: a press in it moves the cursor; elsewhere it
+        // keeps the name, and goes on to what it is on.
+        if self.inline.is_some() {
+            if button == MouseButton::Left && self.inline_press() {
+                return;
+            }
+            self.inline_done(true);
+        }
         // A menu open takes the click first: on a row it runs it, elsewhere
         // it goes, whatever was under it.
         if (self.menu.is_some() && self.overlay_click(button, event_loop)) || (button == MouseButton::Left && (self.quake_bar_click() || self.offer_click(event_loop) || self.toast_click() || self.mini_click() || self.pin_click() || self.editor_run_click() || self.editor_press() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {

@@ -281,7 +281,15 @@ impl App {
         self.canvas.text(&mut self.fonts.ui, &number, (tile.x + (tile.w - nw) / 2) as f32, ty, fg, tile);
         // Its name, plain; the folder of the pane you are in, dim.
         let clip = Rect { x: tile.x + tile.w, y: bar.y, w: (right - self.px(60.0) - tile.x - tile.w).max(0), h };
-        let mut end = self.canvas.text_fit(&mut self.fonts.ui, &name, clip.x + pad, ty, (clip.w - pad).max(0), c.text, clip);
+        // Being renamed: the field where its name is (wide enough to type in).
+        let ws_id = self.ws().id;
+        let room = (self.fonts.ui.width(&name) + self.px(80.0)).min((clip.w - 2 * pad).max(0));
+        let mut end = match self.draw_inline(super::inline::Target::Workspace(ws_id), clip.x + pad, ty, room, false, clip) {
+            Some(_) => clip.x + pad + room + self.px(4.0),
+            None => self.canvas.text_fit(&mut self.fonts.ui, &name, clip.x + pad, ty, (clip.w - pad).max(0), c.text, clip),
+        };
+        // Its name, double-clicked to rename it.
+        self.foot_name = Some(Rect { x: clip.x, y: bar.y, w: (end - clip.x).max(0), h });
         if !folder.is_empty() {
             let x = end + self.px(10.0);
             end = self.canvas.text_fit(&mut self.fonts.ui, &folder, x, ty, (clip.x + clip.w - x).max(0), c.dim, clip);
@@ -361,6 +369,12 @@ impl App {
         }
         if self.foot_button.is_some_and(|r| r.contains(x, y)) {
             self.machine_menu();
+            return true;
+        }
+        // Its name, double-clicked: renamed there.
+        if self.foot_name.is_some_and(|r| r.contains(x, y)) && !self.workspaces.is_empty() {
+            let id = self.ws().id;
+            self.inline_click(super::inline::Target::Workspace(id));
             return true;
         }
         false

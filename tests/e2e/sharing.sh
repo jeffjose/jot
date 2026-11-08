@@ -129,7 +129,7 @@ check "the window shows each terminal's number as the session keeps it" '[ -n "$
 # jot tree: each machine, its workspaces and their terminals.
 tree=$(here1 tree)
 [ -n "${VERBOSE:-}" ] && echo "$tree"
-check "jot tree has this machine and the other" 'echo "$tree" | grep -q "(this machine)" && echo "$tree" | grep -q "^fakehost"'
+check "jot tree has this machine and the other" 'echo "$tree" | grep -q "(this machine)" && echo "$tree" | grep -q "^fakehost$"'
 check "and the workspace, the remote terminal in it" 'echo "$tree" | grep -q "a([0-9]*,fakehost:[0-9]*)"'
 if [ $fail = 0 ]; then echo "all passed"; else echo "some FAILED (logs kept: $T/s1/jot/debug.log, $T/s2/jot/debug.log)"; fi
 exit $fail
