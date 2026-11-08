@@ -18,6 +18,8 @@ use crate::canvas::icons;
 pub enum SideHit {
     Toggle,
     AddMachine,
+    /// A machine's heading (its menu on a right click).
+    Machine(usize),
     /// A new terminal on this machine.
     NewTerminal(usize),
     /// A terminal a pane here shows.
@@ -202,7 +204,10 @@ impl App {
                 let up = self.machines[k].client.connected();
                 (icons::SERVER, self.machines[k].host.clone().unwrap_or_default(), String::new(), Some(if up { 0x3DBB7E } else { 0xF0B43C }))
             };
-            self.canvas.icon_in(icon, Rect { x: head.x + px(4.0), y: head.y + (head.h - ih) / 2, w: ih, h: ih }, ih, if k > 0 { 0xF0B43C } else { c.faint });
+            // Every machine in the same quiet gray; a remote one's dot says
+            // whether it is reached.
+            self.canvas.icon_in(icon, Rect { x: head.x + px(4.0), y: head.y + (head.h - ih) / 2, w: ih, h: ih }, ih, c.faint);
+            self.side_hits.push((head, SideHit::Machine(k)));
             let mut x = self.canvas.text(&mut self.fonts.side_small, &name, (head.x + px(4.0) + ih + px(9.0)) as f32, head.y + (head.h - dh) / 2, c.dim, clip) + px(8.0);
             if let Some(d) = dot {
                 let s = px(7.0);
@@ -254,7 +259,8 @@ impl App {
             // where it was, a click.
             Some(hit @ (SideHit::Free(..) | SideHit::Pane(_))) => self.drag = Some(Drag::Side(SideCarry { hit, from: (x, y), moving: false, over: None })),
             Some(SideHit::Settings) => self.open_settings(),
-            None => {}
+            // A machine's heading: its menu is on a right click.
+            Some(SideHit::Machine(_)) | None => {}
         }
         true
     }
@@ -352,13 +358,13 @@ impl App {
                 let running = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.trim().to_string()).filter(|s| !s.is_empty());
                 let failed = running.is_none() && p.shell.blocks.last().is_some_and(|b| b.exit.is_some_and(|e| e != 0));
                 let status = if running.is_some() { 1 } else if failed { 2 } else { 0 };
-                let label = super::quake::tab_name(p);
+                let label = self.terminal_label(*id);
                 let cmd = running.filter(|r| r.split_whitespace().next() != Some(label.as_str()) || r.contains(' '));
                 out.push(SideTerm { k, sid, pane: Some(*id), label, cmd, status, badge: (wi == self.current).then(|| format!("{}", n + 1)) });
             }
         }
         for f in self.free_terminals() {
-            out.push(SideTerm { k: f.k, sid: f.sid, pane: None, label: f.label, cmd: None, status: u8::from(f.running), badge: f.elsewhere.then(|| "window".to_string()) });
+            out.push(SideTerm { k: f.k, sid: f.sid, pane: None, label: self.given_name(f.k, f.sid).unwrap_or(f.label), cmd: None, status: u8::from(f.running), badge: f.elsewhere.then(|| "window".to_string()) });
         }
         out.sort_by_key(|t| (t.k, t.sid));
         out
@@ -395,10 +401,12 @@ impl App {
         let mut right = row.x + row.w - px(8.0);
         if let Some(badge) = &t.badge {
             let sh = self.fonts.side_small.height;
-            let bw = self.fonts.side_small.width(badge) + px(10.0);
+            // All the same width, the number in the middle, so that they line up.
+            let tw = self.fonts.side_small.width(badge);
+            let bw = (tw + px(10.0)).max(px(22.0));
             let chip = Rect { x: right - bw, y: y + (h - sh - px(4.0)) / 2, w: bw, h: sh + px(4.0) };
             self.canvas.ring(chip, px(4.0), 1, mix(c.side, c.text, 40));
-            self.canvas.text(&mut self.fonts.side_small, badge, (chip.x + px(5.0)) as f32, chip.y + px(2.0), if focused { c.text } else { c.dim }, clip);
+            self.canvas.text(&mut self.fonts.side_small, badge, (chip.x + (bw - tw) / 2) as f32, chip.y + px(2.0), if focused { c.text } else { c.dim }, clip);
             right = chip.x - px(6.0);
         }
         let nh = self.fonts.side.height;
@@ -427,10 +435,20 @@ impl App {
         }
         let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
         match self.side_hit_at(x, y) {
+            // A terminal no pane shows.
             Some(SideHit::Free(k, sid)) => {
-                self.open_items_menu(vec![c("Show in this pane", "click", Action::ShowTerminal(k, sid)), c("Show in a split beside", "Ctrl click", Action::SplitTerminal(k, sid)), None, c("Kill terminal", "", Action::KillFree(k, sid))]);
+                self.open_items_menu(vec![
+                    c("Show in this pane", "click", Action::ShowTerminal(k, sid)),
+                    c("Show in a split beside", "Ctrl click", Action::SplitTerminal(k, sid)),
+                    None,
+                    c("Rename…", "", Action::RenameTerminal(k, sid)),
+                    None,
+                    c("Kill terminal", "", Action::KillFree(k, sid)),
+                ]);
                 true
             }
+            // A terminal a pane here shows: gone to, and what can be done
+            // with its pane.
             Some(SideHit::Pane(id)) => {
                 if let Some(wi) = self.workspaces.iter().position(|w| w.root.contains(id)) {
                     if wi != self.current {
@@ -438,7 +456,37 @@ impl App {
                     }
                 }
                 self.set_focus(id);
-                self.open_items_menu(vec![c("Kill terminal", "", Action::EndPane)]);
+                let (k, sid) = crate::mux::split_id(id);
+                self.open_items_menu(vec![
+                    c("Rename…", "/rename", Action::RenameTerminal(k, sid)),
+                    c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom),
+                    c("Minimize", "", Action::Minimize),
+                    c("Move to new window", "Alt Shift O", Action::PopOut),
+                    None,
+                    c("Close pane (it runs on)", "Alt X", Action::Close),
+                    c("Kill terminal", "", Action::EndPane),
+                ]);
+                true
+            }
+            // A machine: a new terminal on it; reached again, or taken out
+            // of the sidebar; the terminals on it no pane shows, ended.
+            Some(SideHit::Machine(k)) => {
+                let up = self.machines.get(k).is_some_and(|m| m.client.connected());
+                let added = self.machines.get(k).is_some_and(|m| m.added);
+                let free = self.free_terminals().into_iter().filter(|f| f.k == k && !f.elsewhere).count();
+                let mut items = vec![c("New terminal", "+", Action::NewTerminalOn(k))];
+                if k > 0 && !up {
+                    items.push(c("Reconnect", "", Action::Reconnect(k)));
+                }
+                if free > 0 {
+                    items.push(None);
+                    items.push(c(&format!("Kill {free} terminal{} no pane shows", if free == 1 { "" } else { "s" }), "", Action::KillFreeOn(k)));
+                }
+                if k > 0 && added {
+                    items.push(None);
+                    items.push(c("Remove from sidebar", "", Action::RemoveMachine(k)));
+                }
+                self.open_items_menu(items);
                 true
             }
             _ => false,

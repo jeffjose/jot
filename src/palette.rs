@@ -29,6 +29,14 @@ pub enum Action {
     /// in; or ended.
     SplitTerminal(usize, u64),
     KillFree(usize, u64),
+    /// A terminal renamed, by machine and its name there.
+    RenameTerminal(usize, u64),
+    /// A machine in the sidebar: a new terminal on it; reached again;
+    /// its terminals no pane shows ended; taken out of the sidebar.
+    NewTerminalOn(usize),
+    Reconnect(usize),
+    KillFreeOn(usize),
+    RemoveMachine(usize),
     /// The sidebar shown, or tucked away.
     Sidebar,
     /// A workspace on another machine: its session reached by ssh.
@@ -123,6 +131,8 @@ pub struct Item {
 pub enum Mode {
     Find,
     Rename,
+    /// A terminal's name, by machine and its name in that machine's session.
+    RenameTerminal(usize, u64),
     /// A machine to make the pane a shell on: one of ~/.ssh/config's, or
     /// any typed.
     Machine,
@@ -150,7 +160,7 @@ impl Palette {
 
     pub fn label(&self) -> &'static str {
         match (self.mode, self.field.text.first().copied()) {
-            (Mode::Rename, _) => "Name:",
+            (Mode::Rename, _) | (Mode::RenameTerminal(..), _) => "Name:",
             (Mode::Machine, _) => "Machine:",
             (Mode::AddMachine, _) => "Add machine:",
             (_, None) if !self.matches.is_empty() => "Find:",

@@ -632,3 +632,25 @@ pub fn save_machines(hosts: &[String]) {
     let _ = std::fs::create_dir_all(state_dir());
     let _ = std::fs::write(state_dir().join("machines"), hosts.iter().map(|h| format!("{h}\n")).collect::<String>());
 }
+
+/// Names given to terminals (/rename, or the sidebar's Rename), one a line:
+/// the machine (empty for this one), its terminal's name in that machine's
+/// session, and the name, split by tabs.
+pub fn load_term_names() -> Vec<(String, u64, String)> {
+    std::fs::read_to_string(state_dir().join("names"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.splitn(3, '\t');
+            let host = f.next()?.to_string();
+            let sid = f.next()?.parse().ok()?;
+            let name = f.next()?.to_string();
+            (!name.is_empty()).then_some((host, sid, name))
+        })
+        .collect()
+}
+
+pub fn save_term_names(names: &[(String, u64, String)]) {
+    let _ = std::fs::create_dir_all(state_dir());
+    let _ = std::fs::write(state_dir().join("names"), names.iter().map(|(h, s, n)| format!("{h}\t{s}\t{}\n", n.replace(['\t', '\n'], " "))).collect::<String>());
+}

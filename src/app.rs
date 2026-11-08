@@ -238,6 +238,8 @@ pub struct App {
     quake_hits: Vec<(Rect, quake::QuakeHit)>,
     quake_lit: Option<quake::QuakeHit>,
     quake_drag_h: Option<(i32, i32)>,
+    /// Names given to terminals, as the file every window shares holds them.
+    term_names: Vec<(String, u64, String)>,
     /// Minimized panes' rows, to click, and the one the pointer is on.
     mini_hits: Vec<(Rect, PaneId)>,
     mini_lit: Option<PaneId>,
@@ -472,6 +474,7 @@ impl App {
             quake_hits: Vec::new(),
             quake_lit: None,
             quake_drag_h: None,
+            term_names: persist::load_term_names(),
             mini_hits: Vec::new(),
             mini_lit: None,
             mini_btns: Vec::new(),
@@ -2359,9 +2362,14 @@ impl App {
             self.canvas.picture(&pic.pixels, pic.width, src, dest, content);
             self.damage.push(dest);
         }
-        // The caption, along the bottom of the pane, as screen's is.
+        // The caption: the name given to its terminal, if one was, over the
+        // title its program sets.
         let caption = p.caption.clone();
         let activity = p.activity;
+        let caption = {
+            let (k, sid) = crate::mux::split_id(id);
+            self.given_name(k, sid).unwrap_or(caption)
+        };
         if full {
             if self.config.captions {
                 let into = self.typed_into(id);
@@ -2833,6 +2841,12 @@ impl ApplicationHandler<()> for App {
         // sidebar, the picker and Alt , and Alt ., every few seconds.
         if self.listed_at.elapsed() > Duration::from_secs(3) {
             self.listed_at = Instant::now();
+            // Names given in another window, taken up here too.
+            let names = persist::load_term_names();
+            if names != self.term_names {
+                self.term_names = names;
+                self.full = true;
+            }
             for m in &self.machines {
                 if m.client.connected() {
                     m.client.list();

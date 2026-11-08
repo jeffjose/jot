@@ -229,6 +229,10 @@ impl App {
     fn palette_run(&mut self, event_loop: &ActiveEventLoop) {
         let Some(p) = self.palette.take() else { return };
         self.full = true;
+        if let Mode::RenameTerminal(k, sid) = p.mode {
+            self.name_terminal(k, sid, &p.typed());
+            return self.redraw();
+        }
         if p.mode == Mode::Rename {
             let name = p.typed().trim().to_string();
             if !name.is_empty() {
@@ -274,6 +278,19 @@ impl App {
                 }
             }
             Action::KillFree(k, sid) => self.kill_free(k, sid),
+            Action::RenameTerminal(k, sid) => self.rename_terminal_prompt(k, sid),
+            Action::NewTerminalOn(k) => self.new_terminal_on(k),
+            Action::Reconnect(k) => {
+                if let Some(m) = self.machines.get(k) {
+                    m.client.try_again();
+                }
+            }
+            Action::KillFreeOn(k) => {
+                for f in self.free_terminals().into_iter().filter(|f| f.k == k && !f.elsewhere) {
+                    self.kill_free(f.k, f.sid);
+                }
+            }
+            Action::RemoveMachine(k) => self.remove_machine(k),
             Action::QuitAll => {
                 // Every pane ended, not left in the session.
                 self.save_scrollback();
@@ -442,7 +459,7 @@ impl App {
         let pad = self.px(12.0);
         let (head, row_h) = (line + 2 * pad, line * 2);
         let fit = ((h * 3 / 4 - head) / row_h).clamp(1, 10) as usize;
-        let rows = if p.mode == Mode::Rename { 0 } else { fit.min(p.matches.len()) };
+        let rows = if matches!(p.mode, Mode::Rename | Mode::RenameTerminal(..)) { 0 } else { fit.min(p.matches.len()) };
         let width = (self.px(14.0) * 42).min(w - 2 * self.px(16.0));
         let height = head + rows as i32 * row_h + if rows > 0 { pad / 2 } else { 0 };
         // A fifth of the way down, where it stays as matches come and go.
@@ -456,7 +473,7 @@ impl App {
         let Some(p) = self.palette.as_ref() else { return };
         let (label, field, mode) = (p.label(), p.field.clone(), p.mode);
         let note = match (mode, p.matches.len()) {
-            (Mode::Rename, _) => "Enter to rename".to_string(),
+            (Mode::Rename | Mode::RenameTerminal(..), _) => "Enter to rename (empty: its own name again)".to_string(),
             (Mode::Machine | Mode::AddMachine, 0) => "Enter to connect".to_string(),
             (_, 0) => "No matches".to_string(),
             (_, n) => format!("{} of {n}", p.selected + 1),

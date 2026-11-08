@@ -36,15 +36,7 @@ pub(super) struct Free {
 /// name.
 fn label_in(spec: &persist::Spec, id: u64) -> Option<String> {
     match spec {
-        persist::Spec::Pane { cmd, cwd, id: Some(p), .. } if *p == id => {
-            let cmd = cmd.trim();
-            if !cmd.is_empty() {
-                return Some(cmd.split_whitespace().next().unwrap_or(cmd).to_string());
-            }
-            let cwd = cwd.clone().unwrap_or_default();
-            let name = cwd.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string();
-            Some(if name.is_empty() || name == "~" { "shell".into() } else { name })
-        }
+        persist::Spec::Pane { cmd, cwd, id: Some(p), .. } if *p == id => Some(term_name(cwd.as_deref().unwrap_or(""), Some(cmd))),
         persist::Spec::Across { v, .. } => v.iter().find_map(|s| label_in(s, id)),
         persist::Spec::Down { h, .. } => h.iter().find_map(|s| label_in(s, id)),
         _ => None,
@@ -61,7 +53,7 @@ impl App {
             for l in &m.listing {
                 if !l.label.is_empty() {
                     if let Some(&sid) = l.panes.first() {
-                        out.push(Free { k, sid, label: l.label.clone(), running: l.running, elsewhere: l.elsewhere });
+                        out.push(Free { k, sid, label: term_name(&l.label, None), running: l.running, elsewhere: l.elsewhere });
                     }
                     continue;
                 }
@@ -186,5 +178,91 @@ impl App {
         ws.root.split_beside(at, id, Dir::Across, false);
         ws.focus = id;
         self.changed();
+    }
+}
+
+/// A terminal's name, the same whether a pane shows it or not: the program
+/// it runs (its first word, without its folder), else the last part of the
+/// folder it is in ("~" at home).
+pub(super) fn term_name(place: &str, running: Option<&str>) -> String {
+    if let Some(cmd) = running.map(str::trim).filter(|c| !c.is_empty()) {
+        let first = cmd.split_whitespace().next().unwrap_or(cmd);
+        return first.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(first).to_string();
+    }
+    let p = place.trim().trim_end_matches('/');
+    if p.is_empty() || p == "~" {
+        return "~".into();
+    }
+    // Not a folder (what it ran, as a session says it): its program.
+    if !p.starts_with('/') && !p.starts_with('~') {
+        return term_name("", Some(p));
+    }
+    p.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or("/").to_string()
+}
+
+impl App {
+    /// The name of a terminal a pane here shows, as term_name gives it.
+    pub(super) fn pane_term_name(&self, p: &Pane) -> String {
+        let running = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.clone());
+        let place = p.pty.cwd().map(|c| persist::shorten(&c)).unwrap_or_else(|| p.caption.clone());
+        term_name(&place, running.as_deref())
+    }
+}
+
+impl App {
+    /// The name given to a terminal, if one was: read from the file every
+    /// window shares, so a name given in one holds in all of them.
+    pub(super) fn given_name(&self, k: usize, sid: u64) -> Option<String> {
+        let host = self.machines.get(k).and_then(|m| m.host.clone()).unwrap_or_default();
+        self.term_names.iter().find(|(h, s, _)| *h == host && *s == sid).map(|(_, _, n)| n.clone())
+    }
+
+    /// A terminal given a name; an empty one takes its name back.
+    pub(super) fn name_terminal(&mut self, k: usize, sid: u64, name: &str) {
+        let host = self.machines.get(k).and_then(|m| m.host.clone()).unwrap_or_default();
+        self.term_names = persist::load_term_names();
+        self.term_names.retain(|(h, s, _)| !(*h == host && *s == sid));
+        let name = name.trim();
+        if !name.is_empty() {
+            self.term_names.push((host, sid, name.to_string()));
+        }
+        persist::save_term_names(&self.term_names);
+        self.full = true;
+        self.redraw();
+    }
+
+    /// The box to rename a terminal, its name now all selected.
+    pub(super) fn rename_terminal_prompt(&mut self, k: usize, sid: u64) {
+        let now = self.given_name(k, sid).or_else(|| self.side_terminals().into_iter().find(|t| t.k == k && t.sid == sid).map(|t| t.label)).unwrap_or_default();
+        let mut field = crate::field::TextField::new(&now);
+        field.anchor = Some(0);
+        self.palette = Some(crate::palette::Palette { mode: crate::palette::Mode::RenameTerminal(k, sid), field, matches: Vec::new(), selected: 0, first: 0 });
+        self.full = true;
+        self.redraw();
+    }
+}
+
+impl App {
+    /// What a pane's terminal is called: the name given it, else
+    /// term_name's.
+    pub(super) fn terminal_label(&self, id: PaneId) -> String {
+        let (k, sid) = crate::mux::split_id(id);
+        self.given_name(k, sid).or_else(|| self.panes.get(&id).map(|p| self.pane_term_name(p))).unwrap_or_default()
+    }
+}
+
+impl App {
+    /// A machine taken out of the sidebar: no longer listed once it holds
+    /// nothing of this window's; its terminals run on there.
+    pub(super) fn remove_machine(&mut self, k: usize) {
+        if k == 0 {
+            return;
+        }
+        if let Some(m) = self.machines.get_mut(k) {
+            m.added = false;
+        }
+        persist::save_machines(&self.machines.iter().skip(1).filter(|m| m.added).filter_map(|m| m.host.clone()).collect::<Vec<_>>());
+        self.full = true;
+        self.redraw();
     }
 }

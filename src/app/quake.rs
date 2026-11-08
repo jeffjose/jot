@@ -423,7 +423,7 @@ impl App {
         }
         let focus = self.ws().focus;
         let end = grip.x - px(8.0);
-        let tabs: Vec<(PaneId, String)> = ids.iter().filter_map(|id| self.panes.get(id).map(|p| (*id, tab_name(p)))).collect();
+        let tabs: Vec<(PaneId, String)> = ids.iter().filter_map(|id| self.panes.get(id).map(|_| (*id, self.terminal_label(*id)))).collect();
         if tabs.len() > 1 && x < end {
             let group = Rect { x, y: by, w: 0, h: b };
             let mut tx = x;
@@ -560,17 +560,6 @@ impl App {
     }
 }
 
-/// A pane's name on a tab: what it runs, or the last part of its title.
-pub(super) fn tab_name(p: &Pane) -> String {
-    if let Some(run) = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt) {
-        let cmd = run.2.trim();
-        if !cmd.is_empty() {
-            return cmd.split_whitespace().next().unwrap_or(cmd).to_string();
-        }
-    }
-    let c = p.caption.trim_end_matches('/');
-    c.rsplit(['/', ':']).next().filter(|s| !s.is_empty()).unwrap_or(c).to_string()
-}
 
 thread_local! {
     /// What the quake bar showed when last drawn.
@@ -587,7 +576,7 @@ impl App {
         }
         let mut ids = Vec::new();
         self.ws().root.panes(&mut ids);
-        let names: Vec<String> = ids.iter().filter_map(|id| self.panes.get(id).map(tab_name)).collect();
+        let names: Vec<String> = ids.iter().filter_map(|id| self.panes.get(id).map(|_| self.terminal_label(*id))).collect();
         let key = format!("{} {} {:?} {:?} {:?}", self.current, self.ws().name, self.ws().focus, ids, names);
         let changed = BAR_SEEN.with(|s| *s.borrow() != key);
         if full || changed {

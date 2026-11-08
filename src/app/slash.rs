@@ -112,7 +112,7 @@ impl App {
                 Command::new("multi", "Start multi: type into every pane", Does::Act(Action::Broadcast))
             },
             Command::new("new-workspace", "New workspace in this folder", Does::Act(Action::NewWorkspace)),
-            Command::new("rename", "Rename this workspace", Does::Rename),
+            Command::new("rename", "Rename this terminal", Does::Rename),
             Command::new("connect", "Make this pane a shell on another machine", Does::Connect),
             Command::new("clear", "Clear terminal", Does::Act(Action::Clear)),
             Command::new("theme", "Set the color theme", Does::Theme),
@@ -188,7 +188,7 @@ impl App {
                     (Does::Connect, true) => "Type a machine: a name from ~/.ssh/config, or user@host".to_string(),
                     (Does::Connect, false) => "Make this pane a shell there".to_string(),
                     (Does::Rename, true) => "Type the new name, or Enter for the rename box".to_string(),
-                    (Does::Rename, false) => "The new name for this workspace".to_string(),
+                    (Does::Rename, false) => "The new name for this terminal".to_string(),
                     (_, true) => "Type what to find".to_string(),
                     _ => "Find and light it".to_string(),
                 };
@@ -501,17 +501,15 @@ impl App {
                     self.connect_pane_at(id, host);
                 }
             }
-            Does::Rename => match arg.trim() {
-                "" => self.run(Action::Rename, event_loop),
-                name => {
-                    if let Some(ws) = self.workspaces.iter_mut().find(|w| w.root.contains(id)) {
-                        ws.name = name.to_string();
-                    }
-                    self.unsaved = true;
-                    self.set_title();
-                    self.full = true;
+            // The terminal in this pane renamed, in every window and the
+            // sidebar, whatever title its program sets.
+            Does::Rename => {
+                let (k, sid) = crate::mux::split_id(id);
+                match arg.trim() {
+                    "" => self.rename_terminal_prompt(k, sid),
+                    name => self.name_terminal(k, sid, name),
                 }
-            },
+            }
             Does::Edit => {
                 // Read off the screen, the slash command may still be there,
                 // the shell not having rubbed it out yet.
