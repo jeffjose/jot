@@ -1648,6 +1648,9 @@ impl App {
                 KeyCode::KeyC => self.copy(false),
                 KeyCode::KeyV => self.paste(false),
                 KeyCode::KeyT => self.reopen(),
+                // As a browser's new window: another view of the session's
+                // workspaces.
+                KeyCode::KeyN => self.new_window(),
                 KeyCode::ArrowUp => self.jump_prompt(-1),
                 KeyCode::ArrowDown => self.jump_prompt(1),
                 KeyCode::KeyE => self.open_editor(),

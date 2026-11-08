@@ -139,8 +139,10 @@ impl App {
         // shows n+1, or n-1. Each terminal once, in the order of its number.
         let at = self.replaced_by(at);
         let here = self.stepping.filter(|(p, _)| *p == at).map(|(_, t)| t).unwrap_or_else(|| crate::mux::split_id(at));
+        // Only the machine the pane is on: another's terminals are stepped
+        // through from a workspace on it.
         let mut ring: Vec<(usize, u64)> = Vec::new();
-        for t in self.side_terminals() {
+        for t in self.side_terminals().into_iter().filter(|t| t.k == here.0) {
             if !ring.contains(&(t.k, t.sid)) {
                 ring.push((t.k, t.sid));
             }
@@ -151,7 +153,7 @@ impl App {
         let numbers = &self.term_numbers;
         ring.sort_by_key(|t| (t.0, numbers.get(t).copied().unwrap_or(usize::MAX), t.1));
         if ring.len() < 2 {
-            return self.toast("No other terminals", "This is the only one", None, None);
+            return self.toast("No other terminals", "This is the only one on this machine", None, None);
         }
         let i = ring.iter().position(|t| *t == here).unwrap_or(0) as i32;
         let n = ring.len() as i32;
@@ -443,5 +445,18 @@ impl App {
         let wi = self.current;
         self.stand_in(wi, at, new, true);
         self.changed();
+    }
+}
+
+impl App {
+    /// Another window (Ctrl Shift N), a jot of its own: it shows the
+    /// session's workspaces, as every window does. Not from the quake
+    /// window, which has its own.
+    pub(super) fn new_window(&mut self) {
+        if crate::quake_mode() {
+            return;
+        }
+        let exe = std::env::current_exe().map(|e| std::path::PathBuf::from(e.to_string_lossy().trim_end_matches(" (deleted)"))).unwrap_or_else(|_| std::path::PathBuf::from("jot"));
+        super::open_detached(&exe, &[]);
     }
 }

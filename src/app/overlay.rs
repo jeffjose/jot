@@ -270,6 +270,7 @@ impl App {
                 }
             }
             Action::PickTerminal => self.terminal_picker(),
+            Action::NewWindow => self.new_window(),
             Action::NewTerminalHere => self.new_terminal_here(),
             Action::NextTerminal => self.step_terminal(1),
             Action::PrevTerminal => self.step_terminal(-1),
