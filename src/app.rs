@@ -48,6 +48,7 @@ mod settings;
 mod slash;
 mod sidebar;
 mod terminals;
+mod tooltip;
 mod space;
 mod toast;
 mod watch;
@@ -244,6 +245,11 @@ pub struct App {
     /// to it; and panes that took another's place, old and new.
     stepping: Option<(PaneId, (usize, u64))>,
     replaced: Vec<(PaneId, PaneId)>,
+    /// The tooltip drawn: where its button is, and what it says.
+    tip_shown: Option<(Rect, String)>,
+    /// For each pane, the terminals it showed before the one it shows (most
+    /// recent last): closing it shows the last of them again.
+    under: HashMap<PaneId, Vec<(usize, u64)>>,
     /// Minimized panes' rows, to click, and the one the pointer is on.
     mini_hits: Vec<(Rect, PaneId)>,
     mini_lit: Option<PaneId>,
@@ -482,6 +488,8 @@ impl App {
             term_names: persist::load_term_names(),
             stepping: None,
             replaced: Vec::new(),
+            tip_shown: None,
+            under: HashMap::new(),
             mini_hits: Vec::new(),
             mini_lit: None,
             mini_btns: Vec::new(),
@@ -735,6 +743,8 @@ impl App {
         let focus = ids.iter().copied().find(|i| !spaces.contains(i)).unwrap_or(ids[0]);
         // Named as written, else two words picked at random.
         let name = match (spec.name.is_empty(), &spec.host) {
+            // "Kept" was what an older jot called panes it gathered up.
+            (false, _) if spec.name == "Kept" => sidebar::random_name(),
             (false, _) => spec.name.clone(),
             (true, _) => sidebar::random_name(),
         };
@@ -989,6 +999,19 @@ impl App {
                 self.closed.push(Closed { workspace: ws.name.clone(), near: ws.root.place_of(id), cmd: p.cmd.clone(), cwd: p.pty.cwd().unwrap_or_else(pty::home), pane: (!p.pty.end).then_some((p.pty.machine, p.pty.pane)) });
                 if self.closed.len() > 20 {
                     self.closed.remove(0);
+                }
+            }
+        }
+        // What the pane showed before, if one of them still runs and no pane
+        // here shows it: back in its place, as closing a tab shows the one
+        // before; only with none does the pane itself close.
+        if self.roam != Some(id) && self.ws().root.contains(id) {
+            let free = self.free_terminals();
+            let mut under = self.under.remove(&id).unwrap_or_default();
+            while let Some((k, sid)) = under.pop() {
+                if free.iter().any(|f| f.k == k && f.sid == sid) {
+                    self.under.insert(id, under);
+                    return self.take_terminal(k, sid, terminals::Place::Back(id));
                 }
             }
         }
@@ -1631,6 +1654,10 @@ impl App {
                     watch::Tag::TeeStop => self.stop_tee(id),
                     watch::Tag::Restart => self.restart(id),
                     watch::Tag::Minimize => self.minimize(id),
+                    watch::Tag::Close => {
+                        self.set_focus(id);
+                        self.close_pane(event_loop);
+                    }
                     watch::Tag::Focus => {
                         self.set_focus(id);
                         let ws = self.ws_mut();
@@ -2097,7 +2124,14 @@ impl App {
         self.refresh_captions();
         // With notices up, the frame is drawn whole, so panes do not draw
         // over them.
-        let asked = std::mem::take(&mut self.full);
+        // A tooltip come or gone: the frame drawn whole, so that nothing
+        // of it is left behind, and kept whole while one shows.
+        let tip = self.tooltip();
+        if tip != self.tip_shown {
+            self.tip_shown = tip;
+            self.full = true;
+        }
+        let asked = std::mem::take(&mut self.full) || self.tip_shown.is_some();
         let full = asked || !self.toasts.is_empty() || self.offered.is_some() || self.slash.is_some() || self.bar_list_open();
         crate::debuglog::count(match (full, asked) {
             (false, _) => "frame partial",
@@ -2187,6 +2221,7 @@ impl App {
             self.draw_offer();
             self.draw_slash();
             self.draw_bar_list();
+            self.draw_tooltip();
         }
         let drawn = t0.elapsed();
         self.present();
@@ -2434,6 +2469,10 @@ impl App {
         let in_layout = n > 0 && self.ws().root.contains(id);
         let running = self.panes.get(&id).is_some_and(|p| p.shell.marked && !p.shell.at_prompt && p.shell.running.is_some());
         let mut buttons: Vec<(watch::Tag, char)> = Vec::new();
+        // At the far right, close: the pane goes, its terminal runs on.
+        if in_layout {
+            buttons.push((watch::Tag::Close, crate::canvas::icons::CLOSE));
+        }
         if in_layout && (many || zoomed) {
             buttons.push((watch::Tag::Focus, if zoomed { crate::canvas::icons::UNFOCUS } else { crate::canvas::icons::FOCUS }));
         }
@@ -3095,7 +3134,7 @@ impl App {
             let panes: Vec<persist::Spec> = new.iter().map(|id| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*id), host: None }).collect();
             let layout = if panes.len() == 1 { panes.into_iter().next() } else { Some(persist::Spec::Across { v: panes, sizes: Vec::new() }) };
             let host = self.machines.get(k).and_then(|m| m.host.clone()).filter(|_| k > 0);
-            self.add_workspace(&WorkspaceSpec { name: "Kept".into(), layout, host, ..Default::default() });
+            self.add_workspace(&WorkspaceSpec { name: sidebar::random_name(), layout, host, ..Default::default() });
         }
         self.replay_held();
         // Its layout told again: the session kept it for the next window.
@@ -3217,7 +3256,7 @@ impl App {
             let panes: Vec<persist::Spec> = left.iter().map(|p| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*p), host: None }).collect();
             let layout = if panes.len() == 1 { panes.into_iter().next() } else { Some(persist::Spec::Across { v: panes, sizes: Vec::new() }) };
             let host = (m > 0).then(|| self.machines.get(m).and_then(|x| x.host.clone())).flatten();
-            self.add_workspace(&WorkspaceSpec { name: "Kept".into(), layout, host, ..Default::default() });
+            self.add_workspace(&WorkspaceSpec { name: sidebar::random_name(), layout, host, ..Default::default() });
         }
     }
 }
@@ -3323,7 +3362,7 @@ impl App {
         let (_, spec, place) = self.taking.remove(i);
         // Where it was to go: a pane still there, a workspace to put it in.
         let at = match place {
-            terminals::Place::Into(p) | terminals::Place::Split(p, ..) => {
+            terminals::Place::Into(p) | terminals::Place::Back(p) | terminals::Place::Split(p, ..) => {
                 let p = self.replaced_by(p);
                 self.workspaces.iter().position(|w| w.root.contains(p)).map(|wi| (wi, p))
             }
@@ -3335,7 +3374,18 @@ impl App {
             let new = self.spawn(Start { cmd: String::new(), cwd: pty::home(), pane: first, host: None });
             match (place, at) {
                 // In place of what the pane showed, which runs on.
-                (terminals::Place::Into(_), Some((wi, old))) => {
+                (terminals::Place::Into(_) | terminals::Place::Back(_), Some((wi, old))) => {
+                    // What the pane showed before, kept under the new one (most
+                    // recent last, each once); coming back, taken off.
+                    let mut under = self.under.remove(&old).unwrap_or_default();
+                    let (nk, ns) = crate::mux::split_id(new);
+                    under.retain(|t| *t != (nk, ns));
+                    if matches!(place, terminals::Place::Into(_)) {
+                        let was = crate::mux::split_id(old);
+                        under.retain(|t| *t != was);
+                        under.push(was);
+                    }
+                    self.under.insert(new, under);
                     let ws = &mut self.workspaces[wi];
                     ws.root.replace(old, new);
                     if ws.focus == old {

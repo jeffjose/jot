@@ -236,6 +236,8 @@ pub enum Tag {
     Restart,
     /// The focus button: this pane alone, or all of them again.
     Focus,
+    /// The close button: the pane closed, its terminal running on.
+    Close,
 }
 
 impl App {

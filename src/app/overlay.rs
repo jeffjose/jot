@@ -808,6 +808,7 @@ impl App {
             Tag::Focus => vec![c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom)],
             Tag::Restart => vec![c("Restart", "Ctrl R", Action::Restart)],
             Tag::Minimize => vec![c("Minimize", "", Action::Minimize)],
+            Tag::Close => vec![c("Close pane (it runs on)", "Alt X", Action::Close), c("Kill terminal", "", Action::EndPane)],
         };
         while matches!(items.last(), Some(None)) {
             items.pop();

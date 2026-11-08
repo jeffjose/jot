@@ -14,8 +14,11 @@ use super::*;
 pub(super) enum Place {
     /// Beside the pane you are in.
     Beside,
-    /// Into this pane, in place of what it showed.
+    /// Into this pane, in place of what it showed, which is kept under it
+    /// (closing this one shows it again).
     Into(PaneId),
+    /// Into this pane, the one under it come back (the one shown closed).
+    Back(PaneId),
     /// Beside this pane, before it or after, across or down.
     Split(PaneId, Dir, bool),
 }
