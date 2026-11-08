@@ -105,6 +105,7 @@ impl App {
     pub(super) fn ws_machine(&self, wi: usize) -> usize {
         let mut ids = Vec::new();
         self.workspaces[wi].root.panes(&mut ids);
+        ids.retain(|id| !self.workspaces[wi].spaces.contains(id));
         let first = ids.first().map_or(0, |id| crate::mux::split_id(*id).0);
         if ids.iter().all(|id| crate::mux::split_id(*id).0 == first) {
             first
@@ -233,6 +234,7 @@ impl App {
                 }
                 let mut ids = Vec::new();
                 self.workspaces[wi].root.panes(&mut ids);
+                ids.retain(|id| !self.workspaces[wi].spaces.contains(id));
                 let (name, count, open) = (self.workspaces[wi].name.clone(), ids.len(), self.workspaces[wi].open);
                 let current = wi == self.current;
                 let row = Rect { x: pad, y, w: inner_w, h: row_h };
@@ -268,6 +270,7 @@ impl App {
                 }
                 let mut ids = Vec::new();
                 self.workspaces[wi].root.panes(&mut ids);
+                ids.retain(|id| !self.workspaces[wi].spaces.contains(id));
                 elsewhere.extend(ids.into_iter().filter(|id| crate::mux::split_id(*id).0 == k));
             }
             for id in elsewhere {
@@ -357,6 +360,11 @@ impl App {
         let w = clip.w + 1;
         let prow = row_h - px(2.0);
         for (i, id) in ids.iter().enumerate() {
+            // Empty space is room, not a pane: not listed (its number kept, as
+            // the captions count it).
+            if self.workspaces[wi].spaces.contains(id) {
+                continue;
+            }
             let Some(p) = self.panes.get(id) else { continue };
             let running = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.trim().to_string());
             let failed = running.is_none() && p.shell.blocks.last().is_some_and(|b| b.exit.is_some_and(|e| e != 0));
