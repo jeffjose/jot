@@ -149,14 +149,15 @@ impl App {
         }
         let mine = windows.remove(0);
         let dir = persist::state_dir();
-        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("jot"));
         for (i, w) in windows.iter().enumerate() {
             let path = dir.join(format!("restore-{}-{i}.toml", std::process::id()));
             let Ok(text) = toml::to_string(w) else { continue };
             if std::fs::write(&path, text).is_err() {
                 continue;
             }
-            open_detached(&exe, &["--restore".as_ref(), path.as_os_str()]);
+            // Opened once this window has said its workspaces to the session:
+            // the shared ones are there for it then (see App::save).
+            self.open_later.push(path);
         }
         if let Some(st) = mine.window {
             self.start_window = Some(st);

@@ -37,6 +37,9 @@ pub enum Output {
     Listing(usize, Vec<crate::mux::Listed>),
     /// Panes of a machine taken into this window.
     Taken(usize, Vec<crate::mux::Held>),
+    /// A machine's shared workspaces, and the terminals in them now this
+    /// window's.
+    Workspaces(usize, Vec<String>, Vec<crate::mux::Held>),
     /// The size its program writes for now, set by whichever window
     /// was typed into last.
     Size(u64, u16, u16),

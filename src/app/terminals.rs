@@ -114,6 +114,7 @@ impl App {
     /// A pane no longer shown here, its terminal left running: what a pane
     /// holds of it let go (a search in it, commands waiting on it).
     pub(super) fn let_go(&mut self, id: PaneId) {
+        crate::debuglog::log(format!("pane {id:x}: let go"));
         self.forget_minimized(id);
         self.release_after(id, false);
         if self.find.as_ref().is_some_and(|f| f.pane == id) {

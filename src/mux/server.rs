@@ -309,6 +309,16 @@ struct Server {
     desktop: Option<Env>,
     /// What each window said it is, for jot status.
     abouts: HashMap<u64, String>,
+    /// The workspaces the session shares among the windows that can share
+    /// them (Hello's caps), each with its id and rev, in their order.
+    shared: Vec<crate::persist::WorkspaceSpec>,
+    /// The windows that share them; and for each, the shared ones its last
+    /// layout had.
+    sharing: Vec<u64>,
+    seen: HashMap<u64, Vec<u64>>,
+    /// Which window changed each shared workspace last: its changes after
+    /// it are taken, though it has not been told its own yet.
+    changed_by: HashMap<u64, u64>,
 }
 
 impl Server {
@@ -429,27 +439,48 @@ impl Server {
     fn welcome(&mut self, c: u64) {
         let (quake, mut left): (Vec<_>, Vec<_>) = std::mem::take(&mut self.left).into_iter().partition(|(w, _)| *w == super::QUAKE_WINDOW);
         let mine = (!left.is_empty()).then(|| left.remove(0));
-        let waiting: Vec<u64> = left.iter().flat_map(|(_, l)| layout_ids(l)).collect();
+        // A window that shares workspaces has every one the session shares,
+        // and their terminals, whatever other windows show them: they wait
+        // for no other window.
+        let sharing = self.sharing.contains(&c);
+        let shared_panes: Vec<u64> = if sharing { self.shared_panes() } else { Vec::new() };
+        let waiting: Vec<u64> = left.iter().flat_map(|(_, l)| layout_ids(l)).filter(|id| !shared_panes.contains(id)).collect();
         self.left = quake;
         self.left.extend(left);
         let more = self.left.iter().filter(|(w, _)| *w != super::QUAKE_WINDOW).count() as u32;
         // The quake window's panes and workspaces wait for the next one, and
         // the other windows' for theirs.
-        let free = |id: &u64, p: &Pane| p.viewers.is_empty() && !p.windows.contains(&super::QUAKE_WINDOW) && !waiting.contains(id);
+        let free = |id: &u64, p: &Pane| shared_panes.contains(id) || p.viewers.is_empty() && !p.windows.contains(&super::QUAKE_WINDOW) && !waiting.contains(id);
         let mut held: Vec<Held> = self.panes.iter().filter(|(id, p)| free(id, p)).map(|(id, p)| p.held(*id)).collect();
         held.sort_by_key(|h| h.pane);
         let name = self.names.get(&c).copied().unwrap_or(0);
         for (_, p) in self.panes.iter_mut().filter(|(id, p)| free(id, p)) {
             p.add_viewer(c, name);
         }
-        let layout = mine
-            .and_then(|(_, l)| toml::from_str::<crate::persist::Session>(&l).ok())
-            .map(|mut s| {
+        let mine = mine.and_then(|(_, l)| toml::from_str::<crate::persist::Session>(&l).ok());
+        let layout = if sharing && (mine.is_some() || !self.shared.is_empty()) {
+            // The shared ones, in their order, then any of its own the session
+            // does not share (yet: shared once the window says them); shown,
+            // the one it showed.
+            let mut s = mine.unwrap_or_default();
+            let showing = s.current_id.or_else(|| s.workspaces.get(s.current).and_then(|w| w.id));
+            let ids: Vec<u64> = self.shared.iter().filter_map(|w| w.id).collect();
+            let own: Vec<_> = std::mem::take(&mut s.workspaces).into_iter().filter(|w| !w.id.is_some_and(|id| ids.contains(&id))).collect();
+            s.workspaces = self.shared.clone();
+            s.workspaces.extend(own);
+            s.current = showing.and_then(|id| s.workspaces.iter().position(|w| w.id == Some(id))).unwrap_or(0);
+            s.current_id = showing.filter(|id| ids.contains(id));
+            s.more = more;
+            self.seen.insert(c, ids);
+            toml::to_string(&s).unwrap_or_default()
+        } else {
+            mine.map(|mut s| {
                 s.more = more;
                 s
             })
             .and_then(|s| toml::to_string(&s).ok())
-            .unwrap_or_default();
+            .unwrap_or_default()
+        };
         self.layouts.insert(c, layout.clone());
         let ids: Vec<u64> = held.iter().map(|h| h.pane).collect();
         self.send(c, ToClient::Welcome { layout, panes: held });
@@ -463,6 +494,8 @@ impl Server {
         let stale: Vec<u64> = self.names.iter().filter(|(conn, w)| **w == window && **conn != c).map(|(conn, _)| *conn).collect();
         for old in stale {
             self.names.remove(&old);
+            self.sharing.retain(|w| *w != old);
+            self.seen.remove(&old);
             self.windows.retain(|w| *w != old);
             if let Some(l) = self.layouts.remove(&old) {
                 self.layouts.insert(c, l);
@@ -497,6 +530,98 @@ impl Server {
         let ids: Vec<u64> = held.iter().map(|h| h.pane).collect();
         self.send(c, ToClient::Welcome { layout, panes: held });
         self.tell_sizes(c, &ids);
+        // Sharing: the shared workspaces as they are now, changed meanwhile
+        // perhaps (or the session's newer); the ones its layout had are
+        // what it has seen.
+        if self.sharing.contains(&c) {
+            let had = self.layouts.get(&c).and_then(|l| toml::from_str::<crate::persist::Session>(l).ok()).map(|s| s.workspaces.iter().filter_map(|w| w.id).collect::<Vec<_>>()).unwrap_or_default();
+            let ids: Vec<u64> = self.shared.iter().filter_map(|w| w.id).filter(|id| had.contains(id)).collect();
+            self.seen.insert(c, ids);
+            self.share_to(c);
+        }
+    }
+
+    /// The terminals of the workspaces the session shares, those it has.
+    fn shared_panes(&self) -> Vec<u64> {
+        self.shared.iter().filter_map(|w| w.layout.as_ref()).flat_map(crate::persist::ids_in_order).filter(|id| self.panes.contains_key(id)).collect()
+    }
+
+    /// The shared workspaces told to window `c`, with the terminals in them
+    /// it does not have yet, now its.
+    fn share_to(&mut self, c: u64) {
+        let specs: Vec<String> = self.shared.iter().filter_map(|w| toml::to_string(w).ok()).collect();
+        let name = self.names.get(&c).copied().unwrap_or(0);
+        let mut held = Vec::new();
+        for id in self.shared_panes() {
+            if let Some(p) = self.panes.get_mut(&id).filter(|p| !p.viewers.contains(&c)) {
+                p.add_viewer(c, name);
+                held.push(p.held(id));
+            }
+        }
+        let ids: Vec<u64> = held.iter().map(|h| h.pane).collect();
+        self.send(c, ToClient::Workspaces { specs, held });
+        self.tell_sizes(c, &ids);
+    }
+
+    /// Window `c`'s workspaces, as it says them, taken into those the
+    /// session shares: one it made, added after the one before it; one it
+    /// changed (its layout's shape, its name or colors), changed, unless
+    /// changed since by another (it had not seen that yet, and it is its
+    /// echo); one it had and has no more, closed. Sizes, folders and focus
+    /// are each window's own, and change nothing shared. Every window
+    /// that shares them is told, when they change.
+    fn take_shared(&mut self, c: u64, text: &str) {
+        let Ok(session) = toml::from_str::<crate::persist::Session>(text) else { return };
+        let before = self.seen.get(&c).cloned().unwrap_or_default();
+        let mut now = Vec::new();
+        let mut changed = false;
+        let mut after: Option<u64> = None;
+        for ws in session.workspaces.iter().filter(|w| w.shareable()) {
+            let Some(id) = ws.id else { continue };
+            now.push(id);
+            let rev = ws.rev.unwrap_or(0);
+            match self.shared.iter().position(|s| s.id == Some(id)) {
+                Some(i) => {
+                    let current = self.shared[i].rev.unwrap_or(0);
+                    if rev >= current || self.changed_by.get(&id) == Some(&c) {
+                        let moved = ws.shared_shape() != self.shared[i].shared_shape();
+                        let mut w = ws.clone();
+                        w.rev = Some(if moved { current + 1 } else { current });
+                        self.shared[i] = w;
+                        if moved {
+                            self.changed_by.insert(id, c);
+                        }
+                        changed |= moved;
+                    }
+                }
+                // New, made in this window.
+                None if !before.contains(&id) => {
+                    let mut w = ws.clone();
+                    w.rev = Some(1);
+                    let at = after.and_then(|a| self.shared.iter().position(|s| s.id == Some(a))).map_or(self.shared.len(), |i| i + 1);
+                    self.shared.insert(at, w);
+                    self.changed_by.insert(id, c);
+                    changed = true;
+                }
+                // Closed in another window since it said it last.
+                None => {}
+            }
+            after = Some(id);
+        }
+        // Closed in this window.
+        for id in before.iter().filter(|id| !now.contains(id)) {
+            if let Some(i) = self.shared.iter().position(|s| s.id == Some(*id)) {
+                self.shared.remove(i);
+                changed = true;
+            }
+        }
+        self.seen.insert(c, now);
+        if changed {
+            crate::debuglog::log(format!("session: shared workspaces changed by window {c}: {}", self.shared.len()));
+            for w in self.sharing.clone() {
+                self.share_to(w);
+            }
+        }
     }
 
     /// Its workspaces window `c` does not show: those of the other
@@ -511,6 +636,7 @@ impl Server {
         // can be taken into a workspace of another's).
         let quake = |w: u64| w == super::QUAKE_WINDOW;
         let asker_quake = self.names.get(&c).is_some_and(|w| quake(*w));
+        let asker_shares = self.sharing.contains(&c);
         let from_windows = self.layouts.iter().filter(|(w, _)| **w != c).map(|(w, l)| (l, true, self.names.get(w).is_some_and(|n| quake(*n))));
         let from_left = self.left.iter().map(|(name, l)| (l, false, quake(*name)));
         for (text, elsewhere, theirs) in from_windows.chain(from_left) {
@@ -519,8 +645,9 @@ impl Server {
             for ws in session.workspaces {
                 let Some(layout) = &ws.layout else { continue };
                 let ids: Vec<u64> = ids_in_order(layout).into_iter().filter(|id| self.panes.contains_key(id)).collect();
-                // Gone, or this window's already.
-                if ids.is_empty() || ids.iter().all(|id| self.panes.get(id).is_some_and(|p| p.viewers.contains(&c))) {
+                // Gone, or this window's already (a shared one, in its bar).
+                let shared = asker_shares && ws.id.is_some_and(|id| self.shared.iter().any(|s| s.id == Some(id)));
+                if shared || ids.is_empty() || ids.iter().all(|id| self.panes.get(id).is_some_and(|p| p.viewers.contains(&c))) {
                     named.extend(&ids);
                     continue;
                 }
@@ -560,7 +687,10 @@ impl Server {
             p.raw = None;
             held.push(p.held(*id));
         }
-        let taken: Vec<u64> = held.iter().map(|h| h.pane).collect();
+        // Shared terminals are in every sharing window's layout, and take
+        // no window gone's workspace with them.
+        let shared = self.shared_panes();
+        let taken: Vec<u64> = held.iter().map(|h| h.pane).filter(|id| !shared.contains(id)).collect();
         self.left.retain(|(_, l)| {
             toml::from_str::<crate::persist::Session>(l).map_or(true, |s| !s.workspaces.iter().any(|w| w.layout.as_ref().is_some_and(|l| crate::persist::ids_in_order(l).iter().any(|id| taken.contains(id)))))
         });
@@ -572,22 +702,72 @@ impl Server {
     /// machine restarts, each window as it was. The quake window's go with
     /// the first window's (it is placed by its settings).
     fn save(&self) {
+        use crate::persist::Session;
+        // The shared workspaces once, from the session's list; each window's
+        // layout less them, what it showed of them by its id.
+        let ids: Vec<u64> = self.shared.iter().filter_map(|w| w.id).collect();
+        let own = |text: &str| -> Option<Session> {
+            let mut s = toml::from_str::<Session>(text).ok()?;
+            let showing = s.workspaces.get(s.current).and_then(|w| w.id).filter(|id| ids.contains(id));
+            let current = s.current;
+            let mut kept = 0;
+            let mut at = 0;
+            s.workspaces = std::mem::take(&mut s.workspaces)
+                .into_iter()
+                .enumerate()
+                .filter(|(i, w)| {
+                    let keep = !w.id.is_some_and(|id| ids.contains(&id));
+                    if keep {
+                        if *i == current {
+                            at = kept;
+                        }
+                        kept += 1;
+                    }
+                    keep
+                })
+                .map(|(_, w)| w)
+                .collect();
+            s.current = at;
+            s.current_id = showing.or(s.current_id.filter(|id| ids.contains(id)));
+            Some(s)
+        };
+        // With the shared ones before its own, as a window that restores
+        // them all has them.
+        let with_shared = |mut s: Session| -> Session {
+            let n = self.shared.len();
+            s.current = s.current_id.and_then(|id| ids.iter().position(|i| *i == id)).unwrap_or(s.current + n);
+            let mut all = self.shared.clone();
+            all.extend(std::mem::take(&mut s.workspaces));
+            s.workspaces = all;
+            s
+        };
         let open = self.layouts.iter().map(|(c, l)| (self.names.get(c).copied().unwrap_or(0), l));
-        let all: Vec<(u64, &String)> = open.chain(self.left.iter().map(|(w, l)| (*w, l))).collect();
-        let Some(mut s) = merge(all.iter().map(|(_, l)| l.as_str())) else { return };
-        let mut groups: Vec<(u64, crate::persist::Session)> = all
-            .iter()
-            .filter(|(w, _)| *w != super::QUAKE_WINDOW)
-            .filter_map(|(w, l)| toml::from_str::<crate::persist::Session>(l).ok().map(|s| (*w, s)))
-            .filter(|(_, s)| !s.workspaces.is_empty() || !s.popouts.is_empty())
-            .collect();
+        let all: Vec<(u64, Session)> = open.chain(self.left.iter().map(|(w, l)| (*w, l))).filter_map(|(w, l)| own(l).map(|s| (w, s))).collect();
+        if all.is_empty() && self.shared.is_empty() {
+            return;
+        }
+        // Every window's together (all an older jot reads): the first's, the
+        // others' workspaces and pop-outs after.
+        let mut s = all.first().map(|(_, s)| s.clone()).unwrap_or_default();
+        for (_, o) in all.iter().skip(1) {
+            s.workspaces.extend(o.workspaces.iter().cloned());
+            s.popouts.extend(o.popouts.iter().cloned());
+            if s.roam.is_none() {
+                s.roam = o.roam.clone();
+            }
+        }
+        let mut s = with_shared(s);
+        // And each window on its own, to be opened as it was: the first with
+        // the shared ones, which every other gets from the session.
+        let mut groups: Vec<(u64, Session)> = all.iter().filter(|(w, _)| *w != super::QUAKE_WINDOW).filter(|(_, s)| !s.workspaces.is_empty() || !s.popouts.is_empty() || s.current_id.is_some() || s.window.is_some()).cloned().collect();
         groups.sort_by_key(|(w, _)| *w);
         if groups.len() > 1 {
-            let quake = merge(all.iter().filter(|(w, _)| *w == super::QUAKE_WINDOW).map(|(_, l)| l.as_str()));
-            if let Some(q) = quake {
-                groups[0].1.workspaces.extend(q.workspaces);
+            let first = groups.remove(0).1;
+            let mut first = with_shared(first);
+            for (_, q) in all.iter().filter(|(w, _)| *w == super::QUAKE_WINDOW) {
+                first.workspaces.extend(q.workspaces.iter().cloned());
             }
-            s.windows = groups.into_iter().map(|(_, s)| s).collect();
+            s.windows = std::iter::once(first).chain(groups.into_iter().map(|(_, s)| s)).collect();
         }
         crate::persist::save_session(&s);
     }
@@ -679,7 +859,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
             return;
         }
         None => match UnixListener::bind(path) {
-            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new() }, l),
+            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new() }, l),
             Err(e) => {
                 eprintln!("jot serve: {}: {e}", path.display());
                 return;
@@ -756,7 +936,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 let e = s.handover(&exe, listener_fd, path);
                 eprintln!("jot serve: could not restart as {exe}: {e}");
             }
-            Ev::Said(c, ToServer::Hello { proto, window, again, want, about }) => {
+            Ev::Said(c, ToServer::Hello { proto, window, again, want, about, caps }) => {
                 if proto != PROTO {
                     s.send(c, ToClient::Refused { why: format!("protocol {PROTO} here, {proto} in the window") });
                     if let Some(st) = s.conns.remove(&c) {
@@ -769,6 +949,9 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 }
                 s.names.insert(c, window);
                 s.abouts.insert(c, about);
+                if caps & super::CAN_SHARE != 0 && !s.sharing.contains(&c) {
+                    s.sharing.push(c);
+                }
                 if again {
                     s.welcome_back(c, window, &want);
                 } else {
@@ -805,6 +988,9 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     s.panes.remove(&pane);
                 }
                 ToServer::Layout { text } => {
+                    if s.sharing.contains(&c) {
+                        s.take_shared(c, &text);
+                    }
                     s.layouts.insert(c, text);
                     s.save();
                 }
@@ -839,7 +1025,12 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     s.tell_sizes(c, &panes);
                 }
                 ToServer::Release { pane } => {
+                    // Let go: no longer one of the window's, to be given back
+                    // when it reaches the session again (only what it shows
+                    // is).
+                    let name = s.names.get(&c).copied();
                     if let Some(p) = s.panes.get_mut(&pane) {
+                        p.windows.retain(|w| Some(*w) != name);
                         if p.drop_viewer(c) {
                             let m = p.size_msg(pane);
                             s.tell(pane, m);
@@ -870,6 +1061,8 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     }
                     let name = s.names.remove(&c).unwrap_or(0);
                     s.abouts.remove(&c);
+                    s.sharing.retain(|w| *w != c);
+                    s.seen.remove(&c);
                     if let Some(l) = s.layouts.remove(&c).filter(|_| any) {
                         s.left.push((name, l));
                     }
@@ -1072,6 +1265,8 @@ impl Server {
             let _ = st.shutdown(std::net::Shutdown::Both);
         }
         self.names.clear();
+        self.sharing.clear();
+        self.seen.clear();
         for p in self.panes.values_mut() {
             p.viewers.clear();
             p.sizes.clear();
@@ -1093,6 +1288,11 @@ impl Server {
                 o.u64(*w);
             }
             o.u16(p.size.0).u16(p.size.1).u32(p.size.2 .0).u32(p.size.2 .1);
+        }
+        // The shared workspaces, after what an older jot reads.
+        o.u32(self.shared.len() as u32);
+        for w in &self.shared {
+            o.str(&toml::to_string(w).unwrap_or_default());
         }
         let file = super::dir().join(format!("handover-{}", std::process::id()));
         if let Err(e) = std::fs::write(&file, &o.0) {
@@ -1146,8 +1346,10 @@ fn resume(file: &Path, tx: &Sender<Ev>) -> io::Result<(Server, i32)> {
         let keys = start_io(tx, id, &pty);
         panes.insert(id, Pane { pty, keys, cmd, log, raw: None, tail, at_prompt, queue, tee, proc: None, viewers: Vec::new(), windows, sizes: HashMap::new(), size });
     }
+    // The shared workspaces, from a jot that shares them.
+    let shared = (0..i.u32().unwrap_or(0)).map_while(|_| i.str().ok()).filter_map(|t| toml::from_str::<crate::persist::WorkspaceSpec>(&t).ok()).collect();
     keep_on_exec(listener, false);
-    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane, desktop: None, abouts: HashMap::new() }, listener))
+    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane, desktop: None, abouts: HashMap::new(), shared, sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new() }, listener))
 }
 
 /// The session's names of the panes a window's layout has (its workspaces'

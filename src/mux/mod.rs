@@ -54,7 +54,8 @@ pub enum ToServer {
     /// is reconnecting, and wants back only the panes it had.
     /// `about`: which jot the window is and where (for jot status), added
     /// after: empty from an older window.
-    Hello { proto: u32, window: u64, again: bool, want: Vec<u64>, about: String },
+    /// `caps`, added after that: what the window can do (CAN_SHARE).
+    Hello { proto: u32, window: u64, again: bool, want: Vec<u64>, about: String, caps: u32 },
     /// A new pane; the session names it, in Spawned.
     Spawn { cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32) },
     Input { pane: u64, bytes: Vec<u8> },
@@ -133,6 +134,11 @@ pub enum ToClient {
     /// connection ends now, and the window reaches it again, its panes
     /// still running.
     Restarting,
+    /// The session's shared workspaces (each a WorkspaceSpec, with its id
+    /// and rev), in their order: sent to a window that can share them
+    /// (CAN_SHARE) when it comes and whenever they change; with the
+    /// terminals in them it does not have yet, now its.
+    Workspaces { specs: Vec<String>, held: Vec<Held> },
 }
 
 // The wire: a frame is its length (u32), then a tag, then the fields.
@@ -175,6 +181,18 @@ impl Out {
             self.u64(*t).str(c);
         }
         self.u8(q.restarting as u8)
+    }
+    fn held(&mut self, panes: &[Held]) -> &mut Self {
+        self.u32(panes.len() as u32);
+        for p in panes {
+            self.u64(p.pane).u32(p.pid as u32).str(&p.cmd).bytes(&p.log);
+            match &p.tee {
+                Some(t) => self.u8(1).tee(t),
+                None => self.u8(0),
+            };
+            self.queue(&p.queue);
+        }
+        self
     }
     fn tee(&mut self, t: &TeeState) -> &mut Self {
         self.str(&t.path).u64(t.lines).u8(t.all as u8).u8(t.armed as u8)
@@ -219,6 +237,16 @@ impl In<'_> {
         let after = (0..n).map(|_| Ok((self.u64()?, self.str()?))).collect::<io::Result<Vec<_>>>()?;
         Ok(Queue { items, paused, after, restarting: self.u8()? != 0 })
     }
+    fn held(&mut self) -> io::Result<Vec<Held>> {
+        let n = self.u32()?;
+        let mut panes = Vec::new();
+        for _ in 0..n {
+            let (pane, pid, cmd, log) = (self.u64()?, self.u32()? as i32, self.str()?, self.bytes()?);
+            let tee = if self.u8()? != 0 { Some(self.tee()?) } else { None };
+            panes.push(Held { pane, pid, cmd, log, tee, queue: self.queue()? });
+        }
+        Ok(panes)
+    }
     fn tee(&mut self) -> io::Result<TeeState> {
         Ok(TeeState { path: self.str()?, lines: self.u64()?, all: self.u8()? != 0, armed: self.u8()? != 0 })
     }
@@ -247,12 +275,12 @@ impl ToServer {
     fn encode(&self) -> Vec<u8> {
         let mut o = Out::default();
         match self {
-            ToServer::Hello { proto, window, again, want, about } => {
+            ToServer::Hello { proto, window, again, want, about, caps } => {
                 o.u8(0).u32(*proto).u64(*window).u8(*again as u8).u32(want.len() as u32);
                 for w in want {
                     o.u64(*w);
                 }
-                o.str(about)
+                o.str(about).u32(*caps)
             }
             ToServer::Spawn { cmd, cwd, cols, rows, px } => o.u8(1).str(cmd).str(cwd).u16(*cols).u16(*rows).u32(px.0).u32(px.1),
             ToServer::Input { pane, bytes } => o.u8(2).u64(*pane).bytes(bytes),
@@ -285,7 +313,8 @@ impl ToServer {
                 let (proto, window, again) = (i.u32()?, i.u64().unwrap_or(0), i.u8().unwrap_or(0) != 0);
                 let n = i.u32().unwrap_or(0);
                 let want = (0..n).map(|_| i.u64()).collect::<io::Result<Vec<_>>>()?;
-                ToServer::Hello { proto, window, again, want, about: i.str().unwrap_or_default() }
+                let about = i.str().unwrap_or_default();
+                ToServer::Hello { proto, window, again, want, about, caps: i.u32().unwrap_or(0) }
             }
             1 => ToServer::Spawn { cmd: i.str()?, cwd: i.str()?, cols: i.u16()?, rows: i.u16()?, px: (i.u32()?, i.u32()?) },
             2 => ToServer::Input { pane: i.u64()?, bytes: i.bytes()? },
@@ -368,21 +397,20 @@ impl ToClient {
                 }
             }
             ToClient::Taken { panes } => {
-                o.u8(12).u32(panes.len() as u32);
-                for p in panes {
-                    o.u64(p.pane).u32(p.pid as u32).str(&p.cmd).bytes(&p.log);
-                    match &p.tee {
-                        Some(t) => o.u8(1).tee(t),
-                        None => o.u8(0),
-                    };
-                    o.queue(&p.queue);
-                }
+                o.u8(12).held(panes);
             }
             ToClient::Size { pane, cols, rows } => {
                 o.u8(13).u64(*pane).u16(*cols).u16(*rows);
             }
             ToClient::Restarting => {
                 o.u8(14);
+            }
+            ToClient::Workspaces { specs, held } => {
+                o.u8(15).u32(specs.len() as u32);
+                for s in specs {
+                    o.str(s);
+                }
+                o.held(held);
             }
         }
         frame(o)
@@ -428,18 +456,14 @@ impl ToClient {
                 }
                 ToClient::Listing { workspaces }
             }
-            12 => {
-                let n = i.u32()?;
-                let mut panes = Vec::new();
-                for _ in 0..n {
-                    let (pane, pid, cmd, log) = (i.u64()?, i.u32()? as i32, i.str()?, i.bytes()?);
-                    let tee = if i.u8()? != 0 { Some(i.tee()?) } else { None };
-                    panes.push(Held { pane, pid, cmd, log, tee, queue: i.queue()? });
-                }
-                ToClient::Taken { panes }
-            }
+            12 => ToClient::Taken { panes: i.held()? },
             13 => ToClient::Size { pane: i.u64()?, cols: i.u16()?, rows: i.u16()? },
             14 => ToClient::Restarting,
+            15 => {
+                let n = i.u32()?;
+                let specs = (0..n).map(|_| i.str()).collect::<io::Result<Vec<_>>>()?;
+                ToClient::Workspaces { specs, held: i.held()? }
+            }
             t => return Err(bad(t)),
         })
     }
@@ -532,6 +556,9 @@ pub enum Heard {
     Listing(Vec<Listed>),
     /// Panes taken into this window.
     Taken(Vec<Held>),
+    /// The session's shared workspaces, and the terminals in them now this
+    /// window's (see ToClient::Workspaces).
+    Workspaces(Vec<String>, Vec<Held>),
     /// The size its program writes for now.
     Size(u64, u16, u16),
     /// The server is being swapped for a newer one: the connection about
@@ -621,7 +648,7 @@ impl Client {
         // One opened to show a terminal names it, and takes it up whatever
         // other window shows it.
         let want: Vec<u64> = crate::show_pane().into_iter().collect();
-        s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again: crate::quake_mode() || !want.is_empty(), want, about: about() }.encode())?;
+        s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again: crate::quake_mode() || !want.is_empty(), want, about: about(), caps: caps() }.encode())?;
         let f = read_frame(&mut s)?;
         s.set_read_timeout(None)?;
         match ToClient::decode(&f) {
@@ -741,6 +768,7 @@ fn listen(mut r: Box<dyn Read + Send>, spawned: Sender<(u64, i32)>, hear: Arc<dy
             Ok(ToClient::Proc { pane, proc }) => hear(Heard::Proc(pane, proc)),
             Ok(ToClient::Listing { workspaces }) => hear(Heard::Listing(workspaces)),
             Ok(ToClient::Taken { panes }) => hear(Heard::Taken(panes)),
+            Ok(ToClient::Workspaces { specs, held }) => hear(Heard::Workspaces(specs, held)),
             Ok(ToClient::Size { pane, cols, rows }) => hear(Heard::Size(pane, cols, rows)),
             Ok(ToClient::Restarting) => hear(Heard::Restarting),
             Ok(ToClient::Spawned { pane, pid }) => {
@@ -917,7 +945,7 @@ type Reached = (std::process::ChildStdin, std::process::ChildStdout, std::proces
 fn reach_local(again: bool, want: Vec<u64>) -> io::Result<(UnixStream, UnixStream, Vec<Held>)> {
     let mut s = UnixStream::connect(socket())?;
     s.set_read_timeout(Some(Duration::from_secs(5)))?;
-    s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again, want, about: about() }.encode())?;
+    s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again, want, about: about(), caps: caps() }.encode())?;
     let f = read_frame(&mut s)?;
     s.set_read_timeout(None)?;
     match ToClient::decode(&f) {
@@ -963,7 +991,7 @@ fn reach(host: &str, again: bool, want: Vec<u64>) -> io::Result<Reached> {
         let s = said.lock().map(|s| s.trim().to_string()).unwrap_or_default();
         io::Error::new(e.kind(), if s.is_empty() { format!("{host}: {e}") } else { format!("{host}: {s}") })
     };
-    let hello = w.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again, want, about: about() }.encode()).and_then(|_| read_frame(&mut r));
+    let hello = w.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again, want, about: about(), caps: caps() }.encode()).and_then(|_| read_frame(&mut r));
     let f = match hello {
         Ok(f) => f,
         Err(e) => {
@@ -1073,11 +1101,14 @@ impl Client {
                             *sp = rx;
                             *ssh = child;
                         }
+                        // Told what it holds before keys typed meanwhile go,
+                        // so the window has its panes back first; and before
+                        // what the session says after (its shared workspaces,
+                        // with terminals the window is to take up), so that
+                        // is heard after this, not before.
+                        (me.hear)(Heard::Back(panes));
                         let h = me.hear.clone();
                         let _ = std::thread::Builder::new().name("mux".into()).spawn(move || listen(r, tx, h));
-                        // Told what it holds before keys typed meanwhile go,
-                        // so the window has its panes back first.
-                        (me.hear)(Heard::Back(panes));
                         me.connected.store(true, Ordering::Release);
                         let keys = me.waiting.lock().map(|mut w| std::mem::take(&mut *w)).unwrap_or_default();
                         for (pane, bytes) in keys {
@@ -1239,4 +1270,18 @@ pub fn view_id(base: u64, v: u64) -> u64 {
 fn about() -> String {
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname").map(|h| h.trim().to_string()).unwrap_or_default();
     format!("{} · {host}{}", crate::version(), if crate::quake_mode() { " · quake" } else { "" })
+}
+
+/// A window that shares workspaces with the other windows of a session
+/// (Hello's caps): the session keeps them, and tells it their changes.
+pub const CAN_SHARE: u32 = 1;
+
+/// What this window can do, said in its hello: a regular window shares
+/// workspaces; the quake window has its own, and does not.
+fn caps() -> u32 {
+    if crate::quake_mode() {
+        0
+    } else {
+        CAN_SHARE
+    }
 }

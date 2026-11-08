@@ -75,6 +75,13 @@ pub struct WorkspaceSpec {
     pub on_open: Option<String>,
     #[serde(default, rename = "on-focus", skip_serializing_if = "Option::is_none")]
     pub on_focus: Option<String>,
+    /// Its name in the session that shares it among windows, and how many
+    /// times it has been changed there: a window's change made from an
+    /// older one is not taken. None from a jot before sharing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<u64>,
 }
 
 /// A pane to be started: its command and folder.
@@ -360,7 +367,7 @@ impl Default for Config {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Session {
     #[serde(default)]
     pub current: usize,
@@ -385,6 +392,10 @@ pub struct Session {
     /// with every window's workspaces above as well (all an older jot reads).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub windows: Vec<Session>,
+    /// The workspace shown, by its id, when it is one the session shares:
+    /// a window that gets them from the session goes to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_id: Option<u64>,
 }
 
 fn config_dir() -> PathBuf {
@@ -727,4 +738,39 @@ pub fn save_folded(hosts: &std::collections::HashSet<String>) {
     let mut lines: Vec<&str> = hosts.iter().map(String::as_str).collect();
     lines.sort();
     let _ = std::fs::write(state_dir().join("sidebar-folded"), lines.iter().map(|h| format!("{h}\n")).collect::<String>());
+}
+
+/// What of a layout windows sharing it keep the same: which way each split
+/// goes and the terminals in it, in order; not the sizes (each window its
+/// own), nor the folders, commands and pins (which change as they are
+/// used).
+pub fn shape(spec: &Spec) -> String {
+    match spec {
+        Spec::Command(c) => format!("c{c:?}"),
+        Spec::Pane { id, empty, .. } => format!("p{}{}", id.map_or(String::from("-"), |i| i.to_string()), if *empty { "e" } else { "" }),
+        Spec::Across { v, .. } => format!("a({})", v.iter().map(shape).collect::<Vec<_>>().join(",")),
+        Spec::Down { h, .. } => format!("d({})", h.iter().map(shape).collect::<Vec<_>>().join(",")),
+    }
+}
+
+impl WorkspaceSpec {
+    /// What windows sharing it keep the same (see shape): the layout's
+    /// shape, its name, accent and theme.
+    pub fn shared_shape(&self) -> String {
+        format!("{}|{:?}|{:?}|{}", self.name, self.accent, self.theme, self.layout.as_ref().map(shape).unwrap_or_default())
+    }
+
+    /// Whether the session it is in can share it: all its terminals are
+    /// that session's (none on another machine), and it is not empty.
+    pub fn shareable(&self) -> bool {
+        self.id.is_some() && self.host.is_none() && self.layout.as_ref().is_some_and(|l| !ids_in_order(l).is_empty() && no_hosts(l))
+    }
+}
+
+fn no_hosts(spec: &Spec) -> bool {
+    match spec {
+        Spec::Command(_) => true,
+        Spec::Pane { host, .. } => host.is_none(),
+        Spec::Across { v: kids, .. } | Spec::Down { h: kids, .. } => kids.iter().all(no_hosts),
+    }
 }

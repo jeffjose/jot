@@ -50,6 +50,7 @@ mod restore;
 mod settings;
 mod slash;
 mod sidebar;
+mod shared;
 mod terminals;
 mod tooltip;
 mod space;
@@ -136,6 +137,10 @@ struct Closed {
 }
 
 pub struct Workspace {
+    /// Its name in the session, which shares it with the other windows,
+    /// and the change there this window's is of (0: not shared yet).
+    id: u64,
+    rev: u64,
     name: String,
     root: Node,
     focus: PaneId,
@@ -384,6 +389,21 @@ pub struct App {
     /// The machines whose terminals the sidebar folds away, by how they
     /// are reached ("" for this one).
     side_folded: std::collections::HashSet<String>,
+    /// Shapes of shared workspaces this window has said, by id (see
+    /// shared.rs); the one to show once the session gives it (a window
+    /// opened again, after the machine restarts); and, by machine, the
+    /// terminals asked for to take a list in, with that list.
+    sent: HashMap<u64, Vec<String>>,
+    want_current: Option<u64>,
+    sync_waiting: HashMap<usize, (Vec<u64>, Vec<WorkspaceSpec>)>,
+    /// Windows of the last session to open again (--restore), once this one
+    /// has said its workspaces.
+    open_later: Vec<PathBuf>,
+    /// The machines whose sessions share workspaces (they have said their
+    /// list); and terminals one gave back on reconnecting that no workspace
+    /// here had, for its list to take up (else let go).
+    shares_with: std::collections::HashSet<usize>,
+    unclaimed: HashMap<usize, Vec<u64>>,
     /// What the sidebar showed last, as `sidebar_moved` counts it.
     side_sig: u64,
     /// What the project bar said when last drawn: drawn again when it changes.
@@ -480,7 +500,29 @@ impl App {
         // begins with one shell.
         let taking_up = !attached.panes.is_empty();
         let fresh = attached.fresh;
-        let session = if taking_up { toml::from_str::<Session>(&attached.layout).ok() } else if fresh || crate::restoring() { session } else { None };
+        let session = if taking_up {
+            let given = toml::from_str::<Session>(&attached.layout).ok();
+            match (given, session.filter(|_| crate::restoring())) {
+                // A window of the last session opened again (after the machine
+                // restarts), the session sharing workspaces already: those from
+                // the session, its own (unshared) from its file as well, where
+                // it was, and the one it showed.
+                (Some(mut g), Some(mine)) => {
+                    let have: Vec<u64> = g.workspaces.iter().filter_map(|w| w.id).collect();
+                    g.workspaces.extend(mine.workspaces.into_iter().filter(|w| !w.id.is_some_and(|id| have.contains(&id))));
+                    g.window = mine.window.or(g.window);
+                    if let Some(i) = mine.current_id.and_then(|id| g.workspaces.iter().position(|w| w.id == Some(id))) {
+                        g.current = i;
+                    }
+                    Some(g)
+                }
+                (given, _) => given,
+            }
+        } else if fresh || crate::restoring() {
+            session
+        } else {
+            None
+        };
         // Where this window was, as the session kept it with its workspaces,
         // else as the last window was left; and the other windows that quit
         // with workspaces of their own opened again, each taking up the next.
@@ -616,6 +658,12 @@ impl App {
             side_toggle: None,
             side_heading: None,
             side_folded: persist::load_folded(),
+            sent: HashMap::new(),
+            want_current: None,
+            sync_waiting: HashMap::new(),
+            open_later: Vec::new(),
+            shares_with: Default::default(),
+            unclaimed: HashMap::new(),
             side_sig: 0,
             foot_said: String::new(),
             foot_dots: Vec::new(),
@@ -844,7 +892,8 @@ impl App {
             (false, _) => spec.name.clone(),
             (true, _) => sidebar::random_name(),
         };
-        self.workspaces.push(Workspace { name, root, focus, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces, open: true });
+        let id = spec.id.unwrap_or_else(new_ws_id);
+        self.workspaces.push(Workspace { id, rev: spec.rev.unwrap_or(0), name, root, focus, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces, open: true });
         self.run_hook(self.workspaces.len() - 1, true);
     }
 
@@ -881,6 +930,8 @@ impl App {
         let (specs, current, roam) = match session {
             Some(s) => {
                 self.pending_popouts = s.popouts;
+                // The shared workspace it showed, gone to when the session gives it.
+                self.want_current = s.current_id.filter(|id| !s.workspaces.iter().any(|w| w.id == Some(*id)));
                 (s.workspaces, s.current, s.roam)
             }
             None if taking_up => (Vec::new(), 0, None),
@@ -1210,7 +1261,7 @@ impl App {
             }
             // Its workspace was closed with it: it comes back as one.
             None => {
-                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new(), open: true });
+                self.workspaces.push(Workspace { id: new_ws_id(), rev: 0, name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new(), open: true });
                 self.go_to(self.workspaces.len() - 1);
             }
         }
@@ -1221,6 +1272,7 @@ impl App {
     /// Closes a pane, its workspace with it when it was the last; jot
     /// with the last workspace.
     fn close(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        crate::debuglog::log(format!("pane {id:x}: closed"));
         self.forget_minimized(id);
         // Commands waiting on it wait no more.
         self.release_after(id, false);
@@ -2094,7 +2146,10 @@ impl App {
         while let Ok(req) = self.requests.try_recv() {
             self.answer(req, event_loop);
         }
-        let mut back = None;
+        // Sessions reached again: what each holds, taken up once the rest of
+        // what came is (see below), unless what a session says next needs it
+        // first.
+        let mut back: Vec<(usize, Vec<crate::mux::Held>)> = Vec::new();
         let mut exited = Vec::new();
         let shown: Vec<PaneId> = {
             let mut v = Vec::new();
@@ -2119,6 +2174,7 @@ impl App {
                 Output::Failed(..) => "heard failed",
                 Output::Listing(..) => "heard listing",
                 Output::Taken(..) => "heard taken",
+                Output::Workspaces(..) => "heard workspaces",
                 Output::Size(..) => "heard size",
                 Output::Restarting(..) => "heard restarting",
                 Output::Gone(..) => "heard gone",
@@ -2242,7 +2298,7 @@ impl App {
                     event_loop.exit();
                     return;
                 }
-                Output::Back(k, held) => back = Some((k, held)),
+                Output::Back(k, held) => back.push((k, held)),
                 Output::Failed(k, why) => self.not_reached(k, &why),
                 Output::Listing(k, mut l) => {
                     // Terminals let go of here a moment ago, which a list asked
@@ -2272,12 +2328,22 @@ impl App {
                     }
                 }
                 Output::Taken(k, held) => self.taken(k, held),
+                Output::Workspaces(k, specs, held) => {
+                    // Its shared workspaces come after what it holds: that
+                    // first, or their terminals would be taken for gone.
+                    if let Some(i) = back.iter().position(|(m, _)| *m == k) {
+                        let (k, held) = back.remove(i);
+                        exited.extend(self.taken_back(k, held));
+                        self.connected(k);
+                    }
+                    self.sync_workspaces(k, specs, held)
+                }
             }
         }
         if let (true, Some(id)) = (search_again, searched) {
             self.find_output(id);
         }
-        if let Some((k, held)) = back {
+        for (k, held) in back {
             exited.extend(self.taken_back(k, held));
             self.connected(k);
         }
@@ -2991,21 +3057,31 @@ impl App {
             }
         };
         let describe = describe_for(0);
-        let spec_of = |ws: &Workspace, d: &dyn Fn(PaneId) -> (String, Option<PathBuf>, Vec<String>, bool, Option<String>)| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &d)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), ..Default::default() };
+        let spec_of = |ws: &Workspace, d: &dyn Fn(PaneId) -> (String, Option<PathBuf>, Vec<String>, bool, Option<String>)| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &d)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), id: Some(ws.id), rev: Some(ws.rev), ..Default::default() };
         let mut workspaces: Vec<WorkspaceSpec> = self.workspaces.iter().map(|ws| spec_of(ws, &describe)).collect();
         workspaces.extend(self.unreached.iter().cloned());
         let roam = self.roam.and_then(|r| panes.get(&r)).and_then(|p| p.pty.cwd()).or(self.roam_cwd.clone()).map(|p| persist::shorten(&p));
         let popouts = self.popouts.iter().filter(|po| crate::mux::split_id(po.pane).0 == 0).map(|po| persist::spec(&Node::Pane(po.pane), &describe)).collect();
-        let session = Session { current: self.current, roam, workspaces, popouts, window: self.window_state(), more: 0, windows: Vec::new() };
+        let session = Session { current: self.current, roam, workspaces, popouts, window: self.window_state(), more: 0, windows: Vec::new(), current_id: None };
         // The window's machine's session keeps them all, for the next window
         // to take up (reaching the other machines again), and saves every
         // window's together for after a restart. Each other machine's keeps
-        // its own, for a window opened on it.
-        if let Ok(text) = toml::to_string(&session) {
-            crate::debuglog::count("layout sent");
-            self.mux.layout(text);
+        // its own, for a window opened on it. Not while the window waits for
+        // terminals to take a machine's shared workspaces in (see
+        // shared.rs): said once it has them.
+        let mut said: Vec<(u64, String)> = Vec::new();
+        let waits = |k: usize| self.sync_waiting.contains_key(&k);
+        if !waits(0) {
+            said.extend(session.workspaces.iter().filter(|w| w.shareable()).filter_map(|w| Some((w.id?, w.shared_shape()))));
+            if let Ok(text) = toml::to_string(&session) {
+                crate::debuglog::count("layout sent");
+                self.mux.layout(text);
+            }
         }
         for (k, m) in machines.iter().enumerate().skip(1) {
+            if waits(k) {
+                continue;
+            }
             // Its workspaces: those all of whose panes are on it.
             let d = describe_for(k);
             let own: Vec<WorkspaceSpec> = self
@@ -3018,12 +3094,24 @@ impl App {
                 })
                 .map(|ws| spec_of(ws, &d))
                 .collect();
+            said.extend(own.iter().filter(|w| w.shareable()).filter_map(|w| Some((w.id?, w.shared_shape()))));
             if let Ok(text) = toml::to_string(&Session { workspaces: own, ..Default::default() }) {
                 m.client.layout(text);
             }
         }
+        // The other windows of a session brought back, now that this one's
+        // workspaces are the session's.
+        if !self.open_later.is_empty() && !waits(0) {
+            let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("jot"));
+            for path in std::mem::take(&mut self.open_later) {
+                open_detached(&exe, &["--restore".as_ref(), path.as_os_str()]);
+            }
+        }
+        for (id, shape) in said {
+            self.said_shape(id, shape);
+        }
         self.saved_at = Instant::now();
-        self.unsaved = false;
+        self.unsaved = !self.sync_waiting.is_empty();
     }
 }
 
@@ -3208,7 +3296,9 @@ impl ApplicationHandler<()> for App {
                 }
             }
         }
-        if self.unsaved && self.saved_at.elapsed() > Duration::from_secs(2) {
+        // Soon after a change, as other windows sharing its workspaces show
+        // it too (see shared.rs).
+        if self.unsaved && self.saved_at.elapsed() > SAVE_AFTER {
             self.save();
         }
         // Once a second for the captions and the clock, and to save the
@@ -3233,7 +3323,7 @@ impl ApplicationHandler<()> for App {
             self.queue_tick(*id);
         }
         let printing = self.print_tick();
-        let soon = if due.is_empty() && !printing { Duration::from_secs(1) } else { Duration::from_millis(50) };
+        let soon = if !due.is_empty() || printing { Duration::from_millis(50) } else if self.unsaved { SAVE_AFTER } else { Duration::from_secs(1) };
         event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + soon));
         // The window has kept its size: its programs told it, each drawing
         // itself again once. Only told: the panes are laid out and drawn
@@ -3471,6 +3561,12 @@ impl App {
             }
             self.listed_at = Instant::now() - Duration::from_secs(60);
             Vec::new()
+        } else if self.shares_with.contains(&k) {
+            // A session that shares workspaces tells their list right after:
+            // what of these it has is taken up from it, the rest let go then
+            // (see apply_shared).
+            self.unclaimed.insert(k, new);
+            Vec::new()
         } else {
             new
         };
@@ -3510,6 +3606,7 @@ fn hearer(k: usize, tx: std::sync::mpsc::Sender<Output>, proxy: EventLoopProxy<(
             Heard::Failed(why) => Output::Failed(k, why),
             Heard::Listing(l) => Output::Listing(k, l),
             Heard::Taken(h) => Output::Taken(k, h),
+            Heard::Workspaces(s, h) => Output::Workspaces(k, s, h),
             Heard::Size(p, cols, rows) => Output::Size(id(p), cols, rows),
             Heard::Restarting => Output::Restarting(k),
             Heard::Gone => Output::Gone(k),
@@ -3702,6 +3799,8 @@ impl App {
 
     /// Panes taken: the workspace waiting on them made, with them in it.
     fn taken(&mut self, k: usize, held: Vec<crate::mux::Held>) {
+        // Terminals a list of shared workspaces waited for.
+        let Some(held) = self.shared_taken(k, held) else { return };
         let first = held.first().map(|h| h.pane);
         for h in held {
             self.held.insert(crate::mux::app_id(k, h.pane), h);
@@ -3854,3 +3953,20 @@ pub(super) fn open_detached(exe: &std::path::Path, args: &[&std::ffi::OsStr]) {
         eprintln!("jot: could not open another window: {e}");
     }
 }
+
+/// A new workspace's name in the session that will share it: random, so
+/// that windows making theirs at once do not choose the same.
+fn new_ws_id() -> u64 {
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut x = t ^ ((std::process::id() as u64) << 40) ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    // splitmix64, enough to spread the clock's low bits.
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (x ^ (x >> 31)) | 1
+}
+
+/// How long after a change the window says its workspaces to its session:
+/// soon, as other windows that share them follow, but not on every key.
+const SAVE_AFTER: Duration = Duration::from_millis(250);
