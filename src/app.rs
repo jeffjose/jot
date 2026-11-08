@@ -76,6 +76,10 @@ pub struct Pane {
     rect: Rect,
     cols: u16,
     rows: u16,
+    /// The size this window lays it out at, and tells the session.
+    /// Its terminal is the size the session says (`cols`, `rows`): another
+    /// window's, while that one was typed into last.
+    want: (u16, u16),
     /// Every row to be drawn, not only the ones that changed.
     full: bool,
     /// Where the cursor was drawn, column and row, if it was.
@@ -602,7 +606,7 @@ impl App {
         let caption = folder_name(&pty.cwd().unwrap_or(start.cwd));
         self.panes.insert(
             id,
-            Pane { term, pty, cmd, content: Rect::default(), rect: Rect::default(), cols, rows, full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0 },
+            Pane { term, pty, cmd, content: Rect::default(), rect: Rect::default(), cols, rows, want: (cols, rows), full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0 },
         );
         // A tee and a queue the session kept going, shown again.
         if let (Some((tee, queue)), Some(p)) = (kept, self.panes.get_mut(&id)) {
@@ -835,7 +839,12 @@ impl App {
         let area = self.area();
         let mut shown = Vec::new();
         let row_h = self.mini_row_h();
-        for (i, ws) in self.workspaces.iter().enumerate() {
+        // The workspace shown first: a pane in another workspace too is laid
+        // out where it is seen, once, not resized back and forth between
+        // the two.
+        let order = std::iter::once(self.current).chain((0..self.workspaces.len()).filter(|i| *i != self.current));
+        for i in order {
+            let Some(ws) = self.workspaces.get(i) else { continue };
             let (mut panes, mut dividers, mut rows) = (Vec::new(), Vec::new(), Vec::new());
             match ws.zoom {
                 Some(z) => panes.push((z, area)),
@@ -845,7 +854,11 @@ impl App {
                 self.dividers = dividers;
                 self.mini_rows = rows;
             }
-            shown.extend(panes);
+            for (id, r) in panes {
+                if !shown.iter().any(|(s, _)| *s == id) {
+                    shown.push((id, r));
+                }
+            }
         }
         if let Some(r) = self.roam {
             let m = self.px(24.0);
@@ -862,13 +875,19 @@ impl App {
             let rows = (content.h / ch).clamp(1, u16::MAX as i32) as u16;
             // Only a change of rows or columns is told to the program: a
             // shell such as tcsh draws its prompt again on each telling.
-            if (cols, rows) != (p.cols, p.rows) {
-                crate::debuglog::log(format!("pane {id:x}: {}x{} -> {cols}x{rows}", p.cols, p.rows));
-                p.term.resize(cols, rows, cw as u32, ch as u32);
+            // The session makes this window's size the pane's, and says so
+            // to every window showing it (Output::Size); this window takes
+            // it at once.
+            if (cols, rows) != p.want {
+                crate::debuglog::log(format!("pane {id:x}: {}x{} -> {cols}x{rows}", p.want.0, p.want.1));
+                p.want = (cols, rows);
                 p.pty.resize(cols, rows, ((cols as i32 * cw) as u32, (rows as i32 * ch) as u32));
-                p.cols = cols;
-                p.lines.clear();
-                p.rows = rows;
+                if (cols, rows) != (p.cols, p.rows) {
+                    p.term.resize(cols, rows, cw as u32, ch as u32);
+                    p.cols = cols;
+                    p.lines.clear();
+                    p.rows = rows;
+                }
             }
             p.rect = rect;
             p.content = content;
@@ -1821,6 +1840,7 @@ impl App {
                 Output::Failed(..) => "heard failed",
                 Output::Listing(..) => "heard listing",
                 Output::Taken(..) => "heard taken",
+                Output::Size(..) => "heard size",
                 Output::Gone(..) => "heard gone",
             });
             match out {
@@ -1856,6 +1876,22 @@ impl App {
                     }
                     if raw {
                         self.queue_tick(id);
+                    }
+                }
+                // The size its program writes for now: another window's, when
+                // that one was typed into last. Drawn at that size here too, so
+                // what the program draws for it (as Claude Code redraws its
+                // foot) lands where it should.
+                Output::Size(id, cols, rows) => {
+                    let (cw, ch) = (self.fonts.cell_w as u32, self.fonts.cell_h as u32);
+                    if let Some(p) = self.panes.get_mut(&id).filter(|p| (p.cols, p.rows) != (cols, rows)) {
+                        crate::debuglog::log(format!("pane {id:x}: the session says {cols}x{rows}"));
+                        p.term.resize(cols, rows, cw, ch);
+                        p.cols = cols;
+                        p.rows = rows;
+                        p.lines.clear();
+                        p.full = true;
+                        self.redraw();
                     }
                 }
                 Output::Ran(id, cmd) => self.queue_ran(id, cmd),
@@ -2140,7 +2176,7 @@ impl App {
                 l.extend(cells.iter().take(cols_n).map(|c| if c.ch == '\0' { ' ' } else { c.ch }));
             }
             let top = content.y + y as i32 * ch;
-            if top + ch > content.y + content.h + ch {
+            if top + ch > content.y + content.h + ch || top + ch > rect.y + rect.h {
                 return;
             }
             // The row across the whole pane, so its edges match.
@@ -2163,7 +2199,7 @@ impl App {
             };
             for (x, c) in cells.iter().enumerate() {
                 let (_, bg) = colors(c, x as u16, y);
-                if bg != dbg {
+                if bg != dbg && content.x + (x as i32 + 1) * cw <= rect.x + rect.w {
                     canvas.fill(Rect { x: content.x + x as i32 * cw, y: top, w: cw, h: ch }, bg);
                 }
             }
@@ -2965,6 +3001,7 @@ fn hearer(k: usize, tx: std::sync::mpsc::Sender<Output>, proxy: EventLoopProxy<(
             Heard::Failed(why) => Output::Failed(k, why),
             Heard::Listing(l) => Output::Listing(k, l),
             Heard::Taken(h) => Output::Taken(k, h),
+            Heard::Size(p, cols, rows) => Output::Size(id(p), cols, rows),
             Heard::Gone => Output::Gone(k),
         };
         if let Ok(tx) = tx.lock() {

@@ -37,6 +37,9 @@ pub enum Output {
     Listing(usize, Vec<crate::mux::Listed>),
     /// Panes of a machine taken into this window.
     Taken(usize, Vec<crate::mux::Held>),
+    /// The size its program writes for now, set by whichever window
+    /// was typed into last.
+    Size(u64, u16, u16),
     /// The connection to a machine's session ended.
     Gone(usize),
 }

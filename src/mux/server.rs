@@ -252,12 +252,32 @@ impl Pane {
     }
 
     /// The size viewer `c` gives it, made its own if it is not already.
-    fn size_for(&mut self, c: u64) {
-        if let Some(s) = self.sizes.get(&c).copied().filter(|s| *s != self.size) {
-            self.pty.resize(s.0, s.1, s.2);
-            self.log.size(s.0, s.1);
-            self.size = s;
+    /// Whether that changed it: every window showing it is then told, so
+    /// each draws it at the one size its program writes for.
+    fn size_for(&mut self, c: u64) -> bool {
+        let Some(s) = self.sizes.get(&c).copied().filter(|s| *s != self.size) else { return false };
+        self.pty.resize(s.0, s.1, s.2);
+        self.log.size(s.0, s.1);
+        self.size = s;
+        true
+    }
+
+    /// Window `c` no longer shows it: if its size was the one, another
+    /// showing it gives the size. Whether that changed it.
+    fn drop_viewer(&mut self, c: u64) -> bool {
+        self.viewers.retain(|v| *v != c);
+        self.sizes.remove(&c);
+        if self.sizes.values().any(|s| *s == self.size) {
+            return false;
         }
+        match self.viewers.last().copied() {
+            Some(other) => self.size_for(other),
+            None => false,
+        }
+    }
+
+    fn size_msg(&self, pane: u64) -> ToClient {
+        ToClient::Size { pane, cols: self.size.0, rows: self.size.1 }
     }
 }
 
@@ -291,6 +311,15 @@ impl Server {
             if s.write_all(&m.encode()).is_err() {
                 let _ = s.shutdown(std::net::Shutdown::Both);
             }
+        }
+    }
+
+    /// Window `c`, given panes, told the size each is now: a window may
+    /// show it at another size than its own until typed into.
+    fn tell_sizes(&mut self, c: u64, panes: &[u64]) {
+        let sizes: Vec<ToClient> = panes.iter().filter_map(|id| self.panes.get(id).map(|p| p.size_msg(*id))).collect();
+        for m in sizes {
+            self.send(c, m);
         }
     }
 
@@ -401,7 +430,9 @@ impl Server {
         self.left = quake;
         let layout = merge(left.iter().map(|(_, l)| l.as_str())).and_then(|s| toml::to_string(&s).ok()).unwrap_or_default();
         self.layouts.insert(c, layout.clone());
+        let ids: Vec<u64> = held.iter().map(|h| h.pane).collect();
         self.send(c, ToClient::Welcome { layout, panes: held });
+        self.tell_sizes(c, &ids);
     }
 
     /// A window come back after its connection dropped: the panes it had,
@@ -437,7 +468,9 @@ impl Server {
         // (reconnecting) passes them by; one started again (the quake window)
         // takes them up.
         let layout = self.layouts.get(&c).cloned().unwrap_or_default();
+        let ids: Vec<u64> = held.iter().map(|h| h.pane).collect();
         self.send(c, ToClient::Welcome { layout, panes: held });
+        self.tell_sizes(c, &ids);
     }
 
     /// Its workspaces window `c` does not show: those of the other
@@ -648,14 +681,21 @@ pub fn run(path: &Path) {
                 // Typed into from a window: the size that window gives it, first.
                 ToServer::Input { pane, bytes } => {
                     if let Some(p) = s.panes.get_mut(&pane) {
-                        p.size_for(c);
+                        let resized = p.size_for(c);
                         let _ = p.keys.send(bytes);
+                        if resized {
+                            let m = p.size_msg(pane);
+                            s.tell(pane, m);
+                        }
                     }
                 }
                 ToServer::Resize { pane, cols, rows, px } => {
                     if let Some(p) = s.panes.get_mut(&pane) {
                         p.sizes.insert(c, (cols, rows, px));
-                        p.size_for(c);
+                        if p.size_for(c) {
+                            let m = p.size_msg(pane);
+                            s.tell(pane, m);
+                        }
                     }
                 }
                 ToServer::Close { pane } => {
@@ -694,11 +734,14 @@ pub fn run(path: &Path) {
                 ToServer::Take { panes } => {
                     let taken = s.take(c, &panes);
                     s.send(c, taken);
+                    s.tell_sizes(c, &panes);
                 }
                 ToServer::Release { pane } => {
                     if let Some(p) = s.panes.get_mut(&pane) {
-                        p.viewers.retain(|v| *v != c);
-                        p.sizes.remove(&c);
+                        if p.drop_viewer(c) {
+                            let m = p.size_msg(pane);
+                            s.tell(pane, m);
+                        }
                     }
                 }
                 ToServer::Hello { .. } | ToServer::Peek => {}
@@ -711,10 +754,17 @@ pub fn run(path: &Path) {
                     // Its panes and workspaces, for the next window; none if
                     // all its panes ended.
                     let mut any = false;
-                    for p in s.panes.values_mut().filter(|p| p.viewers.contains(&c)) {
-                        p.viewers.retain(|v| *v != c);
-                        p.sizes.remove(&c);
+                    let mut resized = Vec::new();
+                    for (id, p) in s.panes.iter_mut().filter(|(_, p)| p.viewers.contains(&c)) {
+                        if p.drop_viewer(c) {
+                            resized.push(p.size_msg(*id));
+                        }
                         any = true;
+                    }
+                    for m in resized {
+                        if let ToClient::Size { pane, .. } = m {
+                            s.tell(pane, m);
+                        }
                     }
                     let name = s.names.remove(&c).unwrap_or(0);
                     if let Some(l) = s.layouts.remove(&c).filter(|_| any) {

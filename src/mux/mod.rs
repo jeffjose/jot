@@ -116,6 +116,9 @@ pub enum ToClient {
     Listing { workspaces: Vec<Listed> },
     /// For Take: the panes, now this window's, with what they printed.
     Taken { panes: Vec<Held> },
+    /// The size a pane's program writes for now, when it changes and
+    /// when a window takes it: each window draws it at that size.
+    Size { pane: u64, cols: u16, rows: u16 },
 }
 
 // The wire: a frame is its length (u32), then a tag, then the fields.
@@ -356,6 +359,9 @@ impl ToClient {
                     o.queue(&p.queue);
                 }
             }
+            ToClient::Size { pane, cols, rows } => {
+                o.u8(13).u64(*pane).u16(*cols).u16(*rows);
+            }
         }
         frame(o)
     }
@@ -405,6 +411,7 @@ impl ToClient {
                 }
                 ToClient::Taken { panes }
             }
+            13 => ToClient::Size { pane: i.u64()?, cols: i.u16()?, rows: i.u16()? },
             t => return Err(bad(t)),
         })
     }
@@ -497,6 +504,8 @@ pub enum Heard {
     Listing(Vec<Listed>),
     /// Panes taken into this window.
     Taken(Vec<Held>),
+    /// The size its program writes for now.
+    Size(u64, u16, u16),
     /// The connection to the session ended: on another machine, it is
     /// reached again ([`Client::reconnect`]).
     /// The session ended under the window.
@@ -698,6 +707,7 @@ fn listen(mut r: Box<dyn Read + Send>, spawned: Sender<(u64, i32)>, hear: Arc<dy
             Ok(ToClient::Proc { pane, proc }) => hear(Heard::Proc(pane, proc)),
             Ok(ToClient::Listing { workspaces }) => hear(Heard::Listing(workspaces)),
             Ok(ToClient::Taken { panes }) => hear(Heard::Taken(panes)),
+            Ok(ToClient::Size { pane, cols, rows }) => hear(Heard::Size(pane, cols, rows)),
             Ok(ToClient::Spawned { pane, pid }) => {
                 let _ = spawned.send((pane, pid));
             }
