@@ -506,9 +506,15 @@ impl Server {
         use crate::persist::{ids_in_order, Session, Spec, WorkspaceSpec};
         let mut workspaces = Vec::new();
         let mut named: Vec<u64> = Vec::new();
-        let from_windows = self.layouts.iter().filter(|(w, _)| **w != c).map(|(_, l)| (l, true));
-        let from_left = self.left.iter().map(|(_, l)| (l, false));
-        for (text, elsewhere) in from_windows.chain(from_left) {
+        // The quake window's workspace is its own: another window is never
+        // offered it to open, open or not (its terminals are listed, and any
+        // can be taken into a workspace of another's).
+        let quake = |w: u64| w == super::QUAKE_WINDOW;
+        let asker_quake = self.names.get(&c).is_some_and(|w| quake(*w));
+        let from_windows = self.layouts.iter().filter(|(w, _)| **w != c).map(|(w, l)| (l, true, self.names.get(w).is_some_and(|n| quake(*n))));
+        let from_left = self.left.iter().map(|(name, l)| (l, false, quake(*name)));
+        for (text, elsewhere, theirs) in from_windows.chain(from_left) {
+            let kept = theirs && !asker_quake;
             let Ok(session) = toml::from_str::<Session>(text) else { continue };
             for ws in session.workspaces {
                 let Some(layout) = &ws.layout else { continue };
@@ -520,7 +526,7 @@ impl Server {
                 }
                 named.extend(&ids);
                 // Shown elsewhere only if its panes are a live window's.
-                let shown = elsewhere && ids.iter().any(|id| self.panes.get(id).is_some_and(|p| p.viewers.iter().any(|v| *v != c)));
+                let shown = kept || elsewhere && ids.iter().any(|id| self.panes.get(id).is_some_and(|p| p.viewers.iter().any(|v| *v != c)));
                 workspaces.push(Listed { spec: toml::to_string(&ws).unwrap_or_default(), panes: ids, elsewhere: shown, label: String::new(), running: false });
             }
         }

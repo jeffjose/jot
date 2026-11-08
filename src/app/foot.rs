@@ -99,6 +99,13 @@ impl App {
 
     /// Alt and a number: the nth workspace of the machine the bar shows.
     pub(super) fn go_nth(&mut self, n: usize) {
+        // The quake window: the nth machine's, its one workspace there.
+        if crate::quake_mode() {
+            if let Some(&k) = self.foot_machines().get(n) {
+                self.show_machine(k);
+            }
+            return;
+        }
         if let Some((d, ..)) = self.machine_set(self.foot_machine()).get(n) {
             self.go_dot(*d);
         }
@@ -107,6 +114,10 @@ impl App {
     /// One of machine `k`'s workspaces opened here as it was there: its
     /// panes asked for, the workspace made when they come.
     pub(super) fn open_listed(&mut self, k: usize, i: usize) {
+        // The quake window has one workspace a machine, its own.
+        if crate::quake_mode() {
+            return;
+        }
         let Some(l) = self.machines.get(k).and_then(|m| m.listing.get(i)).cloned() else { return };
         if !self.machines[k].client.connected() {
             let name = self.machine_name(k);
@@ -193,11 +204,17 @@ impl App {
         if let Some(wi) = last.or(first) {
             return self.go_to(wi);
         }
-        if let Some(d) = self.machine_set(k).first().map(|(d, ..)| *d) {
-            return self.go_dot(d);
+        // The quake window's one there, made with a new terminal: none
+        // another window has is taken up.
+        let quake = crate::quake_mode();
+        if !quake {
+            if let Some(d) = self.machine_set(k).first().map(|(d, ..)| *d) {
+                return self.go_dot(d);
+            }
         }
         let host = (k > 0).then(|| self.machines[k].host.clone()).flatten();
-        self.add_workspace(&WorkspaceSpec { host, cwd: Some("~".into()), ..Default::default() });
+        let name = if quake { super::quake::QUAKE_WORKSPACE.to_string() } else { String::new() };
+        self.add_workspace(&WorkspaceSpec { name, host, cwd: Some("~".into()), ..Default::default() });
         self.go_to(self.workspaces.len() - 1);
     }
 

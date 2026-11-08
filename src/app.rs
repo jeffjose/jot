@@ -892,6 +892,33 @@ impl App {
                 (vec![WorkspaceSpec { name, cwd: Some(cwd.display().to_string()), panes: vec![], split: None, layout: None, ..Default::default() }], 0, None)
             }
         };
+        // The quake window has one workspace on each machine, its own: the
+        // first of a machine's that the session kept, named so; any other
+        // (from a jot before this) not made, its terminals left running in
+        // the session, as any its layout does not take up.
+        let (specs, current) = if crate::quake_mode() {
+            let mut kept: Vec<WorkspaceSpec> = Vec::new();
+            let mut at = 0;
+            for (i, mut spec) in specs.into_iter().enumerate() {
+                match kept.iter().position(|k| k.host == spec.host) {
+                    Some(j) => {
+                        if i == current {
+                            at = j;
+                        }
+                    }
+                    None => {
+                        if i == current {
+                            at = kept.len();
+                        }
+                        spec.name = quake::QUAKE_WORKSPACE.to_string();
+                        kept.push(spec);
+                    }
+                }
+            }
+            (kept, at)
+        } else {
+            (specs, current)
+        };
         for spec in &specs {
             self.add_workspace(spec);
         }
@@ -900,7 +927,8 @@ impl App {
         let popped: Vec<u64> = self.pending_popouts.iter().filter_map(|s| if let persist::Spec::Pane { id, .. } = s { *id } else { None }).collect();
         self.keep_left(&popped);
         if self.workspaces.is_empty() {
-            self.add_workspace(&WorkspaceSpec::default());
+            let name = if crate::quake_mode() { quake::QUAKE_WORKSPACE.to_string() } else { String::new() };
+            self.add_workspace(&WorkspaceSpec { name, ..Default::default() });
         }
         self.current = current.min(self.workspaces.len().saturating_sub(1));
         self.roam_cwd = roam.map(|r| persist::expand(&r));
@@ -1291,6 +1319,10 @@ impl App {
 
     /// A new workspace, on the machine of the pane you are in.
     fn new_workspace(&mut self) {
+        // The quake window has one workspace a machine, its own.
+        if crate::quake_mode() {
+            return self.toast("One workspace in the quake window", "Alt 1-9: another machine's", None, None);
+        }
         let cwd = self.focused().and_then(|f| self.panes.get(&f)).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
         let m = self.focused().map_or(0, |f| self.machine_of(f));
         let host = (m > 0).then(|| self.machines[m].host.clone()).flatten();
@@ -3426,11 +3458,28 @@ impl App {
             p.full = true;
             self.replays.push((id, h.log));
         }
+        // The quake window, given terminals it showed once and swapped out
+        // since: left to the session, listed as running on, not gathered
+        // into a workspace of their own (it has one a machine). Only for a
+        // machine it has none on do they make that one.
+        let new = if crate::quake_mode() && (0..self.workspaces.len()).any(|wi| self.ws_machine(wi) == k) {
+            for p in new {
+                self.held.remove(&app_id(k, p));
+                if let Some(m) = self.machines.get(k) {
+                    m.client.release(p);
+                }
+            }
+            self.listed_at = Instant::now() - Duration::from_secs(60);
+            Vec::new()
+        } else {
+            new
+        };
         if !new.is_empty() {
             let panes: Vec<persist::Spec> = new.iter().map(|id| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*id), host: None }).collect();
             let layout = if panes.len() == 1 { panes.into_iter().next() } else { Some(persist::Spec::Across { v: panes, sizes: Vec::new() }) };
             let host = self.machines.get(k).and_then(|m| m.host.clone()).filter(|_| k > 0);
-            self.add_workspace(&WorkspaceSpec { name: sidebar::random_name(), layout, host, ..Default::default() });
+            let name = if crate::quake_mode() { quake::QUAKE_WORKSPACE.to_string() } else { sidebar::random_name() };
+            self.add_workspace(&WorkspaceSpec { name, layout, host, ..Default::default() });
         }
         self.replay_held();
         // Its layout told again: the session kept it for the next window.
@@ -3554,7 +3603,8 @@ impl App {
             let panes: Vec<persist::Spec> = left.iter().map(|p| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*p), host: None }).collect();
             let layout = if panes.len() == 1 { panes.into_iter().next() } else { Some(persist::Spec::Across { v: panes, sizes: Vec::new() }) };
             let host = (m > 0).then(|| self.machines.get(m).and_then(|x| x.host.clone())).flatten();
-            self.add_workspace(&WorkspaceSpec { name: sidebar::random_name(), layout, host, ..Default::default() });
+            let name = if crate::quake_mode() { quake::QUAKE_WORKSPACE.to_string() } else { sidebar::random_name() };
+            self.add_workspace(&WorkspaceSpec { name, layout, host, ..Default::default() });
         }
     }
 }
