@@ -208,6 +208,17 @@ impl App {
             };
             // Every machine in the same quiet gray; a remote one's dot says
             // whether it is reached.
+            // Folded, a chevron in its icon's place, and how many terminals
+            // it holds after its name; open, the chevron while the pointer
+            // is on it, saying a click folds it.
+            let folded = self.side_folded.contains(&self.fold_key(k));
+            let icon = if folded {
+                icons::CHEVRON_RIGHT
+            } else if self.side_heading == Some(k) {
+                icons::CHEVRON_DOWN
+            } else {
+                icon
+            };
             self.canvas.icon_in(icon, Rect { x: head.x + px(4.0), y: head.y + (head.h - ih) / 2, w: ih, h: ih }, ih, c.faint);
             self.side_hits.push((head, SideHit::Machine(k)));
             let mut x = self.canvas.text(&mut self.fonts.side_small, &name, (head.x + px(4.0) + ih + px(9.0)) as f32, head.y + (head.h - dh) / 2, c.dim, clip) + px(8.0);
@@ -217,12 +228,18 @@ impl App {
                 x += s + px(8.0);
             }
             if !note.is_empty() {
-                self.canvas.text(&mut self.fonts.side_small, &note, x as f32, head.y + (head.h - dh) / 2, c.faint, clip);
+                x = self.canvas.text(&mut self.fonts.side_small, &note, x as f32, head.y + (head.h - dh) / 2, c.faint, clip) + px(8.0);
+            }
+            if folded && !mine.is_empty() {
+                self.canvas.text(&mut self.fonts.side_small, &mine.len().to_string(), x as f32, head.y + (head.h - dh) / 2, c.faint, clip);
             }
             let plus = Rect { x: head.x + head.w - px(26.0), y: head.y + (head.h - px(24.0)) / 2, w: px(24.0), h: px(24.0) };
             let near = self.side_heading == Some(k);
             button(self, plus, SideHit::NewTerminal(k), icons::PLUS, near);
             y += head.h;
+            if folded {
+                continue;
+            }
             for t in mine {
                 if y > bottom - srow {
                     break;
@@ -261,8 +278,10 @@ impl App {
             // where it was, a click.
             Some(hit @ (SideHit::Free(..) | SideHit::Pane(_))) => self.drag = Some(Drag::Side(SideCarry { hit, from: (x, y), moving: false, over: None, slot: None })),
             Some(SideHit::Settings) => self.open_settings(),
-            // A machine's heading: its menu is on a right click.
-            Some(SideHit::Machine(_)) | None => {}
+            // A machine's heading: its terminals folded away, or back; its
+            // menu is on a right click.
+            Some(SideHit::Machine(k)) => self.fold_machine(k),
+            None => {}
         }
         true
     }
@@ -758,6 +777,26 @@ impl App {
         for (o, n) in order.into_iter().zip(numbers) {
             self.term_numbers.insert(o, n);
         }
+        self.full = true;
+        self.redraw();
+    }
+}
+
+impl App {
+    /// How machine `k` is kept among the folded: how it is reached, ""
+    /// for this one.
+    pub(super) fn fold_key(&self, k: usize) -> String {
+        self.machines.get(k).and_then(|m| m.host.clone()).filter(|_| k > 0).unwrap_or_default()
+    }
+
+    /// Machine `k`'s terminals folded away in the sidebar, or back, and so
+    /// kept.
+    pub(super) fn fold_machine(&mut self, k: usize) {
+        let key = self.fold_key(k);
+        if !self.side_folded.remove(&key) {
+            self.side_folded.insert(key);
+        }
+        persist::save_folded(&self.side_folded);
         self.full = true;
         self.redraw();
     }

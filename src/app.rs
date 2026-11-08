@@ -381,6 +381,9 @@ pub struct App {
     side_toggle: Option<Rect>,
     /// The machine heading under the pointer, its + shown.
     side_heading: Option<usize>,
+    /// The machines whose terminals the sidebar folds away, by how they
+    /// are reached ("" for this one).
+    side_folded: std::collections::HashSet<String>,
     /// What the sidebar showed last, as `sidebar_moved` counts it.
     side_sig: u64,
     /// What the project bar said when last drawn: drawn again when it changes.
@@ -612,6 +615,7 @@ impl App {
             side_lit: None,
             side_toggle: None,
             side_heading: None,
+            side_folded: persist::load_folded(),
             side_sig: 0,
             foot_said: String::new(),
             foot_dots: Vec::new(),

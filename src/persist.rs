@@ -715,3 +715,16 @@ pub fn save_window(s: &WindowState) {
 fn is_zero(n: &u32) -> bool {
     *n == 0
 }
+
+/// The machines whose terminals the sidebar folds away, one a line (an
+/// empty line: this one).
+pub fn load_folded() -> std::collections::HashSet<String> {
+    std::fs::read_to_string(state_dir().join("sidebar-folded")).map(|t| t.lines().map(str::to_string).collect()).unwrap_or_default()
+}
+
+pub fn save_folded(hosts: &std::collections::HashSet<String>) {
+    let _ = std::fs::create_dir_all(state_dir());
+    let mut lines: Vec<&str> = hosts.iter().map(String::as_str).collect();
+    lines.sort();
+    let _ = std::fs::write(state_dir().join("sidebar-folded"), lines.iter().map(|h| format!("{h}\n")).collect::<String>());
+}
