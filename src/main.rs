@@ -49,6 +49,7 @@ jot: a terminal with splits and workspaces
   jot setup      add jot and its icon to the desktop's programs
   jot ssh HOST    a window on HOST's session (jot installed there)
   jot status      what the session holds, and whether a window shows it
+  jot restart     swap the session's server for this jot (after an update), every pane kept running
   jot kill        end the session and every pane in it
   jot serve SOCK  a session (started by jot itself)
   jot --version
@@ -106,10 +107,11 @@ fn main() {
     // `jot serve PATH`: a session, started by a window.
     if args.first().is_some_and(|a| a == "serve") {
         let Some(path) = args.get(1) else { return eprintln!("jot serve: which socket?") };
-        return mux::server::run(std::path::Path::new(path));
+        let handover = args.iter().position(|a| a == "--handover").and_then(|i| args.get(i + 1)).map(std::path::Path::new);
+        return mux::server::run(std::path::Path::new(path), handover);
     }
     // The session: what it holds, or ended.
-    if args.first().is_some_and(|a| a == "status" || a == "kill") {
+    if args.first().is_some_and(|a| a == "status" || a == "kill" || a == "restart") {
         std::process::exit(mux::command(&args));
     }
     // `jot bridge`: run by ssh, from a window on another machine.

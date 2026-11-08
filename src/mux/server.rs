@@ -551,21 +551,7 @@ impl Server {
         let pid = match Local::spawn(&cmd, Path::new(&cwd), cols, rows, px) {
             Ok(pty) => {
                 let pid = pty.pid;
-                let tx2 = tx.clone();
-                pty.read_on_thread(pane, move |out| {
-                    let _ = tx2.send(match out {
-                        crate::pty::Output::Bytes(id, b) => Ev::Out(id, b),
-                        _ => Ev::Ended(pane),
-                    });
-                });
-                let (keys, rx_keys) = channel::<Vec<u8>>();
-                let fd = unsafe { libc::dup(pty.fd) };
-                std::thread::spawn(move || {
-                    while let Ok(b) = rx_keys.recv() {
-                        Local::write_fd(fd, &b);
-                    }
-                    unsafe { libc::close(fd) };
-                });
+                let keys = start_io(tx, pane, &pty);
                 let mut log = Log::default();
                 log.size(cols, rows);
                 self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, proc: None, viewers: vec![c], windows: vec![self.names.get(&c).copied().unwrap_or(0)], sizes: HashMap::from([(c, (cols, rows, px))]), size: (cols, rows, px) });
@@ -592,19 +578,30 @@ impl Server {
     }
 }
 
-/// `jot serve PATH`: the session, until its last pane ends.
-pub fn run(path: &Path) {
+/// `jot serve PATH`: the session, until its last pane ends. With a
+/// handover file, the session the server before this one (in this same
+/// process) handed over: its panes and socket taken up as they were.
+pub fn run(path: &Path, handover: Option<&Path>) {
+    use std::os::fd::{AsRawFd, FromRawFd};
     unsafe {
         libc::signal(libc::SIGHUP, libc::SIG_IGN);
     }
-    let listener = match UnixListener::bind(path) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("jot serve: {}: {e}", path.display());
+    let (tx, rx) = channel::<Ev>();
+    let (mut s, listener) = match handover.map(|f| resume(f, &tx)) {
+        Some(Ok((s, fd))) => (s, unsafe { UnixListener::from_raw_fd(fd) }),
+        Some(Err(e)) => {
+            eprintln!("jot serve: could not take up the session handed over: {e}");
             return;
         }
+        None => match UnixListener::bind(path) {
+            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1 }, l),
+            Err(e) => {
+                eprintln!("jot serve: {}: {e}", path.display());
+                return;
+            }
+        },
     };
-    let (tx, rx) = channel::<Ev>();
+    let listener_fd = listener.as_raw_fd();
     {
         let tx = tx.clone();
         std::thread::spawn(move || {
@@ -623,7 +620,6 @@ pub fn run(path: &Path) {
             }
         });
     }
-    let mut s = Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1 };
     let mut next_conn = 0u64;
     let started = Instant::now();
     while let Ok(ev) = rx.recv() {
@@ -654,6 +650,26 @@ pub fn run(path: &Path) {
                 if let Some(st) = s.conns.remove(&c) {
                     let _ = st.shutdown(std::net::Shutdown::Both);
                 }
+            }
+            // `jot restart`: what the panes printed meanwhile passed on
+            // first, then the server swapped for the jot installed now.
+            Ev::Said(c, ToServer::Restart { exe }) => {
+                while let Ok(ev) = rx.recv_timeout(Duration::from_millis(30)) {
+                    match ev {
+                        Ev::Out(id, b) => s.output(id, b),
+                        Ev::Ended(id) => {
+                            s.tell(id, ToClient::Exit { pane: id });
+                            s.panes.remove(&id);
+                        }
+                        // A window that connected meanwhile reaches the new
+                        // server instead, as it tries again.
+                        _ => {}
+                    }
+                }
+                crate::pty::reap();
+                s.send(c, ToClient::Restarting);
+                let e = s.handover(&exe, listener_fd, path);
+                eprintln!("jot serve: could not restart as {exe}: {e}");
             }
             Ev::Said(c, ToServer::Hello { proto, window, again, want }) => {
                 if proto != PROTO {
@@ -744,7 +760,7 @@ pub fn run(path: &Path) {
                         }
                     }
                 }
-                ToServer::Hello { .. } | ToServer::Peek => {}
+                ToServer::Hello { .. } | ToServer::Peek | ToServer::Restart { .. } => {}
             },
             Ev::Said(..) => {}
             Ev::Left(c) => {
@@ -839,4 +855,158 @@ fn merge<'a>(texts: impl Iterator<Item = &'a str>) -> Option<crate::persist::Ses
         }
     }
     out
+}
+
+/// A pane's terminal read on a thread of its own (its output, then its
+/// end, told to the loop) and written to on another: what is typed goes
+/// to the returned sender.
+fn start_io(tx: &Sender<Ev>, pane: u64, pty: &Local) -> Sender<Vec<u8>> {
+    let tx2 = tx.clone();
+    pty.read_on_thread(pane, move |out| {
+        let _ = tx2.send(match out {
+            crate::pty::Output::Bytes(id, b) => Ev::Out(id, b),
+            _ => Ev::Ended(pane),
+        });
+    });
+    let (keys, rx_keys) = channel::<Vec<u8>>();
+    // Closed on exec: a server swapped for a newer one leaves none behind.
+    let fd = unsafe { libc::fcntl(pty.fd, libc::F_DUPFD_CLOEXEC, 0) };
+    std::thread::spawn(move || {
+        while let Ok(b) = rx_keys.recv() {
+            Local::write_fd(fd, &b);
+        }
+        unsafe { libc::close(fd) };
+    });
+    keys
+}
+
+impl Log {
+    /// A log as `encode` wrote it: its entries kept as they were.
+    fn decode(bytes: &[u8]) -> Log {
+        let mut log = Log::default();
+        let mut first = true;
+        for e in super::log_entries(bytes) {
+            match e {
+                super::Entry::Size(c, r) if first => log.base = (c, r),
+                super::Entry::Size(c, r) => log.entries.push_back(Kept::Size(c, r)),
+                super::Entry::Time(ms) => log.entries.push_back(Kept::Time(ms)),
+                super::Entry::Bytes(b) => {
+                    log.bytes += b.len();
+                    log.entries.push_back(Kept::Bytes(b.to_vec()));
+                }
+            }
+            first = false;
+        }
+        log
+    }
+}
+
+/// What a server hands the newer one it is swapped for (`jot restart`):
+/// written to a file, read by the new one before it goes on.
+const HANDOVER: &str = "jot-handover-1";
+
+/// File descriptors a handover passes: kept open across exec.
+fn keep_on_exec(fd: i32, keep: bool) {
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        libc::fcntl(fd, libc::F_SETFD, if keep { flags & !libc::FD_CLOEXEC } else { flags | libc::FD_CLOEXEC });
+    }
+}
+
+impl Server {
+    /// The server swapped for the jot at `exe`, in this process (exec):
+    /// the shells stay its children, their terminals and the socket are
+    /// passed open, and what it keeps of each pane is written for the new
+    /// one. The windows are told first, and reach it again. Returns only
+    /// if that failed, the server going on as it was (the windows reach
+    /// it again all the same).
+    fn handover(&mut self, exe: &str, listener: i32, path: &Path) -> io::Error {
+        // The windows, told, are let go: their workspaces kept as those of
+        // windows gone, for each to take back.
+        for c in std::mem::take(&mut self.windows) {
+            self.send(c, ToClient::Restarting);
+            if let Some(l) = self.layouts.remove(&c) {
+                self.left.push((self.names.get(&c).copied().unwrap_or(0), l));
+            }
+        }
+        for (_, st) in self.conns.drain() {
+            let _ = st.shutdown(std::net::Shutdown::Both);
+        }
+        self.names.clear();
+        for p in self.panes.values_mut() {
+            p.viewers.clear();
+            p.sizes.clear();
+        }
+        let mut o = Out::default();
+        o.str(HANDOVER).u64(self.next_pane).u32(listener as u32).u32(self.left.len() as u32);
+        for (name, l) in &self.left {
+            o.u64(*name).str(l);
+        }
+        o.u32(self.panes.len() as u32);
+        for (id, p) in &self.panes {
+            o.u64(*id).u32(p.pty.fd as u32).u32(p.pty.pid as u32).str(&p.cmd).bytes(&p.log.encode()).bytes(&p.tail).u8(p.at_prompt as u8).queue(&p.queue);
+            match &p.tee {
+                Some(t) => o.u8(1).tee(&t.state).u64(t.told),
+                None => o.u8(0),
+            };
+            o.u32(p.windows.len() as u32);
+            for w in &p.windows {
+                o.u64(*w);
+            }
+            o.u16(p.size.0).u16(p.size.1).u32(p.size.2 .0).u32(p.size.2 .1);
+        }
+        let file = super::dir().join(format!("handover-{}", std::process::id()));
+        if let Err(e) = std::fs::write(&file, &o.0) {
+            return e;
+        }
+        let fds: Vec<i32> = std::iter::once(listener).chain(self.panes.values().map(|p| p.pty.fd)).collect();
+        for fd in &fds {
+            keep_on_exec(*fd, true);
+        }
+        let c = |s: &str| std::ffi::CString::new(s).unwrap_or_default();
+        let args = [c("jot"), c("serve"), c(&path.to_string_lossy()), c("--handover"), c(&file.to_string_lossy())];
+        let mut argv: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
+        argv.push(std::ptr::null());
+        let exe = c(exe);
+        unsafe { libc::execv(exe.as_ptr(), argv.as_ptr()) };
+        let e = io::Error::last_os_error();
+        for fd in &fds {
+            keep_on_exec(*fd, false);
+        }
+        let _ = std::fs::remove_file(&file);
+        e
+    }
+}
+
+/// A server handed over by the one before it: its panes running, its
+/// socket listening, its windows' workspaces waiting for them.
+fn resume(file: &Path, tx: &Sender<Ev>) -> io::Result<(Server, i32)> {
+    let bytes = std::fs::read(file)?;
+    let _ = std::fs::remove_file(file);
+    let mut i = In(&bytes);
+    if i.str()? != HANDOVER {
+        return Err(io::Error::other("not a handover this jot reads"));
+    }
+    let next_pane = i.u64()?;
+    let listener = i.u32()? as i32;
+    let mut left = Vec::new();
+    for _ in 0..i.u32()? {
+        left.push((i.u64()?, i.str()?));
+    }
+    let mut panes = HashMap::new();
+    for _ in 0..i.u32()? {
+        let id = i.u64()?;
+        let pty = Local { fd: i.u32()? as i32, pid: i.u32()? as i32 };
+        keep_on_exec(pty.fd, false);
+        let (cmd, log, tail, at_prompt, queue) = (i.str()?, Log::decode(&i.bytes()?), i.bytes()?, i.u8()? != 0, i.queue()?);
+        let tee = if i.u8()? != 0 { Some((i.tee()?, i.u64()?)) } else { None };
+        let windows = (0..i.u32()?).map(|_| i.u64()).collect::<io::Result<Vec<_>>>()?;
+        let size = (i.u16()?, i.u16()?, (i.u32()?, i.u32()?));
+        // Its /tee written on to the end of its file.
+        let tee = tee.and_then(|(state, told)| std::fs::OpenOptions::new().create(true).append(true).open(&state.path).ok().map(|file| Tee { state, file, told }));
+        let keys = start_io(tx, id, &pty);
+        panes.insert(id, Pane { pty, keys, cmd, log, raw: None, tail, at_prompt, queue, tee, proc: None, viewers: Vec::new(), windows, sizes: HashMap::new(), size });
+    }
+    keep_on_exec(listener, false);
+    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane }, listener))
 }

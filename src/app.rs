@@ -508,7 +508,7 @@ impl App {
             captions_at: Instant::now() - Duration::from_secs(10),
             clock: clock(),
             session,
-            machines: vec![Machine { host: host.clone(), client: attached.client.clone(), listing: Vec::new(), added: true }],
+            machines: vec![Machine { host: host.clone(), client: attached.client.clone(), listing: Vec::new(), added: true, restarting: false }],
             target: 0,
             unreached: Vec::new(),
             tx: tx.clone(),
@@ -1848,6 +1848,7 @@ impl App {
                 Output::Listing(..) => "heard listing",
                 Output::Taken(..) => "heard taken",
                 Output::Size(..) => "heard size",
+                Output::Restarting(..) => "heard restarting",
                 Output::Gone(..) => "heard gone",
             });
             match out {
@@ -1913,6 +1914,18 @@ impl App {
                 // the window as it was meanwhile. Gone for good (this
                 // machine's session ended, or the other runs another jot): the
                 // window goes.
+                // Its server swapped for a newer one (`jot restart`): this
+                // machine's too, reached again by its socket; nothing is said.
+                Output::Restarting(k) => {
+                    if let Some(m) = self.machines.get_mut(k) {
+                        m.restarting = true;
+                    }
+                }
+                Output::Gone(k) if self.machines.get(k).is_some_and(|m| m.restarting) => {
+                    crate::debuglog::log(format!("machine {k}: its server is restarting, reaching it again"));
+                    self.machines[k].restarting = false;
+                    self.machines[k].client.reconnect();
+                }
                 Output::Gone(k) if self.machines.get(k).is_some_and(|m| m.host.is_some() && m.client.connected()) => {
                     crate::debuglog::log(format!("machine {k}: link lost, reaching it again"));
                     self.machines[k].client.reconnect();
@@ -3009,6 +3022,7 @@ fn hearer(k: usize, tx: std::sync::mpsc::Sender<Output>, proxy: EventLoopProxy<(
             Heard::Listing(l) => Output::Listing(k, l),
             Heard::Taken(h) => Output::Taken(k, h),
             Heard::Size(p, cols, rows) => Output::Size(id(p), cols, rows),
+            Heard::Restarting => Output::Restarting(k),
             Heard::Gone => Output::Gone(k),
         };
         if let Ok(tx) = tx.lock() {
@@ -3030,6 +3044,9 @@ pub struct Machine {
     /// Added in the sidebar: listed there whether or not a pane of it is
     /// shown.
     pub added: bool,
+    /// Its server said it is being swapped for a newer one: when the
+    /// connection ends, it is reached again, not given up.
+    pub restarting: bool,
 }
 
 impl App {
@@ -3042,7 +3059,7 @@ impl App {
         }
         let k = self.machines.len();
         let hear = hearer(k, self.tx.clone(), self.proxy.clone(), self.woken.clone());
-        self.machines.push(Machine { host: Some(host.to_string()), client: crate::mux::Client::lazy(host, hear), listing: Vec::new(), added: false });
+        self.machines.push(Machine { host: Some(host.to_string()), client: crate::mux::Client::lazy(host, hear), listing: Vec::new(), added: false, restarting: false });
         k
     }
 

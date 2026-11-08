@@ -40,6 +40,8 @@ pub enum Output {
     /// The size its program writes for now, set by whichever window
     /// was typed into last.
     Size(u64, u16, u16),
+    /// A machine's server is being swapped for a newer one.
+    Restarting(usize),
     /// The connection to a machine's session ended.
     Gone(usize),
 }
@@ -117,7 +119,8 @@ impl Local {
     /// Reads what the program writes on a thread of its own, handing it
     /// over with `send`, which also wakes the window.
     pub fn read_on_thread(&self, id: u64, send: impl Fn(Output) + Send + 'static) {
-        let fd = unsafe { libc::dup(self.fd) };
+        // Closed on exec, as the server swapped for a newer one leaves none.
+        let fd = unsafe { libc::fcntl(self.fd, libc::F_DUPFD_CLOEXEC, 0) };
         std::thread::Builder::new()
             .name(format!("pty-{id}"))
             .spawn(move || {

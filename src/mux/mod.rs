@@ -78,6 +78,10 @@ pub enum ToServer {
     /// This window no longer shows the pane; it runs on, for any window to
     /// show again.
     Release { pane: u64 },
+    /// `jot restart`: the session's server swapped for the jot at `exe`
+    /// (the one installed now), its panes kept running. Answered with
+    /// Restarting, then the server execs it.
+    Restart { exe: String },
 }
 
 /// A pane the session has, as it says on attaching.
@@ -119,6 +123,10 @@ pub enum ToClient {
     /// The size a pane's program writes for now, when it changes and
     /// when a window takes it: each window draws it at that size.
     Size { pane: u64, cols: u16, rows: u16 },
+    /// The server is being swapped for a newer one (`jot restart`): the
+    /// connection ends now, and the window reaches it again, its panes
+    /// still running.
+    Restarting,
 }
 
 // The wire: a frame is its length (u32), then a tag, then the fields.
@@ -252,6 +260,7 @@ impl ToServer {
             ToServer::Signal { pane, sig, job } => o.u8(10).u64(*pane).u32(*sig as u32).u8(*job as u8),
             ToServer::List => o.u8(11),
             ToServer::Release { pane } => o.u8(13).u64(*pane),
+            ToServer::Restart { exe } => o.u8(14).str(exe),
             ToServer::Take { panes } => {
                 o.u8(12).u32(panes.len() as u32);
                 for p in panes {
@@ -284,6 +293,7 @@ impl ToServer {
             10 => ToServer::Signal { pane: i.u64()?, sig: i.u32()? as i32, job: i.u8()? != 0 },
             11 => ToServer::List,
             13 => ToServer::Release { pane: i.u64()? },
+            14 => ToServer::Restart { exe: i.str()? },
             12 => {
                 let n = i.u32()?;
                 ToServer::Take { panes: (0..n).map(|_| i.u64()).collect::<io::Result<Vec<_>>>()? }
@@ -362,6 +372,9 @@ impl ToClient {
             ToClient::Size { pane, cols, rows } => {
                 o.u8(13).u64(*pane).u16(*cols).u16(*rows);
             }
+            ToClient::Restarting => {
+                o.u8(14);
+            }
         }
         frame(o)
     }
@@ -412,6 +425,7 @@ impl ToClient {
                 ToClient::Taken { panes }
             }
             13 => ToClient::Size { pane: i.u64()?, cols: i.u16()?, rows: i.u16()? },
+            14 => ToClient::Restarting,
             t => return Err(bad(t)),
         })
     }
@@ -506,6 +520,9 @@ pub enum Heard {
     Taken(Vec<Held>),
     /// The size its program writes for now.
     Size(u64, u16, u16),
+    /// The server is being swapped for a newer one: the connection about
+    /// to end is to be made again.
+    Restarting,
     /// The connection to the session ended: on another machine, it is
     /// reached again ([`Client::reconnect`]).
     /// The session ended under the window.
@@ -708,6 +725,7 @@ fn listen(mut r: Box<dyn Read + Send>, spawned: Sender<(u64, i32)>, hear: Arc<dy
             Ok(ToClient::Listing { workspaces }) => hear(Heard::Listing(workspaces)),
             Ok(ToClient::Taken { panes }) => hear(Heard::Taken(panes)),
             Ok(ToClient::Size { pane, cols, rows }) => hear(Heard::Size(pane, cols, rows)),
+            Ok(ToClient::Restarting) => hear(Heard::Restarting),
             Ok(ToClient::Spawned { pane, pid }) => {
                 let _ = spawned.send((pane, pid));
             }
@@ -734,6 +752,43 @@ fn peek() -> io::Result<ToClient> {
     s.set_read_timeout(Some(Duration::from_secs(2)))?;
     s.write_all(&ToServer::Peek.encode())?;
     ToClient::decode(&read_frame(&mut s)?)
+}
+
+/// `jot restart`: the session's server swapped for this jot (the one
+/// installed now), every pane running on as it was, the windows reaching
+/// it again by themselves.
+fn restart() -> i32 {
+    let path = socket();
+    let Ok(mut s) = UnixStream::connect(&path) else {
+        println!("No session running.");
+        return 0;
+    };
+    let before = server_pid(&path);
+    let exe = match std::env::current_exe() {
+        Ok(e) => e.to_string_lossy().trim_end_matches(" (deleted)").to_string(),
+        Err(e) => {
+            eprintln!("jot restart: which jot is this? {e}");
+            return 1;
+        }
+    };
+    let asked = s.set_read_timeout(Some(Duration::from_secs(5))).and_then(|_| s.write_all(&ToServer::Restart { exe: exe.clone() }.encode())).and_then(|_| read_frame(&mut s));
+    if !matches!(asked.as_ref().map(|f| ToClient::decode(f)), Ok(Ok(ToClient::Restarting))) {
+        println!("The session's server is from a jot older than jot restart, so it cannot hand its terminals over.");
+        println!("Once more, jot kill (its shells end) then jot; from then on jot restart keeps them running.");
+        return 1;
+    }
+    // The new server answering, in the same process.
+    for _ in 0..100 {
+        std::thread::sleep(Duration::from_millis(50));
+        if let Ok(ToClient::Info { panes, .. }) = peek() {
+            let same = before.is_some() && server_pid(&path) == before;
+            let panes = if panes == 1 { "1 pane".to_string() } else { format!("{panes} panes") };
+            println!("The session's server is now {}: {panes} running on{}.", crate::version(), if same { "" } else { " (in a new process)" });
+            return 0;
+        }
+    }
+    eprintln!("jot restart: the new server did not answer; ~/.local/state/jot/serve.log may say why.");
+    1
 }
 
 /// `jot status`: the session, what it holds and whether a window shows
@@ -769,6 +824,7 @@ pub fn command(args: &[String]) -> i32 {
             println!("{}", if ended == 0 { "No session running.".to_string() } else { "The session ended, and its panes.".to_string() });
             0
         }
+        Some("restart") => restart(),
         _ => 2,
     }
 }
@@ -776,6 +832,22 @@ pub fn command(args: &[String]) -> i32 {
 /// A session on another machine reached: ssh's ends, ssh itself, and what
 /// the session holds for this window.
 type Reached = (std::process::ChildStdin, std::process::ChildStdout, std::process::Child, String, Vec<Held>);
+
+/// This machine's session reached again, by its socket, after its server
+/// was swapped for a newer one: the window's ends of the connection, and
+/// the panes it holds for this window.
+fn reach_local(again: bool, want: Vec<u64>) -> io::Result<(UnixStream, UnixStream, Vec<Held>)> {
+    let mut s = UnixStream::connect(socket())?;
+    s.set_read_timeout(Some(Duration::from_secs(5)))?;
+    s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again, want }.encode())?;
+    let f = read_frame(&mut s)?;
+    s.set_read_timeout(None)?;
+    match ToClient::decode(&f) {
+        Ok(ToClient::Welcome { panes, .. }) => Ok((s.try_clone()?, s, panes)),
+        Ok(ToClient::Refused { why }) => Err(io::Error::new(io::ErrorKind::Unsupported, format!("the session running is from another version of jot ({why}); jot kill ends it"))),
+        _ => Err(io::Error::new(io::ErrorKind::Unsupported, "the session running is from another version of jot; jot kill ends it")),
+    }
+}
 
 /// ssh to `host`, `jot bridge` there, and hello.
 fn reach(host: &str, again: bool, want: Vec<u64>) -> io::Result<Reached> {
@@ -893,7 +965,7 @@ impl Client {
     /// ten seconds. `again`: it had been reached, and wants back only the
     /// panes it had.
     fn retry(self: &Arc<Self>, again: bool, first: Duration) {
-        let Some(host) = self.host.clone() else { return };
+        let host = self.host.clone();
         if self.trying.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -908,16 +980,22 @@ impl Client {
                 }
                 std::thread::sleep(wait);
                 let want = me.want.lock().map(|w| w.clone()).unwrap_or_default();
-                match reach(&host, again, want) {
-                    Ok((w, r, child, _layout, panes)) => {
+                // Another machine by ssh; this one's by its socket (its server
+                // swapped for a newer one, `jot restart`).
+                let reached = match &host {
+                    Some(host) => reach(host, again, want).map(|(w, r, child, _, panes)| (Box::new(w) as Box<dyn Write + Send>, Box::new(r) as Box<dyn Read + Send>, Some(child), panes)),
+                    None => reach_local(again, want).map(|(w, r, panes)| (Box::new(w) as Box<dyn Write + Send>, Box::new(r) as Box<dyn Read + Send>, None, panes)),
+                };
+                match reached {
+                    Ok((w, r, child, panes)) => {
                         let (tx, rx) = channel();
                         if let (Ok(mut wr), Ok(mut sp), Ok(mut ssh)) = (me.writer.lock(), me.spawned.lock(), me.ssh.lock()) {
-                            *wr = Box::new(w);
+                            *wr = w;
                             *sp = rx;
-                            *ssh = Some(child);
+                            *ssh = child;
                         }
                         let h = me.hear.clone();
-                        let _ = std::thread::Builder::new().name("mux".into()).spawn(move || listen(Box::new(r), tx, h));
+                        let _ = std::thread::Builder::new().name("mux".into()).spawn(move || listen(r, tx, h));
                         // Told what it holds before keys typed meanwhile go,
                         // so the window has its panes back first.
                         (me.hear)(Heard::Back(panes));
