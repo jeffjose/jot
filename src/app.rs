@@ -187,6 +187,12 @@ pub struct App {
     canvas: Canvas,
     fonts: Fonts,
     font_size: f32,
+    /// The window where it was and how large while not maximized, in
+    /// pixels: what is kept for it while it is.
+    normal: Option<(i32, i32, u32, u32)>,
+    /// Where to open the window and how large: as the session had it for
+    /// the workspaces taken up, else as the last window was left.
+    start_window: Option<persist::WindowState>,
     scale: f32,
     theme: &'static Theme,
     /// The color of what is picked out: the pane you are in, menus.
@@ -469,6 +475,14 @@ impl App {
         let taking_up = !attached.panes.is_empty();
         let fresh = attached.fresh;
         let session = if taking_up { toml::from_str::<Session>(&attached.layout).ok() } else if fresh { session } else { None };
+        // Where this window was, as the session kept it with its workspaces,
+        // else as the last window was left; and the other windows that quit
+        // with workspaces of their own opened again, each taking up the next.
+        let start_window = if crate::quake_mode() { None } else { session.as_ref().and_then(|s| s.window).or_else(persist::load_window) };
+        let more = session.as_ref().map_or(0, |s| s.more);
+        if more > 0 && taking_up && host.is_none() && !crate::quake_mode() && !crate::restored() {
+            open_more_windows(more);
+        }
         let held: HashMap<u64, crate::mux::Held> = attached.panes.into_iter().map(|h| (h.pane, h)).collect();
         let notes = attached.notes;
         let font_size = config.font_size;
@@ -476,7 +490,9 @@ impl App {
         let accent = crate::theme::accent(&config.accent);
         App {
             fonts: Fonts::new(&crate::font::Choice { family: config.font_family.clone(), size: font_size, ui_family: config.ui_font_family.clone(), ui_size: config.ui_font_size, line_height: config.line_height, ligatures: config.ligatures, bold: config.bold_text, lcd: crate::font::lcd_for(&config.subpixel) }, 1.0),
-            font_size,
+            font_size: start_window.map_or(font_size, |s| s.font_size.clamp(6.0, 48.0)),
+            normal: None,
+            start_window,
             config,
             proxy,
             rx,
@@ -2845,23 +2861,43 @@ impl App {
         self.scrollback_at = Instant::now();
     }
 
-    /// Where the main window is and how large, kept for the next start
-    /// (see persist::WindowState). Maximized, the size it had before is
-    /// kept.
-    fn save_window(&self) {
-        if crate::quake_mode() {
+    /// Where the window is and how large while it is not maximized: kept
+    /// for it while it is.
+    fn note_normal(&mut self) {
+        let Some(w) = &self.window else { return };
+        if w.is_maximized() || w.fullscreen().is_some() {
             return;
         }
-        let Some(w) = &self.window else { return };
+        if let Ok(p) = w.outer_position() {
+            let s = w.inner_size();
+            self.normal = Some((p.x, p.y, s.width, s.height));
+        }
+    }
+
+    /// Where the main window is and how large, for the next start (see
+    /// persist::WindowState): maximized, the size it had before. None for
+    /// the quake window, which is placed by its settings.
+    fn window_state(&self) -> Option<persist::WindowState> {
+        if crate::quake_mode() {
+            return None;
+        }
+        let w = self.window.as_ref()?;
         let maximized = w.is_maximized();
-        let state = match (maximized, persist::load_window()) {
-            (true, Some(prev)) => persist::WindowState { maximized, font_size: self.font_size, ..prev },
+        let (x, y, width, height) = match self.normal {
+            Some(n) if maximized => n,
             _ => {
-                let Ok(pos) = w.outer_position() else { return };
+                let pos = w.outer_position().ok()?;
                 let size = w.inner_size();
-                persist::WindowState { x: pos.x, y: pos.y, w: size.width, h: size.height, maximized, font_size: self.font_size }
+                (pos.x, pos.y, size.width, size.height)
             }
         };
+        Some(persist::WindowState { x, y, w: width, h: height, maximized, font_size: self.font_size })
+    }
+
+    /// The window kept as it is, in the file a new window opens by when the
+    /// session has none for it (after the machine restarts, or a first).
+    fn save_window(&self) {
+        let Some(state) = self.window_state() else { return };
         if persist::load_window() != Some(state) {
             persist::save_window(&state);
         }
@@ -2894,7 +2930,7 @@ impl App {
         workspaces.extend(self.unreached.iter().cloned());
         let roam = self.roam.and_then(|r| panes.get(&r)).and_then(|p| p.pty.cwd()).or(self.roam_cwd.clone()).map(|p| persist::shorten(&p));
         let popouts = self.popouts.iter().filter(|po| crate::mux::split_id(po.pane).0 == 0).map(|po| persist::spec(&Node::Pane(po.pane), &describe)).collect();
-        let session = Session { current: self.current, roam, workspaces, popouts };
+        let session = Session { current: self.current, roam, workspaces, popouts, window: self.window_state(), more: 0 };
         // The window's machine's session keeps them all, for the next window
         // to take up (reaching the other machines again), and saves every
         // window's together for after a restart. Each other machine's keeps
@@ -2916,7 +2952,7 @@ impl App {
                 })
                 .map(|ws| spec_of(ws, &d))
                 .collect();
-            if let Ok(text) = toml::to_string(&Session { current: 0, roam: None, workspaces: own, popouts: Vec::new() }) {
+            if let Ok(text) = toml::to_string(&Session { workspaces: own, ..Default::default() }) {
                 m.client.layout(text);
             }
         }
@@ -2936,9 +2972,8 @@ impl ApplicationHandler<()> for App {
             let attrs = window_attributes("jot", LogicalSize::new(1400.0, 900.0)).with_decorations(self.config.title_bar.eq_ignore_ascii_case("system"));
             // Where it was left, as large, maximized if it was, its font as
             // zoomed; where it was only if a monitor is still there.
-            match persist::load_window() {
+            match self.start_window {
                 Some(s) => {
-                    self.font_size = s.font_size.clamp(6.0, 48.0);
                     let seen = event_loop.available_monitors().any(|m| {
                         let (p, z) = (m.position(), m.size());
                         let (cx, cy) = (s.x + s.w as i32 / 2, s.y + s.h as i32 / 2);
@@ -2971,6 +3006,9 @@ impl ApplicationHandler<()> for App {
             eprintln!("drawn with {}", self.gpu.as_ref().map_or("the CPU".to_string(), |g| format!("the GPU: {}", g.name)));
         }
         self.window = Some(window);
+        // Its size from before, if it opened maximized; else as it is.
+        self.normal = self.start_window.map(|s| (s.x, s.y, s.w, s.h));
+        self.note_normal();
         self.start();
         self.open_pending_popouts(event_loop);
         self.load_recent();
@@ -3008,9 +3046,13 @@ impl ApplicationHandler<()> for App {
                 event_loop.exit();
             }
             // Kept for the next start, with the session (see save_window).
-            WindowEvent::Moved(_) => self.unsaved = true,
+            WindowEvent::Moved(_) => {
+                self.unsaved = true;
+                self.note_normal();
+            }
             WindowEvent::Resized(size) => {
                 self.unsaved = true;
+                self.note_normal();
                 // Taken up when the frame is drawn, the last size only.
                 self.resized = Some((size.width, size.height));
                 self.redraw();
@@ -3680,5 +3722,30 @@ mod plain_title_tests {
         assert_eq!(plain_title("~/scripts/jot"), "~/scripts/jot");
         assert_eq!(plain_title("vim"), "vim");
         assert_eq!(plain_title("✳"), "✳");
+    }
+}
+
+/// `n` more windows, each a jot of its own (started with --restored, so
+/// that it opens no more), taking up the workspaces of a window that quit.
+fn open_more_windows(n: u32) {
+    use std::os::unix::process::CommandExt;
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("jot"));
+    for _ in 0..n {
+        let quiet = || std::process::Stdio::null();
+        let started = unsafe {
+            std::process::Command::new(&exe)
+                .arg("--restored")
+                .stdin(quiet())
+                .stdout(quiet())
+                .stderr(quiet())
+                .pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                })
+                .spawn()
+        };
+        if let Err(e) = started {
+            eprintln!("jot: could not open another window: {e}");
+        }
     }
 }

@@ -364,6 +364,11 @@ impl Default for Config {
 pub struct Session {
     #[serde(default)]
     pub current: usize,
+    /// Windows that quit with workspaces of their own, after this one: the
+    /// session gives a window one's, and this many more open, each taking
+    /// up the next (see App::new).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub more: u32,
     /// The roaming terminal's folder, when it was open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roam: Option<String>,
@@ -372,6 +377,9 @@ pub struct Session {
     /// Panes that were in windows of their own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub popouts: Vec<Spec>,
+    /// Where the window was, how large, its zoom: opened so again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowState>,
 }
 
 fn config_dir() -> PathBuf {
@@ -674,7 +682,7 @@ pub fn save_term_names(names: &[(String, u64, String)]) {
 /// The main window as it was left: where, how large (in pixels, its size
 /// before it was maximized when it is), whether maximized, and the font
 /// size Ctrl = and Ctrl - had made it; opened so again.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowState {
     pub x: i32,
     pub y: i32,
@@ -697,4 +705,8 @@ pub fn load_window() -> Option<WindowState> {
 pub fn save_window(s: &WindowState) {
     let _ = std::fs::create_dir_all(state_dir());
     let _ = std::fs::write(state_dir().join("window"), format!("{} {} {} {} {} {}\n", s.x, s.y, s.w, s.h, if s.maximized { "maximized" } else { "normal" }, s.font_size));
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }

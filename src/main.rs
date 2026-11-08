@@ -30,6 +30,14 @@ pub fn debug() -> bool {
     *FROM_ENV.get_or_init(|| std::env::var_os("JOT_DEBUG").is_some_and(|v| !v.is_empty() && v != "0")) || DEBUG.load(std::sync::atomic::Ordering::Relaxed) || debuglog::switched_on()
 }
 
+static RESTORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Opened by another window, for the workspaces of a window that quit:
+/// it opens no more of them.
+pub fn restored() -> bool {
+    RESTORED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 static QUAKE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Whether this is the quake window (`jot --quake` started it).
@@ -144,6 +152,7 @@ fn main() {
             "--fresh" => fresh = true,
             "--quake-window" => QUAKE.store(true, std::sync::atomic::Ordering::Relaxed),
             "--debug" => DEBUG.store(true, std::sync::atomic::Ordering::Relaxed),
+            "--restored" => RESTORED.store(true, std::sync::atomic::Ordering::Relaxed),
             "-V" | "--version" => return println!("{}", version()),
             "-h" | "--help" => return println!("{HELP}"),
             other => {

@@ -416,20 +416,35 @@ impl Server {
         self.fire(id);
     }
 
-    /// A window come: the panes no window has, and the workspaces they
-    /// were in, are its.
+    /// A window come: the workspaces of one window that quit, and their
+    /// panes, are its, with the panes no window has that no other window
+    /// that quit had. The other windows' wait, each for a window of its
+    /// own: how many is said with the layout (`more`), and the window
+    /// opens them.
     fn welcome(&mut self, c: u64) {
-        // The quake window's panes and workspaces wait for the next one.
-        let free = |p: &&Pane| p.viewers.is_empty() && !p.windows.contains(&super::QUAKE_WINDOW);
-        let mut held: Vec<Held> = self.panes.iter().filter(|(_, p)| free(p)).map(|(id, p)| p.held(*id)).collect();
+        let (quake, mut left): (Vec<_>, Vec<_>) = std::mem::take(&mut self.left).into_iter().partition(|(w, _)| *w == super::QUAKE_WINDOW);
+        let mine = (!left.is_empty()).then(|| left.remove(0));
+        let waiting: Vec<u64> = left.iter().flat_map(|(_, l)| layout_ids(l)).collect();
+        self.left = quake;
+        self.left.extend(left);
+        let more = self.left.iter().filter(|(w, _)| *w != super::QUAKE_WINDOW).count() as u32;
+        // The quake window's panes and workspaces wait for the next one, and
+        // the other windows' for theirs.
+        let free = |id: &u64, p: &Pane| p.viewers.is_empty() && !p.windows.contains(&super::QUAKE_WINDOW) && !waiting.contains(id);
+        let mut held: Vec<Held> = self.panes.iter().filter(|(id, p)| free(id, p)).map(|(id, p)| p.held(*id)).collect();
         held.sort_by_key(|h| h.pane);
         let name = self.names.get(&c).copied().unwrap_or(0);
-        for p in self.panes.values_mut().filter(|p| free(&&**p)) {
+        for (_, p) in self.panes.iter_mut().filter(|(id, p)| free(id, p)) {
             p.add_viewer(c, name);
         }
-        let (quake, left): (Vec<_>, Vec<_>) = std::mem::take(&mut self.left).into_iter().partition(|(w, _)| *w == super::QUAKE_WINDOW);
-        self.left = quake;
-        let layout = merge(left.iter().map(|(_, l)| l.as_str())).and_then(|s| toml::to_string(&s).ok()).unwrap_or_default();
+        let layout = mine
+            .and_then(|(_, l)| toml::from_str::<crate::persist::Session>(&l).ok())
+            .map(|mut s| {
+                s.more = more;
+                s
+            })
+            .and_then(|s| toml::to_string(&s).ok())
+            .unwrap_or_default();
         self.layouts.insert(c, layout.clone());
         let ids: Vec<u64> = held.iter().map(|h| h.pane).collect();
         self.send(c, ToClient::Welcome { layout, panes: held });
@@ -1020,4 +1035,11 @@ fn resume(file: &Path, tx: &Sender<Ev>) -> io::Result<(Server, i32)> {
     }
     keep_on_exec(listener, false);
     Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane }, listener))
+}
+
+/// The session's names of the panes a window's layout has (its workspaces'
+/// and its popped-out ones).
+fn layout_ids(text: &str) -> Vec<u64> {
+    let Ok(s) = toml::from_str::<crate::persist::Session>(text) else { return Vec::new() };
+    s.workspaces.iter().filter_map(|w| w.layout.as_ref()).chain(s.popouts.iter()).flat_map(crate::persist::ids_in_order).collect()
 }
