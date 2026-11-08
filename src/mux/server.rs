@@ -304,6 +304,9 @@ struct Server {
     /// the window's name.
     left: Vec<(u64, String)>,
     next_pane: u64,
+    /// The machine's desktop, as a window here last had it (or found on
+    /// it), for panes asked for from no desktop of this machine's.
+    desktop: Option<Env>,
 }
 
 impl Server {
@@ -586,12 +589,31 @@ impl Server {
         ToClient::Info { attached: !self.windows.is_empty(), panes: self.panes.len() as u32, names, version: crate::version(), windows: self.windows.len() as u32 }
     }
 
+    /// The desktop window `c`'s new pane is given: the window's own,
+    /// when it is on one; else this machine's, when it has one (a window
+    /// on another machine, through `jot bridge`, has none of its own).
+    fn desktop(&mut self, c: u64) -> Env {
+        match self.conns.get(&c).and_then(desktop_of) {
+            Some((false, env)) => {
+                self.desktop = Some(env.clone());
+                return env;
+            }
+            // Over `ssh -X`: its own, but not the machine's.
+            Some((true, env)) => return env,
+            None => {}
+        }
+        if self.desktop.is_none() {
+            self.desktop = find_desktop();
+        }
+        self.desktop.clone().unwrap_or_default()
+    }
+
     /// A new pane for window `c`: its name and its shell's process id (-1 if
     /// it could not start).
     fn spawn(&mut self, tx: &Sender<Ev>, c: u64, cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32)) -> (u64, i32) {
         let pane = self.next_pane;
         self.next_pane += 1;
-        let desktop = self.conns.get(&c).map(desktop_of).unwrap_or_default();
+        let desktop = self.desktop(c);
         let pid = match Local::spawn(&cmd, Path::new(&cwd), cols, rows, px, &desktop) {
             Ok(pty) => {
                 let pid = pty.pid;
@@ -638,7 +660,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
             return;
         }
         None => match UnixListener::bind(path) {
-            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1 }, l),
+            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None }, l),
             Err(e) => {
                 eprintln!("jot serve: {}: {e}", path.display());
                 return;
@@ -901,36 +923,61 @@ fn merge<'a>(texts: impl Iterator<Item = &'a str>) -> Option<crate::persist::Ses
     out
 }
 
-/// A pane's terminal read on a thread of its own (its output, then its
-/// end, told to the loop) and written to on another: what is typed goes
-/// to the returned sender.
-
 /// What a pane's programs need of the desktop: the display, the session's
 /// bus and what kind it is. The session has them as whatever started it
 /// had them, and that may have been an SSH login (`jot bridge`, a
-/// window's `jot restart` over SSH), with none: a window that asks for a
-/// pane gives it its own.
+/// `jot restart` over SSH), with none: a pane is given the machine's own.
 const DESKTOP: [&str; 8] = ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DESKTOP_SESSION", "DBUS_SESSION_BUS_ADDRESS"];
 
-/// The desktop of the process at the other end of `s`, if it is on one
-/// (a window here; not `jot bridge`, for a window on another machine,
-/// whose panes keep the session's).
-fn desktop_of(s: &UnixStream) -> Vec<(std::ffi::CString, Option<std::ffi::CString>)> {
+type Env = Vec<(std::ffi::CString, Option<std::ffi::CString>)>;
+
+/// A desktop, as a process's environment has it: whether it came over
+/// SSH (`ssh -X`), and the names above, set or not. None off a desktop.
+fn desktop_in(raw: &[u8]) -> Option<(bool, Env)> {
+    let vars: HashMap<&[u8], &[u8]> = raw.split(|b| *b == 0).filter_map(|kv| kv.iter().position(|b| *b == b'=').map(|i| (&kv[..i], &kv[i + 1..]))).collect();
+    let on = |k: &str| vars.get(k.as_bytes()).is_some_and(|v| !v.is_empty());
+    if !on("DISPLAY") && !on("WAYLAND_DISPLAY") {
+        return None;
+    }
+    let env = DESKTOP.iter().filter_map(|k| Some((std::ffi::CString::new(*k).ok()?, vars.get(k.as_bytes()).and_then(|v| std::ffi::CString::new(*v).ok())))).collect();
+    Some((on("SSH_CONNECTION"), env))
+}
+
+/// The desktop of the process at the other end of `s`, if it is on one:
+/// a window here, not `jot bridge` (a window on another machine).
+fn desktop_of(s: &UnixStream) -> Option<(bool, Env)> {
     use std::os::fd::AsRawFd;
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     let got = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) };
     if got != 0 || cred.pid <= 0 {
-        return Vec::new();
+        return None;
     }
-    let Ok(raw) = std::fs::read(format!("/proc/{}/environ", cred.pid)) else { return Vec::new() };
-    let vars: HashMap<&[u8], &[u8]> = raw.split(|b| *b == 0).filter_map(|kv| kv.iter().position(|b| *b == b'=').map(|i| (&kv[..i], &kv[i + 1..]))).collect();
-    let on = |k: &str| vars.get(k.as_bytes()).is_some_and(|v| !v.is_empty());
-    if !on("DISPLAY") && !on("WAYLAND_DISPLAY") {
-        return Vec::new();
-    }
-    DESKTOP.iter().filter_map(|k| Some((std::ffi::CString::new(*k).ok()?, vars.get(k.as_bytes()).and_then(|v| std::ffi::CString::new(*v).ok())))).collect()
+    desktop_in(&std::fs::read(format!("/proc/{}/environ", cred.pid)).ok()?)
 }
+
+/// The machine's desktop, as one of this user's processes on it has it
+/// (not one over SSH): the oldest, the desktop's session itself, sooner
+/// than something started from it since.
+fn find_desktop() -> Option<Env> {
+    let uid = unsafe { libc::getuid() };
+    let mut pids: Vec<u32> = std::fs::read_dir("/proc").ok()?.flatten().filter_map(|e| e.file_name().to_str()?.parse().ok()).collect();
+    pids.sort_unstable();
+    pids.into_iter().find_map(|pid| {
+        use std::os::unix::fs::MetadataExt;
+        if std::fs::metadata(format!("/proc/{pid}")).ok()?.uid() != uid {
+            return None;
+        }
+        match desktop_in(&std::fs::read(format!("/proc/{pid}/environ")).ok()?)? {
+            (false, env) => Some(env),
+            _ => None,
+        }
+    })
+}
+
+/// A pane's terminal read on a thread of its own (its output, then its
+/// end, told to the loop) and written to on another: what is typed goes
+/// to the returned sender.
 fn start_io(tx: &Sender<Ev>, pane: u64, pty: &Local) -> Sender<Vec<u8>> {
     let tx2 = tx.clone();
     pty.read_on_thread(pane, move |out| {
@@ -1079,7 +1126,7 @@ fn resume(file: &Path, tx: &Sender<Ev>) -> io::Result<(Server, i32)> {
         panes.insert(id, Pane { pty, keys, cmd, log, raw: None, tail, at_prompt, queue, tee, proc: None, viewers: Vec::new(), windows, sizes: HashMap::new(), size });
     }
     keep_on_exec(listener, false);
-    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane }, listener))
+    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane, desktop: None }, listener))
 }
 
 /// The session's names of the panes a window's layout has (its workspaces'
