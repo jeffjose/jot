@@ -346,6 +346,15 @@ impl App {
                 field.anchor = Some(0);
                 self.palette = Some(Palette { mode: Mode::Rename, field, matches: Vec::new(), selected: 0, first: 0 });
             }
+            Action::WsAccent(name) => {
+                let cur = self.current;
+                if let Some(ws) = self.workspaces.get_mut(cur) {
+                    ws.accent = name;
+                }
+                self.unsaved = true;
+                self.retint();
+                self.full = true;
+            }
             Action::CloseWorkspace => {
                 let mut ids = Vec::new();
                 self.ws().root.panes(&mut ids);

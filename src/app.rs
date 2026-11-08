@@ -1731,7 +1731,7 @@ impl App {
             }
         }
         // The command line's text, right clicked: a text box's menu.
-        if button == MouseButton::Right && (self.sidebar_menu() || self.editor_menu() || self.bar_field_menu() || self.pin_menu() || self.mini_menu() || self.space_menu()) {
+        if button == MouseButton::Right && (self.sidebar_menu() || self.editor_menu() || self.bar_field_menu() || self.pin_menu() || self.mini_menu() || self.space_menu() || self.foot_menu()) {
             return;
         }
         // A tag on a caption, right clicked: what can be done with it.
@@ -2659,10 +2659,10 @@ impl App {
         }
         self.foot_said = said;
         let bar = Rect { x: 0, y: self.canvas.height - self.status_h() - h, w: self.canvas.width, h };
-        // Dark words on a light color, light on a dark one.
-        let (r, g, b) = ((accent >> 16) & 0xFF, (accent >> 8) & 0xFF, accent & 0xFF);
-        let light = (r * 299 + g * 587 + b * 114) / 1000 > 140;
-        let fg = if light { mix(accent, 0x000000, 215) } else { mix(accent, 0xFFFFFF, 235) };
+        // Dark words or light ones, whichever reads better on the color, as
+        // WCAG reckons it: cyan, teal and amber get dark ones.
+        let (dark, light) = (mix(accent, 0x000000, 215), mix(accent, 0xFFFFFF, 235));
+        let fg = if crate::canvas::contrast(dark, accent) >= crate::canvas::contrast(light, accent) { dark } else { light };
         let soft = mix(accent, fg, 170);
         self.canvas.fill(bar, accent);
         let ty = bar.y + (h - self.fonts.ui.height) / 2;
@@ -2677,6 +2677,46 @@ impl App {
             self.canvas.text_fit(&mut self.fonts.ui, &folder, x, ty, (clip.x + clip.w - x).max(0), soft, clip);
         }
         self.damage.push(bar);
+    }
+
+    /// Whether a point is on the project bar.
+    fn foot_at(&self, _x: i32, y: i32) -> bool {
+        let h = self.foot_h();
+        let top = self.canvas.height - self.status_h() - h;
+        h > 0 && (top..top + h).contains(&y)
+    }
+
+    /// The project bar right clicked: what can be done to the workspace it
+    /// names.
+    fn foot_menu(&mut self) -> bool {
+        let (x, y) = self.pointer;
+        if !self.foot_at(x, y) || self.workspaces.is_empty() {
+            return false;
+        }
+        use crate::palette::{Action, Item};
+        let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
+        let chosen = self.ws().accent.clone();
+        let mark = |name: Option<&str>| if chosen.as_deref().map(|c| c.to_ascii_lowercase()) == name.map(str::to_string) { "✓" } else { "" };
+        let mut colors = vec![c("Automatic", mark(None), Action::WsAccent(None)), None];
+        colors.extend(crate::theme::ACCENTS.iter().map(|(n, _)| {
+            let mut label = n.to_string();
+            label[..1].make_ascii_uppercase();
+            c(&label, mark(Some(n)), Action::WsAccent(Some(n.to_string())))
+        }));
+        let items = vec![
+            c("Rename workspace…", "", Action::Rename),
+            c("Color", "›", Action::Submenu(0)),
+            None,
+            c("New workspace", "Ctrl N", Action::NewWorkspace),
+            None,
+            c("Settings", "Ctrl ,", Action::Settings),
+        ];
+        self.palette = None;
+        self.menu_at = self.pointer;
+        self.menu = Some(overlay::Menu { items, at: self.pointer, hover: None, children: vec![colors], open: None });
+        self.full = true;
+        self.redraw();
+        true
     }
 
     fn draw_status(&mut self) {

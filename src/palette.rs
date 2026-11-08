@@ -116,6 +116,9 @@ pub enum Action {
     Palette,
     /// Opens the n-th submenu of the right-click menu.
     Submenu(usize),
+    /// The workspace you are in given this accent, by name; None: chosen
+    /// for it, as the settings' Color each workspace does.
+    WsAccent(Option<String>),
 }
 
 #[derive(Clone, Debug)]
