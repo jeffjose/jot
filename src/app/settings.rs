@@ -841,12 +841,14 @@ impl App {
         let mut ny = side.y + pad + hh + pad;
         for (i, name) in SECTIONS.iter().enumerate() {
             let row = Rect { x: side.x + px(10.0), y: ny, w: side.w - px(20.0), h: nav_h };
+            // As the sidebar picks out its rows: a neutral step lighter, never
+            // the accent; a fainter one under the pointer.
             if i == in_view {
-                canvas.round_fill(row, px(7.0), accent, 255);
+                canvas.round_fill(row, px(6.0), mix(c.side, c.text, 11), 255);
             } else if hover == Some(Hit::Section(i)) {
-                canvas.round_fill(row, px(7.0), c.field, 255);
+                canvas.round_fill(row, px(6.0), mix(c.side, c.text, 5), 255);
             }
-            let fg = if i == in_view { on(accent) } else { c.text };
+            let fg = if i == in_view { c.text } else { c.dim };
             canvas.text(&mut fonts.ui, name, (row.x + px(12.0)) as f32, row.y + (nav_h - uh) / 2, fg, row);
             hits.push((row, Hit::Section(i)));
             ny += nav_h + px(2.0);
