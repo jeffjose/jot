@@ -37,7 +37,7 @@ mod info;
 mod dnd;
 mod find;
 mod links;
-mod dropdown;
+mod quake;
 mod float;
 mod minimize;
 mod pin;
@@ -215,8 +215,8 @@ pub struct App {
     /// Where its buttons are, and whether the pointer is on them.
     float_rect: Option<(PaneId, Rect)>,
     float_near: Option<bool>,
-    /// The drop-down window (jot drop) on screen.
-    drop_shown: bool,
+    /// The quake window (jot --quake) on screen.
+    quake_shown: bool,
     /// Minimized panes' rows, to click, and the one the pointer is on.
     mini_hits: Vec<(Rect, PaneId)>,
     mini_lit: Option<PaneId>,
@@ -353,14 +353,14 @@ impl App {
         let (req_tx, requests) = channel();
         let (wake, woke) = (proxy.clone(), Arc::new(AtomicBool::new(false)));
         let _ = woke;
-        // The drop-down hears only `jot drop`, on its own socket; the jot
+        // The quake window hears only `jot --quake`, on its own socket; the jot
         // command's socket is the main window's.
         let heard = move |r| {
             let _ = req_tx.send(r);
             let _ = wake.send_event(());
         };
-        if crate::drop_mode() {
-            crate::remote::listen_at(crate::remote::drop_socket_path(), heard);
+        if crate::quake_mode() {
+            crate::remote::listen_at(crate::remote::quake_socket_path(), heard);
         } else {
             crate::remote::listen(heard);
         }
@@ -437,7 +437,7 @@ impl App {
             float_pane: None,
             float_rect: None,
             float_near: None,
-            drop_shown: false,
+            quake_shown: false,
             mini_hits: Vec::new(),
             mini_lit: None,
             mini_btns: Vec::new(),
@@ -2492,7 +2492,7 @@ impl ApplicationHandler<()> for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = if crate::drop_mode() { dropdown::attributes() } else { window_attributes("jot", LogicalSize::new(1400.0, 900.0)) };
+        let attrs = if crate::quake_mode() { quake::attributes() } else { window_attributes("jot", LogicalSize::new(1400.0, 900.0)) };
         let window = Rc::new(event_loop.create_window(attrs).expect("failed to create window"));
         let context = Context::new(window.clone()).expect("failed to connect to display");
         self.surface = Some(Surface::new(&context, window.clone()).expect("failed to create surface"));
@@ -2519,9 +2519,9 @@ impl ApplicationHandler<()> for App {
         self.load_recent();
         self.set_title();
         self.relayout();
-        // The drop-down, just started by jot drop: shown.
-        if crate::drop_mode() {
-            self.drop_show();
+        // The quake window, just started by jot --quake: shown.
+        if crate::quake_mode() {
+            self.quake_show();
         }
     }
 

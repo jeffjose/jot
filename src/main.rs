@@ -26,11 +26,11 @@ pub fn debug() -> bool {
     DEBUG.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-static DROP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static QUAKE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Whether this is the drop-down window (`jot drop` started it).
-pub fn drop_mode() -> bool {
-    DROP.load(std::sync::atomic::Ordering::Relaxed)
+/// Whether this is the quake window (`jot --quake` started it).
+pub fn quake_mode() -> bool {
+    QUAKE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 const HELP: &str = "\
@@ -42,7 +42,7 @@ jot: a terminal with splits and workspaces
   jot list | open DIR | split [--down] [-- CMD] | run CMD
         | send PANE TEXT | focus PANE | notify TEXT
                    control the running jot
-  jot drop       show or hide the drop-down terminal (bind it to a key)
+  jot --quake    show or hide the quake (drop-down) terminal; bind a key to it
   jot setup      add jot and its icon to the desktop's programs
   jot ssh HOST    a window on HOST's session (jot installed there)
   jot status      what the session holds, and whether a window shows it
@@ -96,9 +96,9 @@ fn main() {
     if args.first().is_some_and(|a| a == "setup") {
         return setup();
     }
-    // `jot drop`: the drop-down window, shown or hidden.
-    if args.first().is_some_and(|a| a == "drop") {
-        std::process::exit(remote::drop());
+    // `jot --quake`: the quake window, shown or hidden (started if none is).
+    if args.first().is_some_and(|a| a == "--quake") {
+        std::process::exit(remote::quake());
     }
     // `jot serve PATH`: a session, started by a window.
     if args.first().is_some_and(|a| a == "serve") {
@@ -128,7 +128,7 @@ fn main() {
     for arg in std::env::args().skip(if host.is_some() { 3 } else { 1 }) {
         match arg.as_str() {
             "--fresh" => fresh = true,
-            "--drop" => DROP.store(true, std::sync::atomic::Ordering::Relaxed),
+            "--quake-window" => QUAKE.store(true, std::sync::atomic::Ordering::Relaxed),
             "--debug" => DEBUG.store(true, std::sync::atomic::Ordering::Relaxed),
             "-V" | "--version" => return println!("{}", version()),
             "-h" | "--help" => return println!("{HELP}"),
@@ -139,9 +139,9 @@ fn main() {
         }
     }
     let config = persist::load_config();
-    // The drop-down has its own panes; the last session saved is the main
+    // The quake window has its own panes; the last session saved is the main
     // window's.
-    let session = if fresh || drop_mode() { None } else { persist::load_session() };
+    let session = if fresh || quake_mode() { None } else { persist::load_session() };
     vt::set_up();
     app::catch_end_signals();
     let event_loop = EventLoop::<()>::with_user_event().build().expect("no display to open a window on");

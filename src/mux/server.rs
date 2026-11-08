@@ -344,8 +344,8 @@ impl Server {
     /// A window come: the panes no window has, and the workspaces they
     /// were in, are its.
     fn welcome(&mut self, c: u64) {
-        // The drop-down's panes and workspaces wait for the next drop-down.
-        let free = |p: &&Pane| p.owner.is_none() && p.window != super::DROP_WINDOW;
+        // The quake window's panes and workspaces wait for the next one.
+        let free = |p: &&Pane| p.owner.is_none() && p.window != super::QUAKE_WINDOW;
         let mut held: Vec<Held> = self
             .panes
             .iter()
@@ -362,8 +362,8 @@ impl Server {
                 t.told = t.state.lines;
             }
         }
-        let (drop, left): (Vec<_>, Vec<_>) = std::mem::take(&mut self.left).into_iter().partition(|(w, _)| *w == super::DROP_WINDOW);
-        self.left = drop;
+        let (quake, left): (Vec<_>, Vec<_>) = std::mem::take(&mut self.left).into_iter().partition(|(w, _)| *w == super::QUAKE_WINDOW);
+        self.left = quake;
         let layout = merge(left.iter().map(|(_, l)| l.as_str())).and_then(|s| toml::to_string(&s).ok()).unwrap_or_default();
         self.layouts.insert(c, layout.clone());
         self.send(c, ToClient::Welcome { layout, panes: held });
@@ -403,7 +403,7 @@ impl Server {
         }
         held.sort_by_key(|h| h.pane);
         // Its workspaces, as it last said them: a window that kept them
-        // (reconnecting) passes them by; one started again (the drop-down)
+        // (reconnecting) passes them by; one started again (the quake window)
         // takes them up.
         let layout = self.layouts.get(&c).cloned().unwrap_or_default();
         self.send(c, ToClient::Welcome { layout, panes: held });
@@ -431,16 +431,19 @@ impl Server {
                 named.extend(&ids);
                 // Shown elsewhere only if its panes are a live window's.
                 let shown = elsewhere && ids.iter().any(|id| self.panes.get(id).is_some_and(|p| p.owner.is_some_and(|o| o != c)));
-                workspaces.push(Listed { spec: toml::to_string(&ws).unwrap_or_default(), panes: ids, elsewhere: shown });
+                workspaces.push(Listed { spec: toml::to_string(&ws).unwrap_or_default(), panes: ids, elsewhere: shown, label: String::new(), running: false });
             }
         }
         let mut loose: Vec<u64> = self.panes.iter().filter(|(id, p)| p.owner.is_none() && !named.contains(id)).map(|(id, _)| *id).collect();
         loose.sort();
-        if !loose.is_empty() {
-            let panes: Vec<Spec> = loose.iter().map(|id| Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*id), host: None }).collect();
-            let layout = if panes.len() == 1 { panes.into_iter().next() } else { Some(Spec::Across { v: panes, sizes: Vec::new() }) };
-            let ws = WorkspaceSpec { name: "Kept".into(), layout, ..Default::default() };
-            workspaces.push(Listed { spec: toml::to_string(&ws).unwrap_or_default(), panes: loose, elsewhere: false });
+        // Panes in no workspace, each on its own: what it runs, or where.
+        for id in loose {
+            let Some(p) = self.panes.get(&id) else { continue };
+            let proc = p.pty.proc();
+            let label = if proc.busy && !proc.fg.is_empty() { proc.fg.clone() } else { crate::persist::shorten(std::path::Path::new(&proc.cwd)) };
+            let spec = Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(id), host: None };
+            let ws = WorkspaceSpec { layout: Some(spec), ..Default::default() };
+            workspaces.push(Listed { spec: toml::to_string(&ws).unwrap_or_default(), panes: vec![id], elsewhere: false, label, running: proc.busy });
         }
         ToClient::Listing { workspaces }
     }
@@ -667,6 +670,11 @@ pub fn run(path: &Path) {
                 ToServer::Take { panes } => {
                     let taken = s.take(c, &panes);
                     s.send(c, taken);
+                }
+                ToServer::Release { pane } => {
+                    if let Some(p) = s.panes.get_mut(&pane).filter(|p| p.owner == Some(c)) {
+                        p.owner = None;
+                    }
                 }
                 ToServer::Hello { .. } | ToServer::Peek => {}
             },

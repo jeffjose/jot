@@ -1,7 +1,7 @@
-//! The drop-down window, as Tilix's Quake mode has it: across the top of
+//! The quake window, as Tilix's Quake mode has it: across the top of
 //! the monitor the pointer is on, 40% of its height and all its width,
 //! above every other window and on every workspace, out of the taskbar.
-//! `jot drop` (a key bound to it) shows it, and hides it again; losing
+//! `jot --quake` (a key bound to it) shows it, and hides it again; losing
 //! focus does not. It is another window on the session: its panes are its
 //! own, and run on while it is hidden.
 
@@ -13,31 +13,31 @@ use winit::window::WindowLevel;
 const HEIGHT_PERCENT: u32 = 40;
 const WIDTH_PERCENT: u32 = 100;
 
-/// The drop-down's window: no frame, over the others, kept hidden until it
+/// The quake window: no frame, over the others, kept hidden until it
 /// is placed.
 pub(super) fn attributes() -> winit::window::WindowAttributes {
     use winit::platform::x11::WindowAttributesExtX11;
     let attrs = window_attributes("jot", LogicalSize::new(1200.0, 400.0)).with_decorations(false).with_visible(false).with_window_level(WindowLevel::AlwaysOnTop);
-    WindowAttributesExtX11::with_name(attrs, "jot-drop", "jot-drop")
+    WindowAttributesExtX11::with_name(attrs, "jot-quake", "jot-quake")
 }
 
 impl App {
-    /// `jot drop`: shown, or hidden if it shows.
-    pub(super) fn drop_toggle(&mut self) {
-        if self.drop_shown {
-            self.drop_hide();
+    /// `jot --quake`: shown, or hidden if it shows.
+    pub(super) fn quake_toggle(&mut self) {
+        if self.quake_shown {
+            self.quake_hide();
         } else {
-            self.drop_show();
+            self.quake_show();
         }
     }
 
     /// Shown across the top of the monitor the pointer is on, and given
     /// the keys.
-    pub(super) fn drop_show(&mut self) {
+    pub(super) fn quake_show(&mut self) {
         let Some(window) = self.window.clone() else { return };
         let x = x11::X::open();
         let xid = x11_id(&window);
-        let place = drop_place(&window, x.as_ref());
+        let place = quake_place(&window, x.as_ref());
         if let Some((pos, size)) = place {
             let _ = window.request_inner_size(size);
             window.set_outer_position(pos);
@@ -56,22 +56,22 @@ impl App {
         } else {
             window.focus_window();
         }
-        self.drop_shown = true;
+        self.quake_shown = true;
         self.full = true;
         self.redraw();
     }
 
-    pub(super) fn drop_hide(&mut self) {
+    pub(super) fn quake_hide(&mut self) {
         if let Some(w) = &self.window {
             w.set_visible(false);
         }
-        self.drop_shown = false;
+        self.quake_shown = false;
     }
 }
 
-/// Where the drop-down goes, and how big: the top of the work area of the
+/// Where the quake window goes, and how big: the top of the work area of the
 /// monitor the pointer is on (the panels left clear), centred.
-fn drop_place(window: &Window, x: Option<&x11::X>) -> Option<(PhysicalPosition<i32>, PhysicalSize<u32>)> {
+fn quake_place(window: &Window, x: Option<&x11::X>) -> Option<(PhysicalPosition<i32>, PhysicalSize<u32>)> {
     let monitors: Vec<_> = window.available_monitors().collect();
     let pointer = x.and_then(|x| x.pointer());
     let monitor = pointer

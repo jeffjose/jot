@@ -24,7 +24,7 @@ use std::time::Duration;
 /// Bumped when the messages change: a window and a session that differ
 /// do not talk. (Hello and Refused keep their shape across versions, so
 /// that the difference can be told.)
-pub const PROTO: u32 = 5;
+pub const PROTO: u32 = 6;
 
 /// A pane's queue as both ends keep it: commands waiting for the prompt,
 /// whether a failure has held them, and those waiting on another pane's
@@ -75,6 +75,9 @@ pub enum ToServer {
     List,
     /// Those panes, to be shown in this window (no other window has them).
     Take { panes: Vec<u64> },
+    /// This window no longer shows the pane; it runs on, for any window to
+    /// show again.
+    Release { pane: u64 },
 }
 
 /// A pane the session has, as it says on attaching.
@@ -245,6 +248,7 @@ impl ToServer {
             ToServer::Peek => o.u8(9),
             ToServer::Signal { pane, sig, job } => o.u8(10).u64(*pane).u32(*sig as u32).u8(*job as u8),
             ToServer::List => o.u8(11),
+            ToServer::Release { pane } => o.u8(13).u64(*pane),
             ToServer::Take { panes } => {
                 o.u8(12).u32(panes.len() as u32);
                 for p in panes {
@@ -276,6 +280,7 @@ impl ToServer {
             9 => ToServer::Peek,
             10 => ToServer::Signal { pane: i.u64()?, sig: i.u32()? as i32, job: i.u8()? != 0 },
             11 => ToServer::List,
+            13 => ToServer::Release { pane: i.u64()? },
             12 => {
                 let n = i.u32()?;
                 ToServer::Take { panes: (0..n).map(|_| i.u64()).collect::<io::Result<Vec<_>>>()? }
@@ -337,7 +342,7 @@ impl ToClient {
                     for p in &w.panes {
                         o.u64(*p);
                     }
-                    o.u8(w.elsewhere as u8);
+                    o.u8(w.elsewhere as u8).str(&w.label).u8(w.running as u8);
                 }
             }
             ToClient::Taken { panes } => {
@@ -386,7 +391,7 @@ impl ToClient {
                     let spec = i.str()?;
                     let k = i.u32()?;
                     let panes = (0..k).map(|_| i.u64()).collect::<io::Result<Vec<_>>>()?;
-                    workspaces.push(Listed { spec, panes, elsewhere: i.u8()? != 0 });
+                    workspaces.push(Listed { spec, panes, elsewhere: i.u8()? != 0, label: i.str()?, running: i.u8()? != 0 });
                 }
                 ToClient::Listing { workspaces }
             }
@@ -571,9 +576,9 @@ impl Client {
 
     fn hello(mut s: UnixStream) -> io::Result<(UnixStream, String, Vec<Held>)> {
         s.set_read_timeout(Some(Duration::from_secs(5)))?;
-        // The drop-down comes back for its own panes; any other window
+        // The quake window comes back for its own panes; any other window
         // takes up those no window has.
-        s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again: crate::drop_mode(), want: Vec::new() }.encode())?;
+        s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again: crate::quake_mode(), want: Vec::new() }.encode())?;
         let f = read_frame(&mut s)?;
         s.set_read_timeout(None)?;
         match ToClient::decode(&f) {
@@ -665,6 +670,13 @@ impl Client {
 
     pub fn take(&self, panes: Vec<u64>) {
         self.send(ToServer::Take { panes });
+    }
+
+    /// The pane no longer shown here; it runs on.
+    pub fn release(&self, pane: u64) {
+        if !self.detached.load(Ordering::Acquire) {
+            self.send(ToServer::Release { pane });
+        }
     }
 
     /// The window going, its session left running.
@@ -994,9 +1006,9 @@ pub fn bridge() -> i32 {
     0
 }
 
-/// The drop-down window's name in the session (an odd number, as every
+/// The quake window's name in the session (an odd number, as every
 /// window's is).
-pub const DROP_WINDOW: u64 = 0x6a6f_7444_726f_7001;
+pub const QUAKE_WINDOW: u64 = 0x6a6f_7444_726f_7001;
 
 /// This window's name to the session, the same while it is open: what it
 /// had is given back to it on reconnecting, even from a connection the
@@ -1004,10 +1016,10 @@ pub const DROP_WINDOW: u64 = 0x6a6f_7444_726f_7001;
 pub fn window_id() -> u64 {
     static ID: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *ID.get_or_init(|| {
-        // The drop-down is always the same window, so that a new one takes
+        // The quake window is always the same window, so that a new one takes
         // up the panes the last one had, and only those.
-        if crate::drop_mode() {
-            return DROP_WINDOW;
+        if crate::quake_mode() {
+            return QUAKE_WINDOW;
         }
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
         t ^ ((std::process::id() as u64) << 32) | 1
@@ -1034,4 +1046,9 @@ pub struct Listed {
     pub spec: String,
     pub panes: Vec<u64>,
     pub elsewhere: bool,
+    /// A pane in no workspace: what it runs, or its folder; empty for a
+    /// workspace.
+    pub label: String,
+    /// Whether it runs something now (a pane in no workspace).
+    pub running: bool,
 }

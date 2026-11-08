@@ -221,9 +221,9 @@ impl App {
                 self.toast("jot", &args[1..].join(" "), None, None);
                 String::new()
             }
-            // `jot drop`, to the drop-down: shown, or hidden.
-            Some("toggle") if crate::drop_mode() => {
-                self.drop_toggle();
+            // `jot --quake`, to the quake window: shown, or hidden.
+            Some("toggle") if crate::quake_mode() => {
+                self.quake_toggle();
                 String::new()
             }
             _ => format!("jot: one of {} is needed\n", crate::remote::COMMANDS.join(", ")),

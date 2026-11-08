@@ -29,10 +29,10 @@ pub struct Request {
     pub reply: Sender<String>,
 }
 
-/// The drop-down window's own socket, which `jot drop` toggles it by.
-pub fn drop_socket_path() -> PathBuf {
+/// The quake window's own socket, which `jot --quake` toggles it by.
+pub fn quake_socket_path() -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir());
-    dir.join(format!("jot-{}-drop.sock", unsafe { libc::getuid() }))
+    dir.join(format!("jot-{}-quake.sock", unsafe { libc::getuid() }))
 }
 
 /// Listens for the command on a thread of its own, handing each request
@@ -87,10 +87,10 @@ pub fn client(args: &[String]) -> i32 {
     if answer.starts_with("jot:") { 1 } else { 0 }
 }
 
-/// `jot drop`: the drop-down window shown, or hidden if it shows; started
+/// `jot --quake`: the quake window shown, or hidden if it shows; started
 /// if there is none.
-pub fn drop() -> i32 {
-    if let Ok(mut stream) = UnixStream::connect(drop_socket_path()) {
+pub fn quake() -> i32 {
+    if let Ok(mut stream) = UnixStream::connect(quake_socket_path()) {
         if stream.write_all(b"toggle\n").is_ok() {
             let mut answer = String::new();
             let _ = stream.read_to_string(&mut answer);
@@ -104,7 +104,7 @@ pub fn drop() -> i32 {
     let quiet = || std::process::Stdio::null();
     let started = unsafe {
         std::process::Command::new(exe)
-            .arg("--drop")
+            .arg("--quake-window")
             .stdin(quiet())
             .stdout(quiet())
             .stderr(quiet())
@@ -117,7 +117,7 @@ pub fn drop() -> i32 {
     match started {
         Ok(_) => 0,
         Err(e) => {
-            eprintln!("jot: could not start the drop-down: {e}");
+            eprintln!("jot: could not start the quake window: {e}");
             1
         }
     }
