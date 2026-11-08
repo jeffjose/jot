@@ -561,7 +561,7 @@ impl App {
 }
 
 /// A pane's name on a tab: what it runs, or the last part of its title.
-fn tab_name(p: &Pane) -> String {
+pub(super) fn tab_name(p: &Pane) -> String {
     if let Some(run) = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt) {
         let cmd = run.2.trim();
         if !cmd.is_empty() {

@@ -142,7 +142,9 @@ pub struct Workspace {
     minimized: Vec<PaneId>,
     /// Panes made into empty space: room only, no shell, no focus.
     spaces: Vec<PaneId>,
-    /// Its panes listed under it in the sidebar.
+    /// Its panes listed under it in the sidebar (kept in saved sessions;
+    /// the sidebar lists terminals flat now).
+    #[allow(dead_code)]
     open: bool,
 }
 
@@ -152,6 +154,8 @@ enum Drag {
     Divider(Divider),
     Select { pane: PaneId, from: (u16, u16) },
     Pane(dnd::Carry),
+    /// A terminal's row in the sidebar, held or dragged onto a pane.
+    Side(sidebar::SideCarry),
     /// The quake window's grip, for its height.
     QuakeGrip,
 }
@@ -1641,7 +1645,7 @@ impl App {
             }
         }
         // The command line's text, right clicked: a text box's menu.
-        if button == MouseButton::Right && (self.editor_menu() || self.bar_field_menu() || self.pin_menu() || self.mini_menu() || self.space_menu()) {
+        if button == MouseButton::Right && (self.sidebar_menu() || self.editor_menu() || self.bar_field_menu() || self.pin_menu() || self.mini_menu() || self.space_menu()) {
             return;
         }
         // A tag on a caption, right clicked: what can be done with it.
@@ -1737,6 +1741,7 @@ impl App {
             Some(Drag::Pane(_)) => self.carry_move(x, y),
             Some(Drag::Sidebar) => {}
             Some(Drag::QuakeGrip) => self.quake_grip_move(),
+            Some(Drag::Side(_)) => self.side_drag_move(x, y),
             None if self.mouse_held.is_some() => {
                 let (id, b) = self.mouse_held.unwrap();
                 self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_MOTION, Some(b));
@@ -1784,6 +1789,10 @@ impl App {
     }
 
     fn mouse_release(&mut self) {
+        if let Some(Drag::Side(c)) = self.drag {
+            self.drag = None;
+            return self.side_drag_drop(c);
+        }
         if matches!(self.drag, Some(Drag::QuakeGrip)) {
             return self.quake_grip_end();
         }
@@ -2149,6 +2158,7 @@ impl App {
         self.draw_foot(full);
         if full {
             self.draw_carry();
+            self.draw_side_carry();
         }
         if self.find.is_some() && (full || !floating) {
             self.draw_find();
@@ -3161,6 +3171,21 @@ impl App {
                 by_machine.entry(m).or_default().push(p);
             }
         }
+        // Terminals no pane showed: left to the session, listed in the
+        // sidebar as running on, rather than gathered into a workspace. Only
+        // a window that would otherwise be empty shows them.
+        if !self.workspaces.is_empty() {
+            for (m, left) in by_machine {
+                for p in left {
+                    self.held.remove(&crate::mux::app_id(m, p));
+                    if let Some(x) = self.machines.get(m) {
+                        x.client.release(p);
+                    }
+                }
+            }
+            self.listed_at = Instant::now() - Duration::from_secs(60);
+            return;
+        }
         for (m, mut left) in by_machine {
             left.sort();
             let panes: Vec<persist::Spec> = left.iter().map(|p| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*p), host: None }).collect();
@@ -3262,18 +3287,6 @@ impl App {
         self.redraw();
     }
 
-    /// One of a machine's workspaces opened here: its panes asked for, and
-    /// the workspace made when they come, as it was there.
-    pub(super) fn open_listed(&mut self, k: usize, i: usize) {
-        let Some(l) = self.machines.get(k).and_then(|m| m.listing.get(i)).cloned() else { return };
-        let Ok(mut spec) = toml::from_str::<WorkspaceSpec>(&l.spec) else { return };
-        spec.host = (k > 0).then(|| self.machines[k].host.clone()).flatten();
-        // A pane on its own comes beside the one you are in; a workspace
-        // comes as it was.
-        self.taking.push((k, spec, if l.label.is_empty() { terminals::Place::Workspace } else { terminals::Place::Beside }));
-        self.machines[k].client.take(l.panes);
-    }
-
     /// Panes taken: the workspace waiting on them made, with them in it.
     fn taken(&mut self, k: usize, held: Vec<crate::mux::Held>) {
         let first = held.first().map(|h| h.pane);
@@ -3287,7 +3300,7 @@ impl App {
             terminals::Place::Into(p) | terminals::Place::Split(p, ..) => self.workspaces.iter().position(|w| w.root.contains(p)).map(|wi| (wi, p)),
             _ => None,
         };
-        let placed = !matches!(place, terminals::Place::Workspace) && !self.workspaces.is_empty();
+        let placed = !self.workspaces.is_empty();
         if placed {
             self.target = k;
             let new = self.spawn(Start { cmd: String::new(), cwd: pty::home(), pane: first, host: None });

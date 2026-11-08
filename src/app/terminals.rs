@@ -12,8 +12,6 @@ use super::*;
 /// Where a terminal taken from the session goes when it comes.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(super) enum Place {
-    /// A workspace of its own (a whole workspace taken up).
-    Workspace,
     /// Beside the pane you are in.
     Beside,
     /// Into this pane, in place of what it showed.
@@ -169,5 +167,24 @@ impl App {
             m.client.close(sid);
         }
         self.listed_at = Instant::now() - Duration::from_secs(60);
+    }
+}
+
+impl App {
+    /// A new terminal on machine `k`, in a pane beside the one you are in:
+    /// in that pane's folder here, in its home on another machine.
+    pub(super) fn new_terminal_on(&mut self, k: usize) {
+        if self.roam_shown || self.workspaces.is_empty() {
+            return;
+        }
+        let at = self.ws().focus;
+        let cwd = if k > 0 { PathBuf::from("~") } else { self.panes.get(&at).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home) };
+        self.target = k;
+        let id = self.spawn(Start { cmd: String::new(), cwd, pane: None, host: None });
+        let ws = self.ws_mut();
+        ws.zoom = None;
+        ws.root.split_beside(at, id, Dir::Across, false);
+        ws.focus = id;
+        self.changed();
     }
 }

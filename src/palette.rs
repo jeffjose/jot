@@ -25,6 +25,10 @@ pub enum Action {
     PickTerminal,
     NextTerminal,
     PrevTerminal,
+    /// A terminal no pane here shows: in a split beside the pane you are
+    /// in; or ended.
+    SplitTerminal(usize, u64),
+    KillFree(usize, u64),
     /// The sidebar shown, or tucked away.
     Sidebar,
     /// A workspace on another machine: its session reached by ssh.

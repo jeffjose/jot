@@ -268,6 +268,12 @@ impl App {
             Action::PickTerminal => self.terminal_picker(),
             Action::NextTerminal => self.step_terminal(1),
             Action::PrevTerminal => self.step_terminal(-1),
+            Action::SplitTerminal(k, sid) => {
+                if let Some(at) = self.focused() {
+                    self.take_terminal(k, sid, terminals::Place::Split(at, Dir::Across, false));
+                }
+            }
+            Action::KillFree(k, sid) => self.kill_free(k, sid),
             Action::QuitAll => {
                 // Every pane ended, not left in the session.
                 self.save_scrollback();
