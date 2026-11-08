@@ -259,7 +259,7 @@ impl App {
             // running on; with Ctrl, in a new split beside it.
             // A terminal's row: held, to be dragged onto a pane, or let go
             // where it was, a click.
-            Some(hit @ (SideHit::Free(..) | SideHit::Pane(_))) => self.drag = Some(Drag::Side(SideCarry { hit, from: (x, y), moving: false, over: None })),
+            Some(hit @ (SideHit::Free(..) | SideHit::Pane(_))) => self.drag = Some(Drag::Side(SideCarry { hit, from: (x, y), moving: false, over: None, slot: None })),
             Some(SideHit::Settings) => self.open_settings(),
             // A machine's heading: its menu is on a right click.
             Some(SideHit::Machine(_)) | None => {}
@@ -499,6 +499,8 @@ impl App {
                 self.set_focus(id);
                 let (k, sid) = crate::mux::split_id(id);
                 self.open_items_menu(vec![
+                    c("Show in a split beside", "Ctrl click", Action::SplitTerminal(k, sid)),
+                    None,
                     c("Rename…", "/rename", Action::RenameTerminal(k, sid)),
                     c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom),
                     c("Minimize", "", Action::Minimize),
@@ -543,6 +545,10 @@ pub(super) struct SideCarry {
     pub from: (i32, i32),
     pub moving: bool,
     pub over: Option<(PaneId, dnd::Zone)>,
+    /// Over the sidebar's list instead: where among its machine's rows it
+    /// would go (the machine, and how many of its rows come before),
+    /// and the line's height on screen.
+    pub slot: Option<(usize, usize, i32)>,
 }
 
 impl App {
@@ -601,6 +607,11 @@ impl App {
         c.moving = true;
         let own = if let SideHit::Pane(id) = c.hit { Some(id) } else { None };
         c.over = self.pane_at(x, y).map(|(id, _)| id).or_else(|| self.space_at(x, y)).filter(|id| Some(*id) != own).and_then(|id| self.panes.get(&id).map(|p| (id, dnd::zone(p.rect, x, y))));
+        // Over the list: a place among the rows, to move it to; not a pane.
+        c.slot = if self.sidebar_open && x < self.sidebar_w() { self.side_slot(c.hit, y) } else { None };
+        if c.slot.is_some() {
+            c.over = None;
+        }
         self.drag = Some(Drag::Side(c));
         if let Some(w) = &self.window {
             w.set_cursor(CursorIcon::Grabbing);
@@ -614,6 +625,12 @@ impl App {
     pub(super) fn side_drag_drop(&mut self, c: SideCarry) {
         if let Some(w) = &self.window {
             w.set_cursor(CursorIcon::Default);
+        }
+        // Let go in the list: moved there, and numbered again.
+        if let (true, Some((k, at, _))) = (c.moving, c.slot) {
+            self.move_terminal(c.hit, k, at);
+            self.full = true;
+            return self.redraw();
         }
         let Some((target, z)) = c.over.filter(|_| c.moving) else {
             if !c.moving {
@@ -659,6 +676,11 @@ impl App {
         if !c.moving {
             return;
         }
+        // Where in the list it would go: a line between the rows.
+        if let Some((_, _, ly)) = c.slot {
+            let m = self.px(8.0);
+            self.canvas.round_fill(Rect { x: m, y: ly - self.px(1.0), w: self.sidebar_w() - 2 * m, h: self.px(2.0).max(2) }, self.px(1.0), self.cur_accent, 255);
+        }
         if let Some((target, z)) = c.over {
             if let Some(r) = self.panes.get(&target).map(|p| p.rect) {
                 let r = dnd::zone_rect(r, z);
@@ -683,5 +705,61 @@ impl App {
             self.canvas.text(&mut self.fonts.side, &t.label, tx as f32, ty, ch.text, r);
         }
         self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
+    }
+}
+
+impl App {
+    /// The terminal a row is: its machine and its name there.
+    fn side_term(hit: SideHit) -> Option<(usize, u64)> {
+        match hit {
+            SideHit::Free(k, sid) => Some((k, sid)),
+            SideHit::Pane(id) => Some(crate::mux::split_id(id)),
+            _ => None,
+        }
+    }
+
+    /// Where among the rows of the carried terminal's machine a point
+    /// (its height) falls: the machine, how many of its rows come before,
+    /// and the height of the line between them. None off that machine's
+    /// rows.
+    fn side_slot(&self, hit: SideHit, y: i32) -> Option<(usize, usize, i32)> {
+        let (k, _) = App::side_term(hit)?;
+        // That machine's rows, top to bottom, as last drawn.
+        let rows: Vec<Rect> = self.side_hits.iter().filter(|(_, h)| App::side_term(*h).is_some_and(|(rk, _)| rk == k)).map(|(r, _)| *r).collect();
+        let (first, last) = (rows.first()?, rows.last()?);
+        // A row's height of room above and below them still counts.
+        if y < first.y - first.h || y > last.y + 2 * last.h {
+            return None;
+        }
+        let at = rows.iter().position(|r| y < r.y + r.h / 2).unwrap_or(rows.len());
+        let line = match rows.get(at) {
+            Some(r) => r.y,
+            None => last.y + last.h,
+        };
+        Some((k, at, line))
+    }
+
+    /// A terminal moved to place `at` among machine `k`'s rows: that
+    /// machine's numbers given again in the new order, so the rest move up
+    /// or down one (10 to place 2: it is 2, 2 to 9 are 3 to 10). Another
+    /// machine's numbers do not change.
+    fn move_terminal(&mut self, hit: SideHit, k: usize, at: usize) {
+        let Some(t) = App::side_term(hit).filter(|(tk, _)| *tk == k) else { return };
+        let mut order: Vec<(usize, u64)> = self.side_terminals().into_iter().filter(|r| r.k == k).map(|r| (r.k, r.sid)).collect();
+        order.dedup();
+        let Some(from) = order.iter().position(|o| *o == t) else { return };
+        let mut numbers: Vec<usize> = order.iter().filter_map(|o| self.term_numbers.get(o).copied()).collect();
+        numbers.sort_unstable();
+        if numbers.len() != order.len() {
+            return;
+        }
+        order.remove(from);
+        let at = if at > from { at - 1 } else { at }.min(order.len());
+        order.insert(at, t);
+        for (o, n) in order.into_iter().zip(numbers) {
+            self.term_numbers.insert(o, n);
+        }
+        self.full = true;
+        self.redraw();
     }
 }
