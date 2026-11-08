@@ -233,6 +233,12 @@ pub struct Pty {
     /// Ended when it goes from the window (End, Quit and end all); else
     /// only no longer shown here, its program running on.
     pub end: bool,
+    /// Every pane of this window showing it, the first answering what the
+    /// program asks of its terminal: the terminal let go
+    /// of only when the last goes.
+    pub views: std::rc::Rc<std::cell::RefCell<Vec<u64>>>,
+    /// Which of them this is (its id in the window).
+    pub view: u64,
 }
 
 impl Pty {
@@ -286,7 +292,10 @@ impl Drop for Pty {
     fn drop(&mut self) {
         if self.end {
             self.mux.close(self.pane);
-        } else {
+        }
+        let mut views = self.views.borrow_mut();
+        views.retain(|v| *v != self.view);
+        if !self.end && views.is_empty() {
             self.mux.release(self.pane);
         }
     }

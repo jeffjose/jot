@@ -613,9 +613,10 @@ impl App {
         let client = self.machines[m].client.clone();
         let held = start.pane.and_then(|p| self.held.remove(&crate::mux::app_id(m, p)));
         let mut kept = None;
+        let mut log = None;
         let (pane, pid, cmd) = match held {
             Some(h) => {
-                self.replays.push((crate::mux::app_id(m, h.pane), h.log));
+                log = Some(h.log);
                 kept = Some((h.tee, h.queue));
                 (h.pane, h.pid, h.cmd)
             }
@@ -643,9 +644,25 @@ impl App {
                 }
             }
         };
-        let id = crate::mux::app_id(m, pane);
-        let pty = Pty { pane, machine: m, pid, mux: client.clone(), raw: false, proc: Default::default(), end: false };
-        let term = Terminal::new(cols, rows, self.config.scrollback, self.theme, reply_to(&client, pane));
+        // Its name here: its terminal's, or, shown in a pane here already,
+        // that of another view of it (as a file open in two editors).
+        let base = crate::mux::app_id(m, pane);
+        let id = (0..256u64).map(|v| crate::mux::view_id(base, v)).find(|v| !self.panes.contains_key(v)).unwrap_or(base);
+        if let Some(log) = log {
+            self.replays.push((id, log));
+        }
+        let views = self.views(base).first().and_then(|v| self.panes.get(v)).map(|p| p.pty.views.clone()).unwrap_or_default();
+        views.borrow_mut().push(id);
+        let pty = Pty { pane, machine: m, pid, mux: client.clone(), raw: false, proc: Default::default(), end: false, views: views.clone(), view: id };
+        // Only the first view answers what the program asks of its terminal
+        // (where the cursor is, and such); two would answer twice.
+        let mut answer = reply_to(&client, pane);
+        let reply: vt::Reply = Box::new(move |bytes: &[u8]| {
+            if views.borrow().first() == Some(&id) {
+                answer(bytes);
+            }
+        });
+        let term = Terminal::new(cols, rows, self.config.scrollback, self.theme, reply);
         let caption = folder_name(&pty.cwd().unwrap_or(start.cwd));
         self.panes.insert(
             id,
@@ -883,6 +900,7 @@ impl App {
         self.lay_out_popouts();
         let area = self.area();
         let mut shown = Vec::new();
+        let mut here = 0;
         let row_h = self.mini_row_h();
         // The workspace shown first: a pane in another workspace too is laid
         // out where it is seen, once, not resized back and forth between
@@ -904,6 +922,9 @@ impl App {
                     shown.push((id, r));
                 }
             }
+            if i == self.current {
+                here = shown.len();
+            }
         }
         if let Some(r) = self.roam {
             let m = self.px(24.0);
@@ -911,13 +932,29 @@ impl App {
         }
         // Room around the text, as VS Code's terminal leaves.
         let (cw, ch, cap, pad, top) = (self.fonts.cell_w, self.fonts.cell_h, self.caption_h(), self.px(12.0), self.px(8.0));
-        for (id, rect) in shown {
-            let bar = self.bar_height(id);
-            let pins = self.pins_height(id);
+        let fit: Vec<(PaneId, Rect, Rect, u16, u16)> = shown
+            .iter()
+            .map(|&(id, rect)| {
+                let (bar, pins) = (self.bar_height(id), self.pins_height(id));
+                let content = Rect { x: rect.x + pad, y: rect.y + cap + top + pins, w: (rect.w - 2 * pad).max(0), h: (rect.h - cap - top - bar - pins).max(0) };
+                let cols = (content.w / cw).clamp(1, u16::MAX as i32) as u16;
+                let rows = (content.h / ch).clamp(1, u16::MAX as i32) as u16;
+                (id, rect, content, cols, rows)
+            })
+            .collect();
+        // A terminal in two panes here (as a file open in two editors) is
+        // one size, the smallest of them on screen (of any, if none is), so
+        // that each shows all of it.
+        let size_of = |id: PaneId| {
+            let base = crate::mux::base_id(id);
+            let views = || fit.iter().enumerate().filter(move |(_, f)| crate::mux::base_id(f.0) == base);
+            let seen = views().any(|(i, _)| i < here);
+            let from = || views().filter(move |(i, _)| !seen || *i < here).map(|(_, f)| (f.3, f.4));
+            (from().map(|s| s.0).min().unwrap_or(1), from().map(|s| s.1).min().unwrap_or(1))
+        };
+        let sized: Vec<(PaneId, Rect, Rect, u16, u16)> = fit.iter().map(|&(id, rect, content, ..)| { let (c, r) = size_of(id); (id, rect, content, c, r) }).collect();
+        for (id, rect, content, cols, rows) in sized {
             let Some(p) = self.panes.get_mut(&id) else { continue };
-            let content = Rect { x: rect.x + pad, y: rect.y + cap + top + pins, w: (rect.w - 2 * pad).max(0), h: (rect.h - cap - top - bar - pins).max(0) };
-            let cols = (content.w / cw).clamp(1, u16::MAX as i32) as u16;
-            let rows = (content.h / ch).clamp(1, u16::MAX as i32) as u16;
             // Only a change of rows or columns is told to the program: a
             // shell such as tcsh draws its prompt again on each telling.
             // The session makes this window's size the pane's, and says so
@@ -1002,14 +1039,14 @@ impl App {
                 }
             }
         }
-        // What the pane showed before, if one of them still runs and no pane
-        // here shows it: back in its place, as closing a tab shows the one
+        // What the pane showed before, if one of them still runs (in another
+        // pane too, maybe): back in its place, as closing a tab shows the one
         // before; only with none does the pane itself close.
         if self.roam != Some(id) && self.ws().root.contains(id) {
             let free = self.free_terminals();
             let mut under = self.under.remove(&id).unwrap_or_default();
             while let Some((k, sid)) = under.pop() {
-                if free.iter().any(|f| f.k == k && f.sid == sid) {
+                if free.iter().any(|f| f.k == k && f.sid == sid) || !self.views(crate::mux::app_id(k, sid)).is_empty() {
                     self.under.insert(id, under);
                     return self.take_terminal(k, sid, terminals::Place::Back(id));
                 }
@@ -1923,38 +1960,49 @@ impl App {
                 Output::Gone(..) => "heard gone",
             });
             match out {
+                // What a terminal printed, to each pane showing it.
                 Output::Bytes(id, bytes) => {
-                    let watched = self.panes.get(&id).is_some_and(|p| p.tee.is_some() || p.filter.is_some());
-                    let bytes = if watched { self.watch_output(id, bytes) } else { bytes };
-                    if let Some(p) = self.panes.get_mut(&id) {
-                        p.term.write(&bytes);
-                        search_again |= searched == Some(id);
-                        if !p.has_images && bytes.windows(3).any(|w| w == b"\x1b_G") {
-                            p.has_images = true;
+                    for (n, id) in self.views(id).into_iter().enumerate() {
+                        let watched = self.panes.get(&id).is_some_and(|p| p.tee.is_some() || p.filter.is_some());
+                        let bytes = if watched { self.watch_output(id, bytes.clone()) } else { bytes.clone() };
+                        if let Some(p) = self.panes.get_mut(&id) {
+                            p.term.write(&bytes);
+                            search_again |= searched == Some(id);
+                            if !p.has_images && bytes.windows(3).any(|w| w == b"\x1b_G") {
+                                p.has_images = true;
+                            }
+                            if !shown.contains(&id) && !p.activity && p.started.elapsed() > Duration::from_secs(3) {
+                                p.activity = true;
+                                self.full = true;
+                            }
+                            any = true;
                         }
-                        if !shown.contains(&id) && !p.activity && p.started.elapsed() > Duration::from_secs(3) {
-                            p.activity = true;
-                            self.full = true;
+                        // Once for the terminal, not each pane showing it.
+                        if n == 0 {
+                            self.check_triggers(id, &bytes);
                         }
-                        any = true;
-                    }
-                    self.check_triggers(id, &bytes);
-                    if self.is_minimized(id) {
-                        self.note_last_line(id, &bytes);
-                    }
-                    self.shell_events(id);
-                    self.queue_tick(id);
-                    if let Some(i) = self.popout_of(id) {
-                        self.popouts[i].window.request_redraw();
+                        if self.is_minimized(id) {
+                            self.note_last_line(id, &bytes);
+                        }
+                        self.shell_events(id);
+                        if n == 0 {
+                            self.queue_tick(id);
+                        }
+                        if let Some(i) = self.popout_of(id) {
+                            self.popouts[i].window.request_redraw();
+                        }
                     }
                 }
-                Output::Exit(id) => exited.push(id),
+                Output::Exit(id) => exited.extend(self.views(id)),
                 Output::Mode(id, raw) => {
-                    if let Some(p) = self.panes.get_mut(&id) {
-                        p.pty.raw = raw;
+                    let views = self.views(id);
+                    for v in &views {
+                        if let Some(p) = self.panes.get_mut(v) {
+                            p.pty.raw = raw;
+                        }
                     }
-                    if raw {
-                        self.queue_tick(id);
+                    if let (true, Some(v)) = (raw, views.first()) {
+                        self.queue_tick(*v);
                     }
                 }
                 // The size its program writes for now: another window's, when
@@ -1963,24 +2011,32 @@ impl App {
                 // foot) lands where it should.
                 Output::Size(id, cols, rows) => {
                     let (cw, ch) = (self.fonts.cell_w as u32, self.fonts.cell_h as u32);
-                    if let Some(p) = self.panes.get_mut(&id).filter(|p| (p.cols, p.rows) != (cols, rows)) {
-                        crate::debuglog::log(format!("pane {id:x}: the session says {cols}x{rows}"));
-                        p.term.resize(cols, rows, cw, ch);
-                        p.cols = cols;
-                        p.rows = rows;
-                        p.lines.clear();
-                        p.full = true;
-                        self.redraw();
+                    for id in self.views(id) {
+                        if let Some(p) = self.panes.get_mut(&id).filter(|p| (p.cols, p.rows) != (cols, rows)) {
+                            crate::debuglog::log(format!("pane {id:x}: the session says {cols}x{rows}"));
+                            p.term.resize(cols, rows, cw, ch);
+                            p.cols = cols;
+                            p.rows = rows;
+                            p.lines.clear();
+                            p.full = true;
+                            self.redraw();
+                        }
                     }
                 }
-                Output::Ran(id, cmd) => self.queue_ran(id, cmd),
+                Output::Ran(id, cmd) => {
+                    if let Some(v) = self.views(id).first() {
+                        self.queue_ran(*v, cmd);
+                    }
+                }
                 Output::Proc(id, proc) => {
-                    if let Some(p) = self.panes.get_mut(&id) {
-                        p.pty.proc = proc;
+                    for v in self.views(id) {
+                        if let Some(p) = self.panes.get_mut(&v) {
+                            p.pty.proc = proc.clone();
+                        }
                     }
                 }
-                Output::TeeLines(id, n) => self.tee_lines(id, n),
-                Output::TeeEnd(id, n, e) => self.tee_ended(id, n, e),
+                Output::TeeLines(id, n) => self.views(id).into_iter().for_each(|v| self.tee_lines(v, n)),
+                Output::TeeEnd(id, n, e) => self.views(id).into_iter().for_each(|v| self.tee_ended(v, n, e.clone())),
                 // Another machine's connection dropped: reached again unseen,
                 // the window as it was meanwhile. Gone for good (this
                 // machine's session ended, or the other runs another jot): the
@@ -3398,7 +3454,9 @@ impl App {
                     }
                     // Listed as running on at once, and where it stood noted,
                     // for a step already on its way to this pane.
-                    self.list_free(old);
+                    if self.views(old).len() == 1 {
+                        self.list_free(old);
+                    }
                     // An id back in use is no longer a pane that was replaced.
                     self.replaced.retain(|(o, _)| *o != new && *o != old);
                     self.replaced.push((old, new));

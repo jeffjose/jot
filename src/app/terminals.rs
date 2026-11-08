@@ -110,8 +110,9 @@ impl App {
         // Down the sidebar's list, every terminal in it, round the end: from
         // the one this pane shows (or is about to, a step still on its way)
         // to the next (Alt .) or the one before (Alt ,). One no pane shows
-        // comes into this pane; one another pane shows trades places with
-        // this one; so the pane always shows n+1, or n-1.
+        // here comes into this pane (one shown in another workspace too);
+        // one another pane here shows trades places with this one; so the
+        // pane always shows n+1, or n-1.
         let at = self.replaced_by(at);
         let here = self.stepping.filter(|(p, _)| *p == at).map(|(_, t)| t).unwrap_or_else(|| crate::mux::split_id(at));
         let mut ring: Vec<(usize, u64, Option<PaneId>)> = self.side_terminals().into_iter().map(|t| (t.k, t.sid, t.pane)).collect();
@@ -134,13 +135,9 @@ impl App {
                 self.stepping = None;
                 self.changed();
             }
-            // In another workspace here: brought here, the two trading.
-            Some(p) => {
-                self.stepping = None;
-                self.bring_pane(p, at, super::dnd::Zone::Swap);
-            }
-            // Shown by no pane: taken into this one.
-            None => {
+            // Shown by no pane here, or only in another workspace (which
+            // keeps it): shown in this one.
+            _ => {
                 self.stepping = Some((at, (k, sid)));
                 self.take_terminal(k, sid, Place::Into(at));
             }
@@ -329,5 +326,21 @@ impl App {
         persist::save_machines(&self.machines.iter().skip(1).filter(|m| m.added).filter_map(|m| m.host.clone()).collect::<Vec<_>>());
         self.full = true;
         self.redraw();
+    }
+}
+
+impl App {
+    /// The panes here showing the terminal `id` is (or is a view of): the
+    /// one that answers the program first.
+    pub(super) fn views(&self, id: PaneId) -> Vec<PaneId> {
+        let base = crate::mux::base_id(id);
+        let mut v: Vec<PaneId> = self.panes.keys().copied().filter(|p| crate::mux::base_id(*p) == base).collect();
+        v.sort();
+        if let Some(first) = self.panes.get(&id).or_else(|| v.first().and_then(|p| self.panes.get(p))).and_then(|p| p.pty.views.borrow().first().copied()) {
+            if let Some(i) = v.iter().position(|p| *p == first) {
+                v.swap(0, i);
+            }
+        }
+        v
     }
 }

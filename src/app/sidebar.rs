@@ -225,7 +225,7 @@ impl App {
                 if y > bottom - srow {
                     break;
                 }
-                let focused = t.pane.is_some() && t.pane == focus;
+                let focused = t.pane.zip(focus).is_some_and(|(p, f)| crate::mux::base_id(p) == crate::mux::base_id(f));
                 y = self.side_term_row(t, y, srow, pad, inner_w, focused, clip, focus_fill, hover);
             }
         }
@@ -360,7 +360,21 @@ impl App {
                 let status = if running.is_some() { 1 } else if failed { 2 } else { 0 };
                 let label = self.terminal_label(*id);
                 let cmd = running.filter(|r| r.split_whitespace().next() != Some(label.as_str()) || r.contains(' '));
-                out.push(SideTerm { k, sid, pane: Some(*id), label, cmd, status, badge: (wi == self.current).then(|| format!("{}", n + 1)) });
+                let badge = (wi == self.current).then(|| format!("{}", n + 1));
+                // A terminal in two panes is one row: the pane here first,
+                // its numbers together.
+                if let Some(t) = out.iter_mut().find(|t: &&mut SideTerm| (t.k, t.sid) == (k, sid)) {
+                    match (&mut t.badge, badge) {
+                        (Some(b), Some(n)) => *b = format!("{b},{n}"),
+                        (b @ None, Some(n)) => {
+                            *b = Some(n);
+                            t.pane = Some(*id);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+                out.push(SideTerm { k, sid, pane: Some(*id), label, cmd, status, badge });
             }
         }
         for f in self.free_terminals() {
@@ -519,21 +533,27 @@ impl App {
                 self.take_terminal(k, sid, place);
             }
             // On screen here (it has a number): its pane is gone to, nothing
-            // moves. Shown in another workspace of this window: it comes to
-            // the pane you are in, the two trading places (Ctrl: beside it),
-            // as a terminal no pane shows would; the layout stays.
+            // moves (Ctrl: shown again, in a split beside the pane you are
+            // in, as a file is open in two editors). Shown in another
+            // workspace of this window: shown in the pane you are in too
+            // (Ctrl: beside it), as a terminal no pane shows would; the
+            // pane there keeps it, and the layout stays.
             SideHit::Pane(id) => {
-                let here = self.ws().root.contains(id);
-                match self.focused().filter(|at| self.ws().root.contains(*at)) {
-                    Some(at) if !here => {
-                        let z = if self.mods.control_key() { dnd::Zone::Right } else { dnd::Zone::Swap };
-                        self.bring_pane(id, at, z);
+                let (k, sid) = crate::mux::split_id(id);
+                let at = self.focused().filter(|at| self.ws().root.contains(*at));
+                let here = self.views(id).into_iter().find(|v| self.ws().root.contains(*v));
+                match (at, here) {
+                    (Some(at), _) if self.mods.control_key() => self.take_terminal(k, sid, terminals::Place::Split(at, Dir::Across, false)),
+                    (Some(at), None) => self.take_terminal(k, sid, terminals::Place::Into(at)),
+                    (at, Some(v)) => {
+                        // A pane showing it in focus already stays so.
+                        if !at.is_some_and(|a| crate::mux::base_id(a) == crate::mux::base_id(v)) {
+                            self.set_focus(v);
+                        }
                     }
-                    _ => {
-                        if !here {
-                            if let Some(wi) = self.workspaces.iter().position(|w| w.root.contains(id)) {
-                                self.go_to(wi);
-                            }
+                    (None, None) => {
+                        if let Some(wi) = self.workspaces.iter().position(|w| w.root.contains(id)) {
+                            self.go_to(wi);
                         }
                         self.set_focus(id);
                     }
@@ -591,11 +611,13 @@ impl App {
             SideHit::Pane(id) if self.ws().root.contains(id) && self.ws().root.contains(target) => {
                 self.carry_drop(dnd::Carry { pane: id, from: c.from, moving: true, over: Some((target, z)) });
             }
-            // Shown in another workspace here: brought to this one. On the
-            // middle of a pane the two trade places; on an edge it moves
-            // beside it (its old workspace closing if it is left empty).
+            // Shown in another workspace here: shown here too, there (the
+            // middle of a pane) or beside it (an edge), the pane there
+            // keeping it.
             SideHit::Pane(id) if self.ws().root.contains(target) => {
-                self.bring_pane(id, target, z);
+                let (k, sid) = crate::mux::split_id(id);
+                let place = if z == dnd::Zone::Swap { terminals::Place::Into(target) } else { terminals::Place::Split(target, dir, before) };
+                self.take_terminal(k, sid, place);
             }
             hit => self.side_row_click(hit),
         }
@@ -634,62 +656,5 @@ impl App {
             self.canvas.text(&mut self.fonts.side, &t.label, tx as f32, ty, ch.text, r);
         }
         self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
-    }
-}
-
-impl App {
-    /// A pane in another workspace here brought into the one you are in,
-    /// at `target`: on its middle the two trade places (each workspace keeps
-    /// its layout); on an edge it moves beside it, its old workspace closing
-    /// if left empty.
-    pub(super) fn bring_pane(&mut self, id: PaneId, target: PaneId, z: dnd::Zone) {
-        let Some(wi) = self.workspaces.iter().position(|w| w.root.contains(id)) else { return };
-        if wi == self.current {
-            return;
-        }
-        if z == dnd::Zone::Swap {
-            self.workspaces[wi].root.replace(id, target);
-            if self.workspaces[wi].focus == id {
-                self.workspaces[wi].focus = target;
-            }
-            if self.workspaces[wi].zoom == Some(id) {
-                self.workspaces[wi].zoom = Some(target);
-            }
-            let ws = self.ws_mut();
-            ws.root.replace(target, id);
-            ws.focus = id;
-            if ws.zoom == Some(target) {
-                ws.zoom = Some(id);
-            }
-        } else {
-            let (dir, before) = match z {
-                dnd::Zone::Left => (Dir::Across, true),
-                dnd::Zone::Right => (Dir::Across, false),
-                dnd::Zone::Top => (Dir::Down, true),
-                _ => (Dir::Down, false),
-            };
-            let emptied = !self.workspaces[wi].root.remove(id);
-            if !emptied {
-                let mut ids = Vec::new();
-                self.workspaces[wi].root.panes(&mut ids);
-                if self.workspaces[wi].focus == id {
-                    self.workspaces[wi].focus = ids[0];
-                }
-                if self.workspaces[wi].zoom == Some(id) {
-                    self.workspaces[wi].zoom = None;
-                }
-            }
-            let ws = self.ws_mut();
-            ws.zoom = None;
-            ws.root.split_beside(target, id, dir, before);
-            ws.focus = id;
-            if emptied {
-                self.workspaces.remove(wi);
-                if self.current > wi {
-                    self.current -= 1;
-                }
-            }
-        }
-        self.changed();
     }
 }

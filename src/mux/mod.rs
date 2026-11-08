@@ -1135,6 +1135,8 @@ pub fn app_id(machine: usize, pane: u64) -> u64 {
 
 /// A window's pane name as its machine and its session's name for it.
 pub fn split_id(id: u64) -> (usize, u64) {
+    // (The top byte, a second view's number, is not part of it.)
+    let id = base_id(id);
     ((id >> 40) as usize, id & ((1 << 40) - 1))
 }
 
@@ -1151,4 +1153,16 @@ pub struct Listed {
     pub label: String,
     /// Whether it runs something now (a pane in no workspace).
     pub running: bool,
+}
+
+/// A terminal shown in more than one pane of a window has a name for each,
+/// its view's number in the top byte: 0 for the first. Its terminal's name,
+/// without it.
+pub fn base_id(id: u64) -> u64 {
+    id & ((1 << 56) - 1)
+}
+
+/// The name of view `v` of terminal `base` in a window.
+pub fn view_id(base: u64, v: u64) -> u64 {
+    base_id(base) | (v << 56)
 }
