@@ -77,6 +77,12 @@ impl App {
             return;
         }
         let layout = persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(sid), host: None };
+        // Its row as it is now, to stay so until a pane shows it.
+        if !self.term_seen.contains_key(&(k, sid)) {
+            if let Some(t) = self.side_terminals().into_iter().find(|t| (t.k, t.sid) == (k, sid)) {
+                self.term_seen.insert((k, sid), (t.label, t.cmd, t.status));
+            }
+        }
         self.taking.push((k, WorkspaceSpec { layout: Some(layout), ..Default::default() }, place));
         self.machines[k].client.take(vec![sid]);
         // Off the list at once, so that stepping again goes on to the next;
@@ -166,7 +172,7 @@ impl App {
     pub(super) fn list_free(&mut self, id: PaneId) {
         let (k, sid) = crate::mux::split_id(id);
         let Some(p) = self.panes.get(&id) else { return };
-        let running = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.trim().to_string()).filter(|s| !s.is_empty());
+        let running = pane_running(p);
         let label = running.clone().unwrap_or_else(|| p.pty.cwd().map(|c| persist::shorten(&c)).unwrap_or_else(|| "~".into()));
         if let Some(m) = self.machines.get_mut(k) {
             if !m.listing.iter().any(|l| l.panes.contains(&sid)) {
@@ -265,7 +271,7 @@ pub(super) fn term_name(place: &str, running: Option<&str>) -> String {
 impl App {
     /// The name of a terminal a pane here shows, as term_name gives it.
     pub(super) fn pane_term_name(&self, p: &Pane) -> String {
-        let running = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.clone());
+        let running = pane_running(p);
         let place = p.pty.cwd().map(|c| persist::shorten(&c)).unwrap_or_else(|| p.caption.clone());
         term_name(&place, running.as_deref())
     }
@@ -346,16 +352,23 @@ impl App {
 }
 
 impl App {
-    /// Numbers for terminals new since last time (the lowest free, in the
+    /// Each terminal's row as shown noted, and numbers for terminals new
+    /// since last time (the lowest free, in the
     /// order their sessions made them); those of terminals gone, free again.
     pub(super) fn number_terminals(&mut self) {
-        let mut live: Vec<(usize, u64)> = self.side_terminals().into_iter().map(|t| (t.k, t.sid)).collect();
+        let rows = self.side_terminals();
+        // Rows panes here show, as they show them: kept for when none does.
+        for t in rows.iter().filter(|t| t.pane.is_some()) {
+            self.term_seen.insert((t.k, t.sid), (t.label.clone(), t.cmd.clone(), t.status));
+        }
+        let mut live: Vec<(usize, u64)> = rows.into_iter().map(|t| (t.k, t.sid)).collect();
         // On its way into a pane, in no list for now: still its own.
         for (k, spec, _) in &self.taking {
             live.extend(spec.layout.as_ref().map(persist::ids_in_order).unwrap_or_default().into_iter().map(|sid| (*k, sid)));
         }
         let before = self.term_numbers.len();
         self.term_numbers.retain(|t, _| live.contains(t));
+        self.term_seen.retain(|t, _| live.contains(t));
         let mut changed = self.term_numbers.len() != before;
         for t in live {
             if !self.term_numbers.contains_key(&t) {
@@ -373,4 +386,13 @@ impl App {
     pub(super) fn term_number(&self, id: PaneId) -> Option<usize> {
         self.term_numbers.get(&crate::mux::split_id(id)).copied()
     }
+}
+
+/// What a pane's terminal runs now: the command as its shell marked it;
+/// with no mark (a shell that makes none, or one lost while a program
+/// redraws), the program in front, as the session's process table has it,
+/// the same the session names one no pane shows by. None at a prompt.
+pub(super) fn pane_running(p: &Pane) -> Option<String> {
+    let marked = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.trim().to_string()).filter(|s| !s.is_empty());
+    marked.or_else(|| p.pty.busy().then(|| p.pty.foreground()).flatten())
 }

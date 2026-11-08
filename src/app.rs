@@ -246,6 +246,10 @@ pub struct App {
     /// is first seen (the lowest free), kept while it runs, whatever pane
     /// shows it.
     term_numbers: HashMap<(usize, u64), usize>,
+    /// Each terminal's row as a pane here last showed it (name, what it
+    /// runs, its dot): kept when no pane does, so that the row stays as it
+    /// was instead of taking the session's word for it.
+    term_seen: HashMap<(usize, u64), (String, Option<String>, u8)>,
     /// The last step (Alt , or Alt .): the pane, and the terminal on its way
     /// to it; and panes that took another's place, old and new.
     stepping: Option<(PaneId, (usize, u64))>,
@@ -492,6 +496,7 @@ impl App {
             quake_drag_h: None,
             term_names: persist::load_term_names(),
             term_numbers: HashMap::new(),
+            term_seen: HashMap::new(),
             stepping: None,
             replaced: Vec::new(),
             tip_shown: None,
@@ -1057,6 +1062,11 @@ impl App {
                     return self.take_terminal(k, sid, terminals::Place::Back(id));
                 }
             }
+        }
+        // Running on, in no pane now: listed so at once, its row staying
+        // where it was, instead of gone until the session next says.
+        if self.panes.get(&id).is_some_and(|p| !p.pty.end) && self.views(id).len() == 1 {
+            self.list_free(id);
         }
         self.close(id, event_loop);
     }

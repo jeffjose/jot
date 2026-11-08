@@ -365,7 +365,7 @@ impl App {
                     }
                     continue;
                 }
-                let running = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.trim().to_string()).filter(|s| !s.is_empty());
+                let running = terminals::pane_running(p);
                 let failed = running.is_none() && p.shell.blocks.last().is_some_and(|b| b.exit.is_some_and(|e| e != 0));
                 let status = if running.is_some() { 1 } else if failed { 2 } else { 0 };
                 let label = self.terminal_label(*id);
@@ -374,8 +374,27 @@ impl App {
             }
         }
         for f in self.free_terminals() {
-            let cmd = f.elsewhere.then(|| "in another window".to_string());
-            out.push(SideTerm { k: f.k, sid: f.sid, pane: None, label: self.given_name(f.k, f.sid).unwrap_or(f.label), cmd, status: u8::from(f.running), here: false });
+            // As a pane here last showed it, while it still runs something,
+            // or still does not, as then; the session's word only for one never
+            // shown here, or one that has started or ended a program since.
+            let seen = self.term_seen.get(&(f.k, f.sid)).filter(|s| f.running == (s.2 == 1));
+            let (label, cmd, status) = match seen {
+                Some((l, c, s)) => (l.clone(), c.clone(), *s),
+                None => (f.label, None, u8::from(f.running)),
+            };
+            let cmd = cmd.or_else(|| f.elsewhere.then(|| "in another window".to_string()));
+            out.push(SideTerm { k: f.k, sid: f.sid, pane: None, label: self.given_name(f.k, f.sid).unwrap_or(label), cmd, status, here: false });
+        }
+        // One on its way into a pane, in no list for the moment: its row
+        // stays where it is, as it was.
+        for (k, spec, _) in &self.taking {
+            for sid in spec.layout.as_ref().map(persist::ids_in_order).unwrap_or_default() {
+                if out.iter().any(|t| (t.k, t.sid) == (*k, sid)) {
+                    continue;
+                }
+                let Some((l, c, s)) = self.term_seen.get(&(*k, sid)) else { continue };
+                out.push(SideTerm { k: *k, sid, pane: None, label: self.given_name(*k, sid).unwrap_or_else(|| l.clone()), cmd: c.clone(), status: *s, here: false });
+            }
         }
         // By machine, then by number (one new since numbers were last given
         // at the end).
