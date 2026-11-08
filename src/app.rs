@@ -2578,9 +2578,16 @@ impl App {
                 if c.flags & vt::INVISIBLE == 0 {
                     if let Some(chr) = Some(c.ch).filter(|&ch| ch != '\0') {
                         if chr != ' ' {
-                            // An emoji is two cells wide unless the next has text in it.
-                            let narrow = cells.get(x + 1).is_some_and(|n| n.ch != '\0') || x + 1 == cells.len();
-                            let style = (c.flags & vt::BOLD != 0) as u8 | (((c.flags & vt::ITALIC != 0) as u8) << 1) | ((narrow as u8) << 2);
+                            // An emoji, or a symbol wider than a cell, has two
+                            // cells unless the next has text in it (a space is
+                            // none).
+                            let narrow = cells.get(x + 1).is_some_and(|n| n.ch != '\0' && n.ch != ' ') || x + 1 == cells.len();
+                            let vs = match c.vs {
+                                vt::EMOJI => 8,
+                                vt::TEXT => 16,
+                                _ => 0,
+                            };
+                            let style = (c.flags & vt::BOLD != 0) as u8 | (((c.flags & vt::ITALIC != 0) as u8) << 1) | ((narrow as u8) << 2) | vs;
                             let g = match ligs.get(x).copied().flatten() {
                                 Some(id) => fonts.glyph_id(id, style),
                                 None => fonts.glyph(chr, style),

@@ -340,24 +340,29 @@ impl Fonts {
         (self.fallback[i].font.lookup_glyph_index(c) != 0).then_some(i)
     }
 
-    /// A character's glyph in a style: 1 bold, 2 italic, 4 an emoji in one
-    /// cell rather than two.
     /// An emoji in color from Twemoji, two cells wide and as tall as a
-    /// cell, in their middle; None for a character Twemoji has no
-    /// colors for.
-    fn emoji(&self, c: char, narrow: bool) -> Option<Glyph> {
-        if !emoji_by_default(c) {
+    /// cell, in their middle (one cell, `style` 4, when the next has text);
+    /// None for a character Twemoji has no colors for. A picture when
+    /// nothing says how only for those Unicode draws so (see
+    /// emoji_by_default); any with Twemoji's colors when a variation
+    /// selector asks (`style` 8, U+FE0F), and none when one asks for text
+    /// (16, U+FE0E).
+    fn emoji(&self, c: char, style: u8) -> Option<Glyph> {
+        if style & 16 != 0 || (style & 8 == 0 && !emoji_by_default(c)) {
             return None;
         }
-        let cells = if narrow { 1 } else { 2 };
+        let cells = if style & 4 != 0 { 1 } else { 2 };
         let side = self.cell_h.min(cells * self.cell_w) as u32;
         let (w, h, pixels) = crate::emoji::twemoji(&c.to_string(), side)?;
         Some(Glyph { left: (cells * self.cell_w - w) / 2, top: (self.cell_h - h) / 2, width: w as usize, height: h as usize, coverage: Vec::new(), color: Some(pixels), lcd: false })
     }
 
+    /// A character's glyph in a style: 1 bold, 2 italic, 4 room for one
+    /// cell only (the next has text), 8 and 16 as a variation selector
+    /// asks (see emoji).
     pub fn glyph(&mut self, c: char, style: u8) -> &Glyph {
         if !self.cache.contains_key(&(c, style)) {
-            let g = match shapes::draw(c, self.cell_w, self.cell_h).or_else(|| self.emoji(c, style & 4 != 0)) {
+            let g = match shapes::draw(c, self.cell_w, self.cell_h).or_else(|| self.emoji(c, style)) {
                 Some(g) => g,
                 None => {
                     let which = self.font_for(c);

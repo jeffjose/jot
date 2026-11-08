@@ -20,6 +20,10 @@ pub const ITALIC: u16 = 1 << 1;
 pub const INVERSE: u16 = 1 << 4;
 pub const INVISIBLE: u16 = 1 << 5;
 pub const STRIKE: u16 = 1 << 6;
+
+/// A cell's variation selector (Cell::vs): drawn as text, or as an emoji.
+pub const TEXT: u8 = 1;
+pub const EMOJI: u8 = 2;
 const UNDERLINE_MASK: u16 = 0x7 << 8;
 
 /// What the terminal writes back to the program, as the answer to a query
@@ -46,6 +50,9 @@ pub struct Cell {
     /// wide one. Held as it is, not allocated, as it is read for every cell
     /// of every frame.
     pub ch: char,
+    /// How a variation selector after it asks it to be drawn: TEXT
+    /// (U+FE0E), EMOJI (U+FE0F), or 0 for neither.
+    pub vs: u8,
     pub fg: Option<Rgb>,
     pub bg: Option<Rgb>,
     pub flags: u16,
@@ -349,6 +356,8 @@ impl Terminal {
                             let mut buf = GhosttyCodepointBuffer { ptr: codepoints.as_mut_ptr(), cap: codepoints.len(), len: 0 };
                             ghostty_render_state_row_cells_get(self.cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF, &mut buf as *mut _ as *mut c_void);
                             cell.ch = codepoints[..buf.len.min(buf.cap)].first().and_then(|&c| char::from_u32(c)).unwrap_or('\0');
+                            let rest = &codepoints[1..buf.len.min(buf.cap)];
+                            cell.vs = if rest.contains(&0xFE0F) { EMOJI } else if rest.contains(&0xFE0E) { TEXT } else { 0 };
                         }
                         let mut styled = false;
                         ghostty_render_state_row_cells_get(self.cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_HAS_STYLING, &mut styled as *mut bool as *mut c_void);
