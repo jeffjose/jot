@@ -1716,7 +1716,7 @@ impl App {
             }
         }
         if let (Some((id, _)), Some(b)) = (self.pane_at(x, y), App::button_of(button)) {
-            if self.mouse_to_program(id) && !self.mods.control_key() && self.caption_at(x, y).is_none() {
+            if button != MouseButton::Right && self.mouse_to_program(id) && !self.mods.control_key() && self.caption_at(x, y).is_none() {
                 if !self.roam_shown {
                     self.set_focus(id);
                 }
@@ -2911,7 +2911,7 @@ impl ApplicationHandler<()> for App {
                     }
                     MouseScrollDelta::PixelDelta(p) => -(p.y / self.fonts.cell_h as f64) as isize,
                 };
-                if lines != 0 && !self.settings_scroll(lines) && !self.pins_wheel(lines as f32) {
+                if lines != 0 && !self.settings_scroll(lines) && !self.pins_wheel(lines as f32) && !self.editor_wheel(lines) {
                     self.scroll(lines);
                 }
             }

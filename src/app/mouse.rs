@@ -1,6 +1,7 @@
 //! The mouse given to the program in a pane when it asks for it, as htop,
-//! nvim and Claude Code do: clicks, drags and the wheel. Shift held keeps
-//! the mouse jot's, to select.
+//! nvim and Claude Code do: left and middle clicks, drags and the wheel.
+//! The right button stays jot's, for its menu; Shift held keeps the
+//! mouse jot's, to select.
 
 use super::*;
 use crate::vt::MouseIn;
