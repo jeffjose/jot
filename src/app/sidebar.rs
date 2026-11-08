@@ -334,9 +334,7 @@ impl App {
 
 /// A terminal as the sidebar lists it: its machine and name in that
 /// machine's session; the pane here that shows it, if one does; what to
-/// call it; what it runs now; how it is (0 idle, 1 running, 2 failed); and
-/// what to say at its right: its pane's number, or that another window
-/// shows it.
+/// call it; what it runs now; and how it is (0 idle, 1 running, 2 failed).
 pub(super) struct SideTerm {
     pub k: usize,
     pub sid: u64,
@@ -386,7 +384,6 @@ impl App {
                 Some((l, c, s)) => (l.clone(), c.clone(), *s),
                 None => (f.label, None, u8::from(f.running)),
             };
-            let cmd = cmd.or_else(|| f.elsewhere.then(|| "in another window".to_string()));
             out.push(SideTerm { k: f.k, sid: f.sid, pane: None, label: self.given_name(f.k, f.sid).unwrap_or(label), cmd, status, here: false });
         }
         // One on its way into a pane, in no list for the moment: its row

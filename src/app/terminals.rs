@@ -190,8 +190,7 @@ impl App {
                 let host = (f.k > 0).then(|| self.machines.get(f.k).and_then(|m| m.host.clone())).flatten();
                 let hint = match (host, f.elsewhere, f.running) {
                     (Some(h), _, _) => h,
-                    (None, true, _) => "in another window".into(),
-                    (None, false, true) => "running".into(),
+                    (None, _, true) => "running".into(),
                     _ => String::new(),
                 };
                 Some(Item { label: f.label, hint, action: Action::ShowTerminal(f.k, f.sid) })
