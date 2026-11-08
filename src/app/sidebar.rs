@@ -492,41 +492,8 @@ impl App {
         }
         let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
         match self.side_hit_at(x, y) {
-            // A terminal no pane shows.
-            Some(SideHit::Free(k, sid)) => {
-                self.open_items_menu(vec![
-                    c("Open", "", Action::ShowTerminal(k, sid)),
-                    c("Open to the side", "Ctrl click", Action::SplitTerminal(k, sid)),
-                    c("Open in new window", "", Action::OpenInNewWindow(k, sid)),
-                    None,
-                    c("Rename…", "", Action::RenameTerminal(k, sid)),
-                    None,
-                    c("Kill", "", Action::KillFree(k, sid)),
-                ]);
-                true
-            }
-            // A terminal a pane here shows: gone to, and what can be done
-            // with its pane.
-            Some(SideHit::Pane(id)) => {
-                if let Some(wi) = self.workspaces.iter().position(|w| w.root.contains(id)) {
-                    if wi != self.current {
-                        self.go_to(wi);
-                    }
-                }
-                self.set_focus(id);
-                let (k, sid) = crate::mux::split_id(id);
-                self.open_items_menu(vec![
-                    c("Open to the side", "Ctrl click", Action::SplitTerminal(k, sid)),
-                    c("Open in new window", "", Action::OpenInNewWindow(k, sid)),
-                    None,
-                    c("Rename…", "", Action::RenameTerminal(k, sid)),
-                    c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom),
-                    c("Minimize", "", Action::Minimize),
-                    c("Pop out", "Alt Shift O", Action::PopOut),
-                    None,
-                    c("Close", "Alt X", Action::Close),
-                    c("Kill", "", Action::EndPane),
-                ]);
+            Some(hit @ (SideHit::Free(..) | SideHit::Pane(_))) => {
+                self.terminal_menu(hit);
                 true
             }
             // A machine: a new terminal on it; reached again, or taken out
@@ -808,5 +775,48 @@ impl App {
         persist::save_folded(&self.side_folded);
         self.full = true;
         self.redraw();
+    }
+}
+
+impl App {
+    /// What can be done with a terminal, from its row in the sidebar or its
+    /// entry on the quake window's bar. One no pane here shows: opened, or
+    /// killed. One a pane here shows: gone to, and its pane closed (the
+    /// terminal running on) as well as the terminal killed.
+    pub(super) fn terminal_menu(&mut self, hit: SideHit) {
+        use crate::palette::{Action, Item};
+        let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
+        match hit {
+            SideHit::Free(k, sid) => {
+                let mut items = vec![c("Open", "", Action::ShowTerminal(k, sid))];
+                if !crate::quake_mode() {
+                    items.push(c("Open to the side", "Ctrl click", Action::SplitTerminal(k, sid)));
+                }
+                items.extend([c("Open in new window", "", Action::OpenInNewWindow(k, sid)), None, c("Rename…", "", Action::RenameTerminal(k, sid)), None, c("Kill terminal", "", Action::KillFree(k, sid))]);
+                self.open_items_menu(items);
+            }
+            SideHit::Pane(id) => {
+                if let Some(wi) = self.workspaces.iter().position(|w| w.root.contains(id)) {
+                    if wi != self.current {
+                        self.go_to(wi);
+                    }
+                }
+                self.set_focus(id);
+                let (k, sid) = crate::mux::split_id(id);
+                self.open_items_menu(vec![
+                    c("Open to the side", "Ctrl click", Action::SplitTerminal(k, sid)),
+                    c("Open in new window", "", Action::OpenInNewWindow(k, sid)),
+                    None,
+                    c("Rename…", "", Action::RenameTerminal(k, sid)),
+                    c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom),
+                    c("Minimize", "", Action::Minimize),
+                    c("Pop out", "Alt Shift O", Action::PopOut),
+                    None,
+                    c("Close pane", "Alt X", Action::Close),
+                    c("Kill terminal", "", Action::EndPane),
+                ]);
+            }
+            _ => {}
+        }
     }
 }

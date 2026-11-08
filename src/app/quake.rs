@@ -669,3 +669,29 @@ impl App {
         }
     }
 }
+
+impl App {
+    /// A right click on the quake window's bar: on a terminal, what can be
+    /// done with it (as from its sidebar row); elsewhere on the bar,
+    /// nothing (not the pane's menu, which is not what was clicked).
+    pub(super) fn quake_bar_menu(&mut self) -> bool {
+        if !crate::quake_mode() {
+            return false;
+        }
+        let (x, y) = self.pointer;
+        if !self.quake_bar_rect().contains(x, y) {
+            return false;
+        }
+        if let Some(QuakeHit::Term(hit)) = self.quake_hit_at(x, y) {
+            self.terminal_menu(hit);
+            // Up from the bar along the foot, down from one along the top.
+            let (row, pad, on_top) = (self.fonts.ui.height + self.px(8.0), self.px(12.0), self.quake_bar_on_top());
+            let below = y + self.px(8.0);
+            if let Some(m) = &mut self.menu {
+                let h = m.items.len() as i32 * row + pad;
+                m.at = if on_top { (x, below) } else { (x, (y - h).max(0)) };
+            }
+        }
+        true
+    }
+}

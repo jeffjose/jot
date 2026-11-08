@@ -682,7 +682,13 @@ impl Server {
             let ws = WorkspaceSpec { layout: Some(spec), ..Default::default() };
             workspaces.push(Listed { spec: toml::to_string(&ws).unwrap_or_default(), panes: vec![id], elsewhere: false, label, running: proc.busy });
         }
-        ToClient::Listing { workspaces }
+        // What each terminal runs now, and where: one another window shows
+        // named as it is.
+        let procs = self.panes.iter().map(|(id, p)| {
+            let proc = p.pty.proc();
+            (*id, proc.fg.clone(), proc.busy, crate::persist::shorten(std::path::Path::new(&proc.cwd)))
+        }).collect();
+        ToClient::Listing { workspaces, procs }
     }
 
     /// Panes window `c` takes to show: those no other window has. Their

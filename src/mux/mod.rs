@@ -129,7 +129,10 @@ pub enum ToClient {
     /// What a pane's program is doing, when it changes.
     Proc { pane: u64, proc: crate::pty::Proc },
     /// For List: its workspaces this window does not show.
-    Listing { workspaces: Vec<Listed> },
+    /// `procs`, after those: what each of its terminals runs now, and
+    /// where (pane, what runs in front, whether it is busy, its folder),
+    /// for naming one another window shows as it is.
+    Listing { workspaces: Vec<Listed>, procs: Vec<(u64, String, bool, String)> },
     /// For Take: the panes, now this window's, with what they printed.
     Taken { panes: Vec<Held> },
     /// The size a pane's program writes for now, when it changes and
@@ -407,7 +410,7 @@ impl ToClient {
             ToClient::Proc { pane, proc } => {
                 o.u8(10).u64(*pane).str(&proc.cwd).str(&proc.fg).u32(proc.pgrp as u32).u8(proc.busy as u8);
             }
-            ToClient::Listing { workspaces } => {
+            ToClient::Listing { workspaces, procs } => {
                 o.u8(11).u32(workspaces.len() as u32);
                 for w in workspaces {
                     o.str(&w.spec).u32(w.panes.len() as u32);
@@ -415,6 +418,10 @@ impl ToClient {
                         o.u64(*p);
                     }
                     o.u8(w.elsewhere as u8).str(&w.label).u8(w.running as u8);
+                }
+                o.u32(procs.len() as u32);
+                for (pane, fg, busy, cwd) in procs {
+                    o.u64(*pane).str(fg).u8(*busy as u8).str(cwd);
                 }
             }
             ToClient::Taken { panes } => {
@@ -481,7 +488,9 @@ impl ToClient {
                     let panes = (0..k).map(|_| i.u64()).collect::<io::Result<Vec<_>>>()?;
                     workspaces.push(Listed { spec, panes, elsewhere: i.u8()? != 0, label: i.str()?, running: i.u8()? != 0 });
                 }
-                ToClient::Listing { workspaces }
+                let n = i.u32().unwrap_or(0);
+                let procs = (0..n).map_while(|_| Some((i.u64().ok()?, i.str().ok()?, i.u8().ok()? != 0, i.str().ok()?))).collect();
+                ToClient::Listing { workspaces, procs }
             }
             12 => ToClient::Taken { panes: i.held()? },
             13 => ToClient::Size { pane: i.u64()?, cols: i.u16()?, rows: i.u16()? },
@@ -584,7 +593,7 @@ pub enum Heard {
     /// tried again, unless it runs another jot).
     Failed(String),
     /// Its workspaces this window does not show.
-    Listing(Vec<Listed>),
+    Listing(Vec<Listed>, Vec<(u64, String, bool, String)>),
     /// Panes taken into this window.
     Taken(Vec<Held>),
     /// The session's shared workspaces, and the terminals in them now this
@@ -804,7 +813,7 @@ fn listen(mut r: Box<dyn Read + Send>, spawned: Sender<(u64, i32)>, hear: Arc<dy
             Ok(ToClient::TeeLines { pane, lines }) => hear(Heard::TeeLines(pane, lines)),
             Ok(ToClient::TeeEnd { pane, lines, error }) => hear(Heard::TeeEnd(pane, lines, error)),
             Ok(ToClient::Proc { pane, proc }) => hear(Heard::Proc(pane, proc)),
-            Ok(ToClient::Listing { workspaces }) => hear(Heard::Listing(workspaces)),
+            Ok(ToClient::Listing { workspaces, procs }) => hear(Heard::Listing(workspaces, procs)),
             Ok(ToClient::Taken { panes }) => hear(Heard::Taken(panes)),
             Ok(ToClient::Workspaces { specs, held }) => hear(Heard::Workspaces(specs, held)),
             Ok(ToClient::Numbers { numbers }) => hear(Heard::Numbers(numbers)),

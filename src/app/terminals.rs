@@ -79,8 +79,18 @@ impl App {
                 }
                 let spec = toml::from_str::<WorkspaceSpec>(&l.spec).ok();
                 for &sid in l.panes.iter().filter(|s| !here.contains(&(k, **s))) {
-                    let label = spec.as_ref().and_then(|s| s.layout.as_ref()).and_then(|lay| label_in(lay, sid)).unwrap_or_else(|| "shell".into());
-                    add(Free { k, sid, label, running: false, elsewhere: l.elsewhere }, false);
+                    // Named by what it runs now, as its session says (claude,
+                    // not the folder its layout was saved in); else by that.
+                    match m.procs.get(&sid) {
+                        Some((fg, busy, cwd)) => {
+                            let label = term_name(cwd, busy.then_some(fg.as_str()));
+                            add(Free { k, sid, label, running: *busy, elsewhere: l.elsewhere }, true);
+                        }
+                        None => {
+                            let label = spec.as_ref().and_then(|s| s.layout.as_ref()).and_then(|lay| label_in(lay, sid)).unwrap_or_else(|| "shell".into());
+                            add(Free { k, sid, label, running: false, elsewhere: l.elsewhere }, false);
+                        }
+                    }
                 }
             }
         }
@@ -415,9 +425,19 @@ impl App {
 /// redraws), the program in front, as the session's process table has it,
 /// the same the session names one no pane shows by. None at a prompt.
 pub(super) fn pane_running(p: &Pane) -> Option<String> {
-    let marked = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.trim().to_string()).filter(|s| !s.is_empty());
-    marked.or_else(|| p.pty.busy().then(|| p.pty.foreground()).flatten())
+    // A command named once it has run a moment: one done at once (ll, cd)
+    // never is, its name in and out of the sidebar and captions.
+    if let Some(r) = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt) {
+        return (r.0.elapsed() >= NAMED_AFTER).then(|| r.2.trim().to_string()).filter(|s| !s.is_empty());
+    }
+    if p.shell.at_prompt {
+        return None;
+    }
+    p.pty.busy().then(|| p.pty.foreground()).flatten()
 }
+
+/// How long a command runs before a pane is named by it.
+const NAMED_AFTER: Duration = Duration::from_secs(1);
 
 impl App {
     /// Terminal `sid` of machine `k` shown in a new jot window as well, as a

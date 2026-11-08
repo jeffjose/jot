@@ -660,7 +660,7 @@ impl App {
             captions_at: Instant::now() - Duration::from_secs(10),
             clock: clock(),
             session,
-            machines: vec![Machine { host: host.clone(), client: attached.client.clone(), listing: Vec::new(), added: true, restarting: false }],
+            machines: vec![Machine { host: host.clone(), client: attached.client.clone(), listing: Vec::new(), procs: HashMap::new(), added: true, restarting: false }],
             target: 0,
             unreached: Vec::new(),
             tx: tx.clone(),
@@ -1977,7 +1977,7 @@ impl App {
             }
         }
         // The command line's text, right clicked: a text box's menu.
-        if button == MouseButton::Right && (self.sidebar_menu() || self.editor_menu() || self.bar_field_menu() || self.pin_menu() || self.mini_menu() || self.space_menu() || self.foot_menu()) {
+        if button == MouseButton::Right && (self.quake_bar_menu() || self.sidebar_menu() || self.editor_menu() || self.bar_field_menu() || self.pin_menu() || self.mini_menu() || self.space_menu() || self.foot_menu()) {
             return;
         }
         // A tag on a caption, right clicked: what can be done with it.
@@ -2341,7 +2341,10 @@ impl App {
                 }
                 Output::Back(k, held) => back.push((k, held)),
                 Output::Failed(k, why) => self.not_reached(k, &why),
-                Output::Listing(k, mut l) => {
+                Output::Listing(k, mut l, procs) => {
+                    if let Some(m) = self.machines.get_mut(k) {
+                        m.procs = procs.into_iter().map(|(p, fg, busy, cwd)| (p, (fg, busy, cwd))).collect();
+                    }
                     // Terminals let go of here a moment ago, which a list asked
                     // for before then leaves out: kept, until the session lists
                     // them itself, so that their rows do not blink out.
@@ -3662,7 +3665,7 @@ fn hearer(k: usize, tx: std::sync::mpsc::Sender<Output>, proxy: EventLoopProxy<(
             Heard::Proc(p, pr) => Output::Proc(id(p), pr),
             Heard::Back(held) => Output::Back(k, held),
             Heard::Failed(why) => Output::Failed(k, why),
-            Heard::Listing(l) => Output::Listing(k, l),
+            Heard::Listing(l, procs) => Output::Listing(k, l, procs),
             Heard::Taken(h) => Output::Taken(k, h),
             Heard::Workspaces(s, h) => Output::Workspaces(k, s, h),
             Heard::Numbers(n) => Output::Numbers(k, n),
@@ -3686,6 +3689,9 @@ pub struct Machine {
     pub client: Arc<crate::mux::Client>,
     /// Its workspaces this window does not show, as its session last said.
     pub listing: Vec<crate::mux::Listed>,
+    /// What each of its terminals runs now, and where, as its session last
+    /// said with that list: by its name there.
+    pub procs: HashMap<u64, (String, bool, String)>,
     /// Added in the sidebar: listed there whether or not a pane of it is
     /// shown.
     pub added: bool,
@@ -3704,7 +3710,7 @@ impl App {
         }
         let k = self.machines.len();
         let hear = hearer(k, self.tx.clone(), self.proxy.clone(), self.woken.clone());
-        self.machines.push(Machine { host: Some(host.to_string()), client: crate::mux::Client::lazy(host, hear), listing: Vec::new(), added: false, restarting: false });
+        self.machines.push(Machine { host: Some(host.to_string()), client: crate::mux::Client::lazy(host, hear), listing: Vec::new(), procs: HashMap::new(), added: false, restarting: false });
         k
     }
 
