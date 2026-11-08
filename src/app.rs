@@ -359,6 +359,8 @@ pub struct App {
     side_sig: u64,
     /// What the project bar said when last drawn: drawn again when it changes.
     foot_said: String,
+    /// The other workspaces' dots on the project bar, and which each is.
+    foot_dots: Vec<(Rect, usize)>,
     /// When the debug log was last given its counts.
     dbg_at: Instant,
     /// Panes the session had when this window took it up, until the
@@ -564,6 +566,7 @@ impl App {
             side_heading: None,
             side_sig: 0,
             foot_said: String::new(),
+            foot_dots: Vec::new(),
             dbg_at: Instant::now(),
             mux: attached.client,
             held,
@@ -1685,6 +1688,13 @@ impl App {
             if self.title_press(event_loop) {
                 return;
             }
+            // A workspace's dot on the project bar, which runs under the
+            // sidebar too: gone to.
+            let y = self.pointer.1;
+            if let Some(&(_, i)) = self.foot_dots.iter().find(|(r, _)| r.contains(x, y)) {
+                self.go_to(i);
+                return;
+            }
             if self.sidebar_edge_at(x) {
                 self.drag = Some(Drag::Sidebar);
                 return;
@@ -2661,12 +2671,16 @@ impl App {
         self.damage.push(bar);
     }
 
-    /// The project bar: the window in its workspace's color, said once
-    /// for the window rather than on every pane. Its name; the folder of the
-    /// pane you are in; at the right, the machine that pane runs on.
+    /// The project bar: a quiet line along the window's foot. At its left
+    /// the workspace you are in, its name and the folder of the pane you are
+    /// in on a chip of its color; then the other workspaces, a dot of each
+    /// one's color (ringed amber when one of its panes has news), clicked to
+    /// go there; at the right the machine that pane runs on, and the clock
+    /// when the status line is not showing it.
     fn draw_foot(&mut self, full: bool) {
         let h = self.foot_h();
         if h == 0 || self.workspaces.is_empty() {
+            self.foot_dots.clear();
             return;
         }
         let ws = self.ws();
@@ -2678,30 +2692,96 @@ impl App {
             None => hostname(),
         };
         let accent = self.cur_accent;
-        let said = format!("{name}\0{folder}\0{machine}\0{accent}\0{}", self.canvas.width);
+        let accents = self.ws_accents();
+        let others: Vec<(usize, u32, bool)> = (0..self.workspaces.len())
+            .filter(|&i| i != self.current)
+            .map(|i| {
+                let mut ids = Vec::new();
+                self.workspaces[i].root.panes(&mut ids);
+                let busy = ids.iter().any(|id| self.panes.get(id).is_some_and(|p| p.activity));
+                (i, accents.get(i).map_or(self.accent, |a| a.0), busy)
+            })
+            .collect();
+        let clock = if self.config.status_line { String::new() } else { self.clock.clone() };
+        let said = format!("{name}\0{folder}\0{machine}\0{accent}\0{others:?}\0{clock}\0{}\0{}", self.canvas.width, self.cur_theme.bg);
         if !full && said == self.foot_said {
             return;
         }
         self.foot_said = said;
         let bar = Rect { x: 0, y: self.canvas.height - self.status_h() - h, w: self.canvas.width, h };
-        // Dark words or light ones, whichever reads better on the color, as
-        // WCAG reckons it: cyan, teal and amber get dark ones.
+        let c = self.cur_theme.chrome();
+        self.canvas.fill(bar, c.side);
+        self.canvas.fill(Rect { x: bar.x, y: bar.y, w: bar.w, h: 1 }, c.edge);
+        let ty = bar.y + (h - self.fonts.ui.height) / 2;
+        let pad = self.px(10.0);
+        let gap = self.px(12.0);
+        // The right: the machine, the clock.
+        let mut right = bar.x + bar.w - pad;
+        if !clock.is_empty() {
+            right -= self.fonts.ui.width(&clock);
+            self.canvas.text(&mut self.fonts.ui, &clock, right as f32, ty, c.dim, bar);
+            right -= gap;
+        }
+        right -= self.fonts.ui.width(&machine);
+        self.canvas.text(&mut self.fonts.ui, &machine, right as f32, ty, c.dim, bar);
+        right -= gap;
+        // The chip. Dark words or light ones, whichever reads better on the
+        // color, as WCAG reckons it: cyan, teal and amber get dark ones.
         let (dark, light) = (mix(accent, 0x000000, 215), mix(accent, 0xFFFFFF, 235));
         let fg = if crate::canvas::contrast(dark, accent) >= crate::canvas::contrast(light, accent) { dark } else { light };
         let soft = mix(accent, fg, 170);
-        self.canvas.fill(bar, accent);
-        let ty = bar.y + (h - self.fonts.ui.height) / 2;
-        let pad = self.px(10.0);
-        let right_w = self.fonts.ui.width(&machine);
-        let right = bar.x + bar.w - pad - right_w;
-        self.canvas.text(&mut self.fonts.ui, &machine, right as f32, ty, soft, bar);
-        let clip = Rect { x: bar.x, y: bar.y, w: (right - self.px(12.0) - bar.x).max(0), h };
-        let after = self.canvas.text_fit(&mut self.fonts.ui, &name, bar.x + pad, ty, (clip.w - pad).max(0), fg, clip);
+        let words = self.fonts.ui.width(&name) + if folder.is_empty() { 0 } else { self.px(10.0) + self.fonts.ui.width(&folder) };
+        let room = (right - bar.x - self.px(60.0)).max(0);
+        let chip = Rect { x: bar.x, y: bar.y, w: (words + 2 * pad).min(room), h };
+        self.canvas.fill(chip, accent);
+        let clip = Rect { x: chip.x, y: chip.y, w: (chip.w - pad).max(0), h };
+        let after = self.canvas.text_fit(&mut self.fonts.ui, &name, chip.x + pad, ty, (clip.w - pad).max(0), fg, clip);
         if !folder.is_empty() {
             let x = after + self.px(10.0);
             self.canvas.text_fit(&mut self.fonts.ui, &folder, x, ty, (clip.x + clip.w - x).max(0), soft, clip);
         }
+        // The other workspaces, a dot each.
+        self.foot_dots.clear();
+        let (d, step, ring, inner) = (self.px(7.0), self.px(15.0), self.px(13.0), self.px(10.0));
+        let cy = bar.y + (h + 1) / 2;
+        let mut x = chip.x + chip.w + self.px(6.0);
+        for (i, color, busy) in others {
+            if x + step > right {
+                break;
+            }
+            let cx = x + step / 2;
+            let disc = |canvas: &mut Canvas, size: i32, color: u32| canvas.round_fill(Rect { x: cx - size / 2, y: cy - size / 2, w: size, h: size }, size / 2, color, 255);
+            if busy {
+                disc(&mut self.canvas, ring, ACTIVITY);
+                disc(&mut self.canvas, inner, c.side);
+            }
+            disc(&mut self.canvas, d, color);
+            self.foot_dots.push((Rect { x, y: bar.y, w: step, h }, i));
+            x += step;
+        }
         self.damage.push(bar);
+    }
+
+    /// What the tooltip says over a workspace's dot on the project bar: its
+    /// number and name, and the projects its panes are in.
+    pub(super) fn foot_dot_words(&self, i: usize) -> String {
+        let Some(ws) = self.workspaces.get(i) else { return String::new() };
+        let mut ids = Vec::new();
+        ws.root.panes(&mut ids);
+        let mut projects: Vec<String> = Vec::new();
+        for id in ids {
+            let Some(cwd) = self.panes.get(&id).and_then(|p| p.pty.cwd()) else { continue };
+            let short = persist::shorten(&cwd);
+            let project = if short == "~" { short } else { cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(short) };
+            if !projects.contains(&project) {
+                projects.push(project);
+            }
+        }
+        if projects.is_empty() {
+            format!("{} {}", i + 1, ws.name)
+        } else {
+            format!("{} {}  ·  {}", i + 1, ws.name, projects.join(", "))
+        }
     }
 
     /// Whether a point is on the project bar.
