@@ -137,3 +137,41 @@ impl App {
         self.damage.push(Rect { x: r.x - px(16.0), y: 0, w: r.w + px(32.0), h: r.y + r.h + px(16.0) });
     }
 }
+
+impl App {
+    /// A last session of more than one window, brought back as it was: this
+    /// window takes up the first's workspaces, where it was and as large;
+    /// each other opens again, a jot of its own (--restore) with its own.
+    pub(super) fn split_windows(&mut self, mut s: Session) -> Session {
+        let mut windows = std::mem::take(&mut s.windows);
+        if windows.len() < 2 || crate::quake_mode() || crate::restoring() {
+            return s;
+        }
+        let mine = windows.remove(0);
+        let dir = persist::state_dir();
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("jot"));
+        for (i, w) in windows.iter().enumerate() {
+            let path = dir.join(format!("restore-{}-{i}.toml", std::process::id()));
+            let Ok(text) = toml::to_string(w) else { continue };
+            if std::fs::write(&path, text).is_err() {
+                continue;
+            }
+            open_detached(&exe, &["--restore".as_ref(), path.as_os_str()]);
+        }
+        if let Some(st) = mine.window {
+            self.start_window = Some(st);
+            self.normal = Some((st.x, st.y, st.w, st.h));
+            if (st.font_size - self.font_size).abs() > 0.01 {
+                self.set_font_size(st.font_size);
+            }
+            // Open already (the session was offered): moved to where it was.
+            if let Some(w) = &self.window {
+                w.set_maximized(false);
+                let _ = w.request_inner_size(winit::dpi::PhysicalSize::new(st.w, st.h));
+                w.set_outer_position(winit::dpi::PhysicalPosition::new(st.x, st.y));
+                w.set_maximized(st.maximized);
+            }
+        }
+        mine
+    }
+}

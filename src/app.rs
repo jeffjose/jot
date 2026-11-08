@@ -474,7 +474,7 @@ impl App {
         // begins with one shell.
         let taking_up = !attached.panes.is_empty();
         let fresh = attached.fresh;
-        let session = if taking_up { toml::from_str::<Session>(&attached.layout).ok() } else if fresh { session } else { None };
+        let session = if taking_up { toml::from_str::<Session>(&attached.layout).ok() } else if fresh || crate::restoring() { session } else { None };
         // Where this window was, as the session kept it with its workspaces,
         // else as the last window was left; and the other windows that quit
         // with workspaces of their own opened again, each taking up the next.
@@ -571,7 +571,7 @@ impl App {
             wheel_streak: 0,
             toasts: Vec::new(),
             offered: None,
-            may_offer: fresh && !taking_up,
+            may_offer: fresh && !taking_up && !crate::restoring(),
             fresh_session: fresh,
             pictures: HashMap::new(),
             triggers: Vec::new(),
@@ -861,6 +861,12 @@ impl App {
         let session = self.session.take();
         let taking_up = !self.held.is_empty();
         let restoring = session.is_some() && !taking_up;
+        let session = if restoring { session.map(|s| self.split_windows(s)) } else { session };
+        // What is brought back told to the session at once: until then it
+        // would save the last session without this window's.
+        if restoring {
+            self.unsaved = true;
+        }
         let (specs, current, roam) = match session {
             Some(s) => {
                 self.pending_popouts = s.popouts;
@@ -2930,7 +2936,7 @@ impl App {
         workspaces.extend(self.unreached.iter().cloned());
         let roam = self.roam.and_then(|r| panes.get(&r)).and_then(|p| p.pty.cwd()).or(self.roam_cwd.clone()).map(|p| persist::shorten(&p));
         let popouts = self.popouts.iter().filter(|po| crate::mux::split_id(po.pane).0 == 0).map(|po| persist::spec(&Node::Pane(po.pane), &describe)).collect();
-        let session = Session { current: self.current, roam, workspaces, popouts, window: self.window_state(), more: 0 };
+        let session = Session { current: self.current, roam, workspaces, popouts, window: self.window_state(), more: 0, windows: Vec::new() };
         // The window's machine's session keeps them all, for the next window
         // to take up (reaching the other machines again), and saves every
         // window's together for after a restart. Each other machine's keeps
@@ -3728,24 +3734,30 @@ mod plain_title_tests {
 /// `n` more windows, each a jot of its own (started with --restored, so
 /// that it opens no more), taking up the workspaces of a window that quit.
 fn open_more_windows(n: u32) {
-    use std::os::unix::process::CommandExt;
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("jot"));
     for _ in 0..n {
-        let quiet = || std::process::Stdio::null();
-        let started = unsafe {
-            std::process::Command::new(&exe)
-                .arg("--restored")
-                .stdin(quiet())
-                .stdout(quiet())
-                .stderr(quiet())
-                .pre_exec(|| {
-                    libc::setsid();
-                    Ok(())
-                })
-                .spawn()
-        };
-        if let Err(e) = started {
-            eprintln!("jot: could not open another window: {e}");
-        }
+        open_detached(&exe, &["--restored".as_ref()]);
+    }
+}
+
+/// `exe` run with `args`, apart from this jot: in a session of its own, so
+/// that it outlives it.
+pub(super) fn open_detached(exe: &std::path::Path, args: &[&std::ffi::OsStr]) {
+    use std::os::unix::process::CommandExt;
+    let quiet = || std::process::Stdio::null();
+    let started = unsafe {
+        std::process::Command::new(exe)
+            .args(args)
+            .stdin(quiet())
+            .stdout(quiet())
+            .stderr(quiet())
+            .pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            })
+            .spawn()
+    };
+    if let Err(e) = started {
+        eprintln!("jot: could not open another window: {e}");
     }
 }

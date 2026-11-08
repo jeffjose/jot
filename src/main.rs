@@ -31,6 +31,13 @@ pub fn debug() -> bool {
 }
 
 static RESTORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RESTORING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Opened with a window of the last session to bring back (--restore):
+/// brought back at once, not offered.
+pub fn restoring() -> bool {
+    RESTORING.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Opened by another window, for the workspaces of a window that quit:
 /// it opens no more of them.
@@ -147,12 +154,20 @@ fn main() {
         _ => None,
     };
     let mut fresh = false;
-    for arg in std::env::args().skip(if host.is_some() { 3 } else { 1 }) {
+    // `--restore FILE`: a window of the last session, opened by the window
+    // that restored it, its workspaces in FILE (taken away once read).
+    let mut restore_from: Option<std::path::PathBuf> = None;
+    let mut args = std::env::args().skip(if host.is_some() { 3 } else { 1 });
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--fresh" => fresh = true,
             "--quake-window" => QUAKE.store(true, std::sync::atomic::Ordering::Relaxed),
             "--debug" => DEBUG.store(true, std::sync::atomic::Ordering::Relaxed),
             "--restored" => RESTORED.store(true, std::sync::atomic::Ordering::Relaxed),
+            "--restore" => {
+                RESTORED.store(true, std::sync::atomic::Ordering::Relaxed);
+                restore_from = args.next().map(std::path::PathBuf::from);
+            }
             "-V" | "--version" => return println!("{}", version()),
             "-h" | "--help" => return println!("{HELP}"),
             other => {
@@ -164,7 +179,18 @@ fn main() {
     let config = persist::load_config();
     // The quake window has its own panes; the last session saved is the main
     // window's.
-    let session = if fresh || quake_mode() { None } else { persist::load_session() };
+    // A window opened by another has the workspaces it is given, if any:
+    // the last session is not offered again.
+    let session = match &restore_from {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            let _ = std::fs::remove_file(path);
+            toml::from_str::<persist::Session>(&text).ok()
+        }
+        None if fresh || quake_mode() || restored() => None,
+        None => persist::load_session(),
+    };
+    RESTORING.store(restore_from.is_some(), std::sync::atomic::Ordering::Relaxed);
     vt::set_up();
     app::catch_end_signals();
     let event_loop = EventLoop::<()>::with_user_event().build().expect("no display to open a window on");

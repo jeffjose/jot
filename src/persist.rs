@@ -380,6 +380,11 @@ pub struct Session {
     /// Where the window was, how large, its zoom: opened so again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowState>,
+    /// Each window's own, when there were more than one: its workspaces,
+    /// where it was. Saved by the session for after the machine restarts,
+    /// with every window's workspaces above as well (all an older jot reads).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<Session>,
 }
 
 fn config_dir() -> PathBuf {

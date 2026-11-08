@@ -556,12 +556,29 @@ impl Server {
         ToClient::Taken { panes: held }
     }
 
-    /// Every window's workspaces, and those left, as one session: saved,
-    /// to be offered back after the machine restarts.
+    /// Every window's workspaces, and those left, as one session, and each
+    /// window's on its own as well: saved, to be offered back after the
+    /// machine restarts, each window as it was. The quake window's go with
+    /// the first window's (it is placed by its settings).
     fn save(&self) {
-        if let Some(s) = merge(self.layouts.values().map(String::as_str).chain(self.left.iter().map(|(_, l)| l.as_str()))) {
-            crate::persist::save_session(&s);
+        let open = self.layouts.iter().map(|(c, l)| (self.names.get(c).copied().unwrap_or(0), l));
+        let all: Vec<(u64, &String)> = open.chain(self.left.iter().map(|(w, l)| (*w, l))).collect();
+        let Some(mut s) = merge(all.iter().map(|(_, l)| l.as_str())) else { return };
+        let mut groups: Vec<(u64, crate::persist::Session)> = all
+            .iter()
+            .filter(|(w, _)| *w != super::QUAKE_WINDOW)
+            .filter_map(|(w, l)| toml::from_str::<crate::persist::Session>(l).ok().map(|s| (*w, s)))
+            .filter(|(_, s)| !s.workspaces.is_empty() || !s.popouts.is_empty())
+            .collect();
+        groups.sort_by_key(|(w, _)| *w);
+        if groups.len() > 1 {
+            let quake = merge(all.iter().filter(|(w, _)| *w == super::QUAKE_WINDOW).map(|(_, l)| l.as_str()));
+            if let Some(q) = quake {
+                groups[0].1.workspaces.extend(q.workspaces);
+            }
+            s.windows = groups.into_iter().map(|(_, s)| s).collect();
         }
+        crate::persist::save_session(&s);
     }
 
     fn info(&self) -> ToClient {
