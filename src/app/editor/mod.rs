@@ -470,6 +470,10 @@ impl App {
     /// pane's terminal under it gets nothing: the editor holds it.
     pub(super) fn editor_press(&mut self) -> bool {
         let (x, y) = self.pointer;
+        // A divider's reach, into the pane: the divider's.
+        if self.editor_under(x, y).is_none() && self.divider_at(x, y).is_some() {
+            return false;
+        }
         let Some(i) = self.editor_under(x, y) else {
             // The pane around the editor: gone to, no more.
             let holder = self.pane_at(x, y).map(|(id, _)| id).filter(|id| self.editors.iter().any(|e| e.pane == *id));

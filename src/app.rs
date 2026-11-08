@@ -1670,6 +1670,14 @@ impl App {
                 return;
             }
         }
+        // A divider, within reach of its line: before the pane it reaches
+        // into gets the press (its program, its caption, its text).
+        if button == MouseButton::Left && !self.roam_shown {
+            if let Some(d) = self.divider_at(x, y).cloned() {
+                self.drag = Some(Drag::Divider(d));
+                return;
+            }
+        }
         if let (Some((id, _)), Some(b)) = (self.pane_at(x, y), App::button_of(button)) {
             if self.mouse_to_program(id) && !self.mods.control_key() && self.caption_at(x, y).is_none() {
                 if !self.roam_shown {
@@ -1707,12 +1715,6 @@ impl App {
             if let Some(&(_, i)) = self.tabs.iter().find(|(r, _)| r.contains(x, y)) {
                 self.go_to(i);
                 return;
-            }
-            if !self.roam_shown {
-                if let Some(d) = self.divider_at(x, y).cloned() {
-                    self.drag = Some(Drag::Divider(d));
-                    return;
-                }
             }
         }
         let Some((id, cell)) = self.pane_at(x, y) else { return };
