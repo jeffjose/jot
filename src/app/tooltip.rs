@@ -31,9 +31,12 @@ impl App {
             };
             return Some((*r, words));
         }
-        // The other workspaces' dots on the project bar.
-        if let Some((r, i)) = self.foot_dots.iter().find(|(r, _)| r.contains(x, y)) {
-            return Some((*r, self.foot_dot_words(*i)));
+        // The project bar's machine, and its workspaces' dots.
+        if let Some(r) = self.foot_button.filter(|r| r.contains(x, y)) {
+            return Some((r, "Another machine's workspaces".to_string()));
+        }
+        if let Some((r, d)) = self.foot_dots.iter().find(|(r, _)| r.contains(x, y)) {
+            return Some((*r, self.foot_dot_words(*d)));
         }
         // The quake window's bar.
         if let Some((r, hit)) = self.quake_hits.iter().find(|(r, _)| r.contains(x, y)) {

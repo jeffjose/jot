@@ -119,6 +119,9 @@ pub enum Action {
     /// The workspace you are in given this accent, by name; None: chosen
     /// for it, as the settings' Color each workspace does.
     WsAccent(Option<String>),
+    /// The project bar shows this machine's workspaces: the one you were
+    /// in last there.
+    ShowMachine(usize),
 }
 
 #[derive(Clone, Debug)]

@@ -187,7 +187,7 @@ impl App {
     }
 
     /// A machine as /info names it: its host, or this one's name.
-    fn machine_name(&self, k: usize) -> String {
+    pub(super) fn machine_name(&self, k: usize) -> String {
         match self.machines.get(k).and_then(|m| m.host.clone()) {
             Some(h) => h,
             None => std::fs::read_to_string("/proc/sys/kernel/hostname").map(|s| s.trim().to_string()).unwrap_or_else(|_| "this machine".into()),

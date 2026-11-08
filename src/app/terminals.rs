@@ -21,6 +21,8 @@ pub(super) enum Place {
     Back(PaneId),
     /// Beside this pane, before it or after, across or down.
     Split(PaneId, Dir, bool),
+    /// A workspace of its own, laid out as it was where it was held.
+    Workspace,
 }
 
 /// A terminal no pane in this window shows: its machine, its name in that

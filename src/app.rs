@@ -41,6 +41,7 @@ mod find;
 mod links;
 mod quake;
 mod float;
+mod foot;
 mod minimize;
 mod pin;
 mod mouse;
@@ -365,8 +366,14 @@ pub struct App {
     side_sig: u64,
     /// What the project bar said when last drawn: drawn again when it changes.
     foot_said: String,
-    /// The other workspaces' dots on the project bar, and which each is.
-    foot_dots: Vec<(Rect, usize)>,
+    /// The workspaces' dots on the project bar, and which each is.
+    foot_dots: Vec<(Rect, foot::FootDot)>,
+    /// The project bar's machine, a button opening the machines.
+    foot_button: Option<Rect>,
+    /// The pointer over it.
+    foot_lit: bool,
+    /// The workspace you were in last on each machine, to go back to.
+    foot_last: HashMap<usize, usize>,
     /// When the debug log was last given its counts.
     dbg_at: Instant,
     /// Panes the session had when this window took it up, until the
@@ -574,6 +581,9 @@ impl App {
             side_sig: 0,
             foot_said: String::new(),
             foot_dots: Vec::new(),
+            foot_button: None,
+            foot_lit: false,
+            foot_last: HashMap::new(),
             dbg_at: Instant::now(),
             mux: attached.client,
             held,
@@ -1455,8 +1465,9 @@ impl App {
                     }
                 }
                 (KeyCode::Digit1 | KeyCode::Digit2 | KeyCode::Digit3 | KeyCode::Digit4 | KeyCode::Digit5 | KeyCode::Digit6 | KeyCode::Digit7 | KeyCode::Digit8 | KeyCode::Digit9, false) => {
+                    // The nth of the workspaces the bar shows: its machine's.
                     let n = code as usize - KeyCode::Digit1 as usize;
-                    self.go_to(n);
+                    self.go_nth(n);
                 }
                 // As screen's Ctrl a p and Ctrl a n: the pane given the terminal
                 // before, or after, of those no pane shows.
@@ -1701,11 +1712,9 @@ impl App {
             if self.title_press(event_loop) {
                 return;
             }
-            // A workspace's dot on the project bar, which runs under the
-            // sidebar too: gone to.
-            let y = self.pointer.1;
-            if let Some(&(_, i)) = self.foot_dots.iter().find(|(r, _)| r.contains(x, y)) {
-                self.go_to(i);
+            // A workspace's dot on the project bar (which runs under the
+            // sidebar too), or its machine.
+            if self.foot_click() {
                 return;
             }
             if self.sidebar_edge_at(x) {
@@ -1843,6 +1852,7 @@ impl App {
     fn mouse_move(&mut self, x: i32, y: i32) {
         self.pointer = (x, y);
         self.float_track(x, y);
+        self.foot_hover();
         if self.offer_hover(x, y) || self.find_hover(x, y) || self.settings_hover(x, y) || self.overlay_hover(x, y) {
             if let Some(w) = &self.window {
                 w.set_cursor(CursorIcon::Default);
@@ -2700,156 +2710,6 @@ impl App {
         self.damage.push(bar);
     }
 
-    /// The project bar: a quiet line along the window's foot. At its left
-    /// the workspace you are in: a square of its color with its number, then
-    /// its name and the folder of the pane you are in; then every workspace,
-    /// a dot of each one's color (the one you are in ringed), clicked to go
-    /// there; at the right the machine that pane runs on, and the clock
-    /// when the status line is not showing it.
-    fn draw_foot(&mut self, full: bool) {
-        let h = self.foot_h();
-        if h == 0 || self.workspaces.is_empty() {
-            self.foot_dots.clear();
-            return;
-        }
-        let ws = self.ws();
-        let name = ws.name.clone();
-        let focus = ws.focus;
-        let folder = self.panes.get(&focus).and_then(|p| p.pty.cwd()).map(|c| persist::shorten(&c)).unwrap_or_default();
-        let machine = match self.machines.get(self.machine_of(focus)).and_then(|m| m.host.clone()) {
-            Some(host) => host,
-            None => hostname(),
-        };
-        let accent = self.cur_accent;
-        let accents = self.ws_accents();
-        let all: Vec<(usize, u32)> = (0..self.workspaces.len()).map(|i| (i, accents.get(i).map_or(self.accent, |a| a.0))).collect();
-        let clock = if self.config.status_line { String::new() } else { self.clock.clone() };
-        let said = format!("{name}\0{folder}\0{machine}\0{accent}\0{all:?}\0{}\0{clock}\0{}\0{}", self.current, self.canvas.width, self.cur_theme.bg);
-        if !full && said == self.foot_said {
-            return;
-        }
-        self.foot_said = said;
-        let bar = Rect { x: 0, y: self.canvas.height - self.status_h() - h, w: self.canvas.width, h };
-        let c = self.cur_theme.chrome();
-        self.canvas.fill(bar, c.side);
-        self.canvas.fill(Rect { x: bar.x, y: bar.y, w: bar.w, h: 1 }, c.edge);
-        let ty = bar.y + (h - self.fonts.ui.height) / 2;
-        let pad = self.px(10.0);
-        let gap = self.px(12.0);
-        // The right: the machine, the clock.
-        let mut right = bar.x + bar.w - pad;
-        if !clock.is_empty() {
-            right -= self.fonts.ui.width(&clock);
-            self.canvas.text(&mut self.fonts.ui, &clock, right as f32, ty, c.dim, bar);
-            right -= gap;
-        }
-        right -= self.fonts.ui.width(&machine);
-        self.canvas.text(&mut self.fonts.ui, &machine, right as f32, ty, c.dim, bar);
-        right -= gap;
-        // The tile: a square of the workspace's color at the corner, its
-        // number in it (Alt and the number go there; one day the icon its
-        // settings give it). Dark or light, whichever reads better on the
-        // color, as WCAG reckons it: cyan, teal and amber get dark.
-        let (dark, light) = (mix(accent, 0x000000, 215), mix(accent, 0xFFFFFF, 235));
-        let fg = if crate::canvas::contrast(dark, accent) >= crate::canvas::contrast(light, accent) { dark } else { light };
-        let number = (self.current + 1).to_string();
-        let tile = Rect { x: bar.x, y: bar.y, w: h.max(self.fonts.ui.width(&number) + pad), h };
-        self.canvas.fill(tile, accent);
-        let nw = self.fonts.ui.width(&number);
-        self.canvas.text(&mut self.fonts.ui, &number, (tile.x + (tile.w - nw) / 2) as f32, ty, fg, tile);
-        // Its name, plain; the folder of the pane you are in, dim.
-        let clip = Rect { x: tile.x + tile.w, y: bar.y, w: (right - self.px(60.0) - tile.x - tile.w).max(0), h };
-        let mut end = self.canvas.text_fit(&mut self.fonts.ui, &name, clip.x + pad, ty, (clip.w - pad).max(0), c.text, clip);
-        if !folder.is_empty() {
-            let x = end + self.px(10.0);
-            end = self.canvas.text_fit(&mut self.fonts.ui, &folder, x, ty, (clip.x + clip.w - x).max(0), c.dim, clip);
-        }
-        // Every workspace, a dot each in order, all one size: the one you
-        // are in ringed in its color, and nothing else (no color for news,
-        // which would read as another workspace's).
-        self.foot_dots.clear();
-        let s = self.scale;
-        let (r, ring_in, ring_out, step) = (3.5 * s, 5.5 * s, 7.0 * s, self.px(18.0));
-        // The middle of the line under the bar's top hairline.
-        let cy = bar.y as f32 + 1.0 + (h - 1) as f32 / 2.0;
-        let mut x = end.min(clip.x + clip.w) + self.px(10.0);
-        for (i, color) in all {
-            if x + step > right {
-                break;
-            }
-            let cx = x as f32 + step as f32 / 2.0;
-            if i == self.current {
-                self.canvas.annulus(cx, cy, ring_in, ring_out, color);
-            }
-            self.canvas.disc(cx, cy, r, color);
-            self.foot_dots.push((Rect { x, y: bar.y, w: step, h }, i));
-            x += step;
-        }
-        self.damage.push(bar);
-    }
-
-    /// What the tooltip says over a workspace's dot on the project bar: its
-    /// number and name, and the projects its panes are in.
-    pub(super) fn foot_dot_words(&self, i: usize) -> String {
-        let Some(ws) = self.workspaces.get(i) else { return String::new() };
-        let mut ids = Vec::new();
-        ws.root.panes(&mut ids);
-        let mut projects: Vec<String> = Vec::new();
-        for id in ids {
-            let Some(cwd) = self.panes.get(&id).and_then(|p| p.pty.cwd()) else { continue };
-            let short = persist::shorten(&cwd);
-            let project = if short == "~" { short } else { cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(short) };
-            if !projects.contains(&project) {
-                projects.push(project);
-            }
-        }
-        if projects.is_empty() {
-            format!("{} {}", i + 1, ws.name)
-        } else {
-            format!("{} {}  ·  {}", i + 1, ws.name, projects.join(", "))
-        }
-    }
-
-    /// Whether a point is on the project bar.
-    fn foot_at(&self, _x: i32, y: i32) -> bool {
-        let h = self.foot_h();
-        let top = self.canvas.height - self.status_h() - h;
-        h > 0 && (top..top + h).contains(&y)
-    }
-
-    /// The project bar right clicked: what can be done to the workspace it
-    /// names.
-    fn foot_menu(&mut self) -> bool {
-        let (x, y) = self.pointer;
-        if !self.foot_at(x, y) || self.workspaces.is_empty() {
-            return false;
-        }
-        use crate::palette::{Action, Item};
-        let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
-        let chosen = self.ws().accent.clone();
-        let mark = |name: Option<&str>| if chosen.as_deref().map(|c| c.to_ascii_lowercase()) == name.map(str::to_string) { "✓" } else { "" };
-        let mut colors = vec![c("Automatic", mark(None), Action::WsAccent(None)), None];
-        colors.extend(crate::theme::ACCENTS.iter().map(|(n, _)| {
-            let mut label = n.to_string();
-            label[..1].make_ascii_uppercase();
-            c(&label, mark(Some(n)), Action::WsAccent(Some(n.to_string())))
-        }));
-        let items = vec![
-            c("Rename workspace…", "", Action::Rename),
-            c("Color", "›", Action::Submenu(0)),
-            None,
-            c("New workspace", "Ctrl N", Action::NewWorkspace),
-            None,
-            c("Settings", "Ctrl ,", Action::Settings),
-        ];
-        self.palette = None;
-        self.menu_at = self.pointer;
-        self.menu = Some(overlay::Menu { items, at: self.pointer, hover: None, children: vec![colors], open: None });
-        self.full = true;
-        self.redraw();
-        true
-    }
-
     fn draw_status(&mut self) {
         let h = self.status_h();
         let bar = Rect { x: 0, y: self.canvas.height - h, w: self.canvas.width, h };
@@ -3608,7 +3468,9 @@ impl App {
             }
             _ => None,
         };
-        let placed = !self.workspaces.is_empty();
+        // A whole workspace (one a machine held, opened here) is made as it
+        // was; a terminal goes into one.
+        let placed = !self.workspaces.is_empty() && place != terminals::Place::Workspace;
         if placed {
             self.target = k;
             let new = self.spawn(Start { cmd: String::new(), cwd: pty::home(), pane: first, host: None });

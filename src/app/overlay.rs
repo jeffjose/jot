@@ -346,6 +346,7 @@ impl App {
                 field.anchor = Some(0);
                 self.palette = Some(Palette { mode: Mode::Rename, field, matches: Vec::new(), selected: 0, first: 0 });
             }
+            Action::ShowMachine(k) => self.show_machine(k),
             Action::WsAccent(name) => {
                 let cur = self.current;
                 if let Some(ws) = self.workspaces.get_mut(cur) {
