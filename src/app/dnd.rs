@@ -143,7 +143,9 @@ impl App {
             }
         }
         c.moving = true;
-        c.over = self.pane_at(x, y).filter(|(id, _)| *id != c.pane).and_then(|(id, _)| self.panes.get(&id).map(|p| (id, zone(p.rect, x, y))));
+        // Over a pane, or empty space: both take a pane dropped on them.
+        let under = self.pane_at(x, y).map(|(id, _)| id).or_else(|| self.space_at(x, y));
+        c.over = under.filter(|id| *id != c.pane).and_then(|id| self.panes.get(&id).map(|p| (id, zone(p.rect, x, y))));
         self.drag = Some(Drag::Pane(c));
         if let Some(w) = &self.window {
             w.set_cursor(CursorIcon::Grabbing);

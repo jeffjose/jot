@@ -1975,6 +1975,8 @@ impl App {
         // over them.
         let full = std::mem::take(&mut self.full) || !self.toasts.is_empty() || self.offered.is_some() || self.slash.is_some() || self.bar_list_open();
         if full {
+            // The sidebar's button, tucked away, is placed again this frame.
+            self.side_toggle = None;
             self.canvas.fill(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height }, self.cur_theme.divider());
             self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
         }
@@ -2023,8 +2025,8 @@ impl App {
         }
         if full {
             self.draw_sidebar();
-            self.draw_quake_bar();
         }
+        self.quake_bar_frame(full);
         if full {
             self.draw_minimized();
         }

@@ -131,9 +131,9 @@ impl App {
     pub(super) fn draw_sidebar(&mut self) {
         self.side_hits.clear();
         if !self.sidebar_open {
-            // Without captions there is no caption to hold the button: it
-            // floats over the top-left corner.
-            if !self.config.captions {
+            // No caption held the button (captions off, or empty space or a
+            // minimized row at the top left): it floats over that corner.
+            if self.side_toggle.is_none() {
                 let a = self.area();
                 let bar = Rect { x: a.x, y: a.y, w: self.px(30.0), h: self.px(28.0) };
                 self.draw_side_button(bar);
