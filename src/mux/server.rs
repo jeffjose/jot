@@ -344,14 +344,16 @@ impl Server {
     /// A window come: the panes no window has, and the workspaces they
     /// were in, are its.
     fn welcome(&mut self, c: u64) {
+        // The drop-down's panes and workspaces wait for the next drop-down.
+        let free = |p: &&Pane| p.owner.is_none() && p.window != super::DROP_WINDOW;
         let mut held: Vec<Held> = self
             .panes
             .iter()
-            .filter(|(_, p)| p.owner.is_none())
+            .filter(|(_, p)| free(p))
             .map(|(id, p)| Held { pane: *id, pid: p.pty.pid, cmd: p.cmd.clone(), log: p.log.encode(), tee: p.tee.as_ref().map(|t| t.state.clone()), queue: p.queue.clone() })
             .collect();
         held.sort_by_key(|h| h.pane);
-        for p in self.panes.values_mut().filter(|p| p.owner.is_none()) {
+        for p in self.panes.values_mut().filter(|p| free(&&**p)) {
             p.owner = Some(c);
             p.window = self.names.get(&c).copied().unwrap_or(0);
             p.raw = None;
@@ -360,7 +362,8 @@ impl Server {
                 t.told = t.state.lines;
             }
         }
-        let left = std::mem::take(&mut self.left);
+        let (drop, left): (Vec<_>, Vec<_>) = std::mem::take(&mut self.left).into_iter().partition(|(w, _)| *w == super::DROP_WINDOW);
+        self.left = drop;
         let layout = merge(left.iter().map(|(_, l)| l.as_str())).and_then(|s| toml::to_string(&s).ok()).unwrap_or_default();
         self.layouts.insert(c, layout.clone());
         self.send(c, ToClient::Welcome { layout, panes: held });
@@ -399,7 +402,11 @@ impl Server {
             held.push(Held { pane: *id, pid: p.pty.pid, cmd: p.cmd.clone(), log: p.log.encode(), tee: p.tee.as_ref().map(|t| t.state.clone()), queue: p.queue.clone() });
         }
         held.sort_by_key(|h| h.pane);
-        self.send(c, ToClient::Welcome { layout: String::new(), panes: held });
+        // Its workspaces, as it last said them: a window that kept them
+        // (reconnecting) passes them by; one started again (the drop-down)
+        // takes them up.
+        let layout = self.layouts.get(&c).cloned().unwrap_or_default();
+        self.send(c, ToClient::Welcome { layout, panes: held });
     }
 
     /// Its workspaces window `c` does not show: those of the other

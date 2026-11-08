@@ -221,6 +221,11 @@ impl App {
                 self.toast("jot", &args[1..].join(" "), None, None);
                 String::new()
             }
+            // `jot drop`, to the drop-down: shown, or hidden.
+            Some("toggle") if crate::drop_mode() => {
+                self.drop_toggle();
+                String::new()
+            }
             _ => format!("jot: one of {} is needed\n", crate::remote::COMMANDS.join(", ")),
         };
         let _ = event_loop;

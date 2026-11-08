@@ -933,6 +933,7 @@ dependencies = [
  "vergen-gitcl",
  "wgpu",
  "winit",
+ "x11-dl",
 ]
 
 [[package]]

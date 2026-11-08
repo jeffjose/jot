@@ -571,7 +571,9 @@ impl Client {
 
     fn hello(mut s: UnixStream) -> io::Result<(UnixStream, String, Vec<Held>)> {
         s.set_read_timeout(Some(Duration::from_secs(5)))?;
-        s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again: false, want: Vec::new() }.encode())?;
+        // The drop-down comes back for its own panes; any other window
+        // takes up those no window has.
+        s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again: crate::drop_mode(), want: Vec::new() }.encode())?;
         let f = read_frame(&mut s)?;
         s.set_read_timeout(None)?;
         match ToClient::decode(&f) {
@@ -992,12 +994,21 @@ pub fn bridge() -> i32 {
     0
 }
 
+/// The drop-down window's name in the session (an odd number, as every
+/// window's is).
+pub const DROP_WINDOW: u64 = 0x6a6f_7444_726f_7001;
+
 /// This window's name to the session, the same while it is open: what it
 /// had is given back to it on reconnecting, even from a connection the
 /// session has not yet seen drop.
 pub fn window_id() -> u64 {
     static ID: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *ID.get_or_init(|| {
+        // The drop-down is always the same window, so that a new one takes
+        // up the panes the last one had, and only those.
+        if crate::drop_mode() {
+            return DROP_WINDOW;
+        }
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
         t ^ ((std::process::id() as u64) << 32) | 1
     })

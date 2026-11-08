@@ -29,10 +29,20 @@ pub struct Request {
     pub reply: Sender<String>,
 }
 
+/// The drop-down window's own socket, which `jot drop` toggles it by.
+pub fn drop_socket_path() -> PathBuf {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir());
+    dir.join(format!("jot-{}-drop.sock", unsafe { libc::getuid() }))
+}
+
 /// Listens for the command on a thread of its own, handing each request
 /// over with `send`, which also wakes the window.
 pub fn listen(send: impl Fn(Request) + Send + 'static) {
-    let path = socket_path();
+    listen_at(socket_path(), send);
+}
+
+/// As listen, on the socket at `path`.
+pub fn listen_at(path: PathBuf, send: impl Fn(Request) + Send + 'static) {
     // One left by a jot that ended is cleared; one that answers is kept.
     if UnixStream::connect(&path).is_ok() {
         return;
@@ -75,4 +85,40 @@ pub fn client(args: &[String]) -> i32 {
     let _ = stream.read_to_string(&mut answer);
     print!("{answer}");
     if answer.starts_with("jot:") { 1 } else { 0 }
+}
+
+/// `jot drop`: the drop-down window shown, or hidden if it shows; started
+/// if there is none.
+pub fn drop() -> i32 {
+    if let Ok(mut stream) = UnixStream::connect(drop_socket_path()) {
+        if stream.write_all(b"toggle\n").is_ok() {
+            let mut answer = String::new();
+            let _ = stream.read_to_string(&mut answer);
+            return 0;
+        }
+    }
+    // None running: one started, apart from this command, in its own
+    // session so that it outlives the shell that ran this.
+    use std::os::unix::process::CommandExt;
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("jot"));
+    let quiet = || std::process::Stdio::null();
+    let started = unsafe {
+        std::process::Command::new(exe)
+            .arg("--drop")
+            .stdin(quiet())
+            .stdout(quiet())
+            .stderr(quiet())
+            .pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            })
+            .spawn()
+    };
+    match started {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("jot: could not start the drop-down: {e}");
+            1
+        }
+    }
 }

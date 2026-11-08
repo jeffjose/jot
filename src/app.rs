@@ -37,6 +37,7 @@ mod info;
 mod dnd;
 mod find;
 mod links;
+mod dropdown;
 mod float;
 mod minimize;
 mod pin;
@@ -214,6 +215,8 @@ pub struct App {
     /// Where its buttons are, and whether the pointer is on them.
     float_rect: Option<(PaneId, Rect)>,
     float_near: Option<bool>,
+    /// The drop-down window (jot drop) on screen.
+    drop_shown: bool,
     /// Minimized panes' rows, to click, and the one the pointer is on.
     mini_hits: Vec<(Rect, PaneId)>,
     mini_lit: Option<PaneId>,
@@ -350,10 +353,17 @@ impl App {
         let (req_tx, requests) = channel();
         let (wake, woke) = (proxy.clone(), Arc::new(AtomicBool::new(false)));
         let _ = woke;
-        crate::remote::listen(move |r| {
+        // The drop-down hears only `jot drop`, on its own socket; the jot
+        // command's socket is the main window's.
+        let heard = move |r| {
             let _ = req_tx.send(r);
             let _ = wake.send_event(());
-        });
+        };
+        if crate::drop_mode() {
+            crate::remote::listen_at(crate::remote::drop_socket_path(), heard);
+        } else {
+            crate::remote::listen(heard);
+        }
         // The session the panes run in: one no window has, or a new one.
         let woken = Arc::new(AtomicBool::new(false));
         let attached = {
@@ -427,6 +437,7 @@ impl App {
             float_pane: None,
             float_rect: None,
             float_near: None,
+            drop_shown: false,
             mini_hits: Vec::new(),
             mini_lit: None,
             mini_btns: Vec::new(),
@@ -2481,7 +2492,7 @@ impl ApplicationHandler<()> for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = window_attributes("jot", LogicalSize::new(1400.0, 900.0));
+        let attrs = if crate::drop_mode() { dropdown::attributes() } else { window_attributes("jot", LogicalSize::new(1400.0, 900.0)) };
         let window = Rc::new(event_loop.create_window(attrs).expect("failed to create window"));
         let context = Context::new(window.clone()).expect("failed to connect to display");
         self.surface = Some(Surface::new(&context, window.clone()).expect("failed to create surface"));
@@ -2508,6 +2519,10 @@ impl ApplicationHandler<()> for App {
         self.load_recent();
         self.set_title();
         self.relayout();
+        // The drop-down, just started by jot drop: shown.
+        if crate::drop_mode() {
+            self.drop_show();
+        }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _: ()) {
