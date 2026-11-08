@@ -363,8 +363,6 @@ impl App {
             let Some(p) = self.panes.get(id) else { continue };
             let running = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.trim().to_string());
             let failed = running.is_none() && p.shell.blocks.last().is_some_and(|b| b.exit.is_some_and(|e| e != 0));
-            // How long it has run, once that is worth saying.
-            let long = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.0.elapsed()).filter(|d| d.as_secs() >= 30).map(coarse);
             let caption = p.caption.clone();
             let m = crate::mux::split_id(*id).0;
             let host = (m > 0 && m != k).then(|| self.machines.get(m).and_then(|x| x.host.clone())).flatten();
@@ -377,20 +375,13 @@ impl App {
             }
             let x = row.x + px(8.0);
             let mut right = row.x + row.w - px(8.0);
-            // At the right, what is worth seeing: a red dot when its last
-            // command failed, how long it has run past half a minute; nothing
-            // when all is well.
+            // At the right, only what is worth seeing: a red dot when its last
+            // command failed; nothing when all is well. (Not how long it has run:
+            // Claude Code runs for hours, and saying so says nothing.)
             if failed {
                 let d = px(7.0);
                 self.canvas.round_fill(Rect { x: right - d, y: y + (prow - d) / 2, w: d, h: d }, d / 2, 0xE5484D, 255);
                 right -= d + px(8.0);
-            } else if let Some(t) = &long {
-                // In a column of its own width, right-aligned in it, so that
-                // the name and command beside it never move as it changes.
-                let slot = self.fonts.side_small.width("59m 59s");
-                let tw = self.fonts.side_small.width(t);
-                self.canvas.text(&mut self.fonts.side_small, t, (right - tw) as f32, y + (prow - dh) / 2, c.faint, clip);
-                right -= slot + px(8.0);
             }
             let mut end = right;
             if let Some(host) = &host {
@@ -520,21 +511,9 @@ impl App {
     }
 }
 
-/// How long, as the sidebar says it: whole seconds, then minutes, then
-/// hours and minutes; it changes once a second at most, then once a
-/// minute.
-fn coarse(d: std::time::Duration) -> String {
-    let s = d.as_secs();
-    match s {
-        0..=59 => format!("{s}s"),
-        60..=3599 => format!("{}m", s / 60),
-        _ => format!("{}h {}m", s / 3600, s % 3600 / 60),
-    }
-}
-
 impl App {
-    /// What the sidebar shows that changes on its own (how long each
-    /// pane has run, coarsely; whether its last command failed), as one
+    /// What the sidebar shows that changes on its own (whether each
+    /// pane's last command failed, its caption, whether it runs one), as one
     /// number: drawn again when it changes, and only then.
     pub(super) fn sidebar_moved(&mut self) -> bool {
         if !self.sidebar_open {
@@ -546,9 +525,9 @@ impl App {
         ids.sort();
         for id in ids {
             let p = &self.panes[id];
-            let long = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.0.elapsed()).filter(|d| d.as_secs() >= 30).map(coarse);
             let failed = p.shell.blocks.last().is_some_and(|b| b.exit.is_some_and(|e| e != 0));
-            (id, long, failed, p.caption.as_str()).hash(&mut h);
+            let running = p.shell.running.is_some() && !p.shell.at_prompt;
+            (id, running, failed, p.caption.as_str()).hash(&mut h);
         }
         let sig = h.finish();
         let moved = sig != self.side_sig;
