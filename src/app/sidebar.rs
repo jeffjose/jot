@@ -187,7 +187,9 @@ impl App {
         let accents = self.ws_accents();
         for k in 0..self.machines.len() {
             let shown = self.panes.keys().filter(|id| crate::mux::split_id(**id).0 == k).count();
-            if k > 0 && !self.machines[k].added && shown == 0 {
+            // A machine is listed once added, or while it holds anything of
+            // this window's: a pane shown, or one closed and running on.
+            if k > 0 && !self.machines[k].added && shown == 0 && self.machines[k].listing.is_empty() {
                 continue;
             }
             if y > bottom - row_h {

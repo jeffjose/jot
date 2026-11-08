@@ -2985,6 +2985,11 @@ impl App {
 
     pub(super) fn connect_pane_at(&mut self, at: PaneId, host: &str) {
         let k = self.machine(host);
+        // Remembered in the sidebar from now on, as one added there.
+        if !self.machines[k].added {
+            self.machines[k].added = true;
+            persist::save_machines(&self.machines.iter().skip(1).filter(|m| m.added).filter_map(|m| m.host.clone()).collect::<Vec<_>>());
+        }
         self.connecting.retain(|(_, p)| *p != at);
         self.connecting.push((k, at));
         if self.machines[k].client.connected() {
