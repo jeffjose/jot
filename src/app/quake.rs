@@ -1,24 +1,49 @@
-//! The quake window, as Tilix's Quake mode has it: across the top of
-//! the monitor the pointer is on, 40% of its height and all its width,
-//! above every other window and on every workspace, out of the taskbar.
-//! `jot --quake` (a key bound to it) shows it, and hides it again; losing
-//! focus does not. It is another window on the session: its panes are its
+//! The quake window, as Tilix's Quake mode has it, and with its settings
+//! (Settings › Quake): by default across the top of the monitor the
+//! pointer is on, 40% of its height and all its width, above every other
+//! window and on every workspace, out of the taskbar. `jot --quake` (a key
+//! bound to it) shows it, and hides it again; losing focus does not,
+//! unless set to. It is another window on the session: its panes are its
 //! own, and run on while it is hidden.
 
 use super::*;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::window::WindowLevel;
 
-/// Tilix's defaults: the share of the monitor's height and width it takes.
-const HEIGHT_PERCENT: u32 = 40;
-const WIDTH_PERCENT: u32 = 100;
-
-/// The quake window: no frame, over the others, kept hidden until it
-/// is placed.
+/// The quake window: no frame, kept hidden until it is placed.
 pub(super) fn attributes() -> winit::window::WindowAttributes {
     use winit::platform::x11::WindowAttributesExtX11;
-    let attrs = window_attributes("jot", LogicalSize::new(1200.0, 400.0)).with_decorations(false).with_visible(false).with_window_level(WindowLevel::AlwaysOnTop);
+    let attrs = window_attributes("jot", LogicalSize::new(1200.0, 400.0)).with_decorations(false).with_visible(false);
     WindowAttributesExtX11::with_name(attrs, "jot-quake", "jot-quake")
+}
+
+/// How the quake window is to be, from the settings.
+pub(super) struct Shape {
+    height: u32,
+    width: u32,
+    bottom: bool,
+    align: i32,
+    pointer: bool,
+    pub all_workspaces: bool,
+    pub on_top: bool,
+}
+
+impl Shape {
+    fn of(c: &Config) -> Shape {
+        Shape {
+            height: c.quake_height.clamp(10, 100),
+            width: c.quake_width.clamp(10, 100),
+            bottom: c.quake_position.eq_ignore_ascii_case("bottom"),
+            align: match c.quake_align.to_ascii_lowercase().as_str() {
+                "left" => -1,
+                "right" => 1,
+                _ => 0,
+            },
+            pointer: !c.quake_monitor.eq_ignore_ascii_case("primary"),
+            all_workspaces: c.quake_all_workspaces,
+            on_top: c.quake_on_top,
+        }
+    }
 }
 
 impl App {
@@ -31,19 +56,35 @@ impl App {
         }
     }
 
-    /// Shown across the top of the monitor the pointer is on, and given
-    /// the keys.
+    /// Its settings as the config has them now: changed in either window,
+    /// they hold from the next time it is shown.
+    fn quake_settings(&mut self) {
+        let c = persist::load_config();
+        self.config.quake_height = c.quake_height;
+        self.config.quake_width = c.quake_width;
+        self.config.quake_position = c.quake_position;
+        self.config.quake_align = c.quake_align;
+        self.config.quake_monitor = c.quake_monitor;
+        self.config.quake_all_workspaces = c.quake_all_workspaces;
+        self.config.quake_on_top = c.quake_on_top;
+        self.config.quake_hide_on_blur = c.quake_hide_on_blur;
+    }
+
+    /// Shown where its settings put it, and given the keys.
     pub(super) fn quake_show(&mut self) {
         let Some(window) = self.window.clone() else { return };
+        self.quake_settings();
+        let shape = Shape::of(&self.config);
         let x = x11::X::open();
         let xid = x11_id(&window);
-        let place = quake_place(&window, x.as_ref());
+        let place = quake_place(&window, x.as_ref(), &shape);
         if let Some((pos, size)) = place {
             let _ = window.request_inner_size(size);
             window.set_outer_position(pos);
         }
+        window.set_window_level(if shape.on_top { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal });
         if let (Some(x), Some(id)) = (&x, xid) {
-            x.before_map(id);
+            x.before_map(id, &shape);
         }
         window.set_visible(true);
         if let (Some(x), Some(id)) = (&x, xid) {
@@ -52,7 +93,7 @@ impl App {
             if let Some((pos, _)) = place {
                 window.set_outer_position(pos);
             }
-            x.after_map(id);
+            x.after_map(id, &shape);
         } else {
             window.focus_window();
         }
@@ -67,13 +108,20 @@ impl App {
         }
         self.quake_shown = false;
     }
+
+    /// The quake window lost focus: hidden, if its settings say so.
+    pub(super) fn quake_blurred(&mut self) {
+        if crate::quake_mode() && self.quake_shown && self.config.quake_hide_on_blur {
+            self.quake_hide();
+        }
+    }
 }
 
-/// Where the quake window goes, and how big: the top of the work area of the
-/// monitor the pointer is on (the panels left clear), centred.
-fn quake_place(window: &Window, x: Option<&x11::X>) -> Option<(PhysicalPosition<i32>, PhysicalSize<u32>)> {
+/// Where the quake window goes, and how big: the top (or bottom) of the
+/// work area of its monitor (the panels left clear), aligned as set.
+fn quake_place(window: &Window, x: Option<&x11::X>, shape: &Shape) -> Option<(PhysicalPosition<i32>, PhysicalSize<u32>)> {
     let monitors: Vec<_> = window.available_monitors().collect();
-    let pointer = x.and_then(|x| x.pointer());
+    let pointer = if shape.pointer { x.and_then(|x| x.pointer()) } else { None };
     let monitor = pointer
         .and_then(|(px, py)| {
             monitors.iter().find(|m| {
@@ -94,9 +142,15 @@ fn quake_place(window: &Window, x: Option<&x11::X>) -> Option<(PhysicalPosition<
             (ax, ay, aw, ah) = (x0, y0, x1 - x0, y1 - y0);
         }
     }
-    let w = aw * WIDTH_PERCENT as i32 / 100;
-    let h = ah * HEIGHT_PERCENT as i32 / 100;
-    Some((PhysicalPosition::new(ax + (aw - w) / 2, ay), PhysicalSize::new(w.max(1) as u32, h.max(1) as u32)))
+    let w = aw * shape.width as i32 / 100;
+    let h = ah * shape.height as i32 / 100;
+    let x = match shape.align {
+        -1 => ax,
+        1 => ax + aw - w,
+        _ => ax + (aw - w) / 2,
+    };
+    let y = if shape.bottom { ay + ah - h } else { ay };
+    Some((PhysicalPosition::new(x, y), PhysicalSize::new(w.max(1) as u32, h.max(1) as u32)))
 }
 
 /// The window's X11 id, when it is on X11.
@@ -115,6 +169,7 @@ mod x11 {
     use std::ffi::CString;
     use std::os::raw::{c_int, c_long, c_uchar, c_ulong};
     use x11_dl::xlib;
+    use super::Shape;
 
     pub struct X {
         lib: xlib::Xlib,
@@ -172,18 +227,36 @@ mod x11 {
             Some((a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32))
         }
 
-        fn states(&self) -> [c_ulong; 4] {
-            ["_NET_WM_STATE_ABOVE", "_NET_WM_STATE_STICKY", "_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER"].map(|s| self.atom(s))
+        /// Its states as set: out of the taskbar and pager always; over the
+        /// others, and on every workspace, if so.
+        fn states(&self, shape: &Shape) -> Vec<c_ulong> {
+            let mut names = vec!["_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER"];
+            if shape.on_top {
+                names.push("_NET_WM_STATE_ABOVE");
+            }
+            if shape.all_workspaces {
+                names.push("_NET_WM_STATE_STICKY");
+            }
+            names.into_iter().map(|s| self.atom(s)).collect()
+        }
+
+        /// Its workspace: all of them, or the one shown.
+        fn desktop(&self, shape: &Shape) -> c_long {
+            if shape.all_workspaces {
+                0xFFFF_FFFF
+            } else {
+                self.cardinals("_NET_CURRENT_DESKTOP").first().copied().unwrap_or(0)
+            }
         }
 
         /// Said before it is mapped, which is when the window manager reads
-        /// them: its states, and all workspaces.
-        pub fn before_map(&self, win: u64) {
-            let states = self.states();
-            let all: [c_ulong; 1] = [0xFFFF_FFFF];
+        /// them: its states, and its workspace.
+        pub fn before_map(&self, win: u64, shape: &Shape) {
+            let states = self.states(shape);
+            let desk: [c_long; 1] = [self.desktop(shape)];
             unsafe {
                 (self.lib.XChangeProperty)(self.dpy, win as c_ulong, self.atom("_NET_WM_STATE"), xlib::XA_ATOM, 32, xlib::PropModeReplace, states.as_ptr() as *const c_uchar, states.len() as c_int);
-                (self.lib.XChangeProperty)(self.dpy, win as c_ulong, self.atom("_NET_WM_DESKTOP"), xlib::XA_CARDINAL, 32, xlib::PropModeReplace, all.as_ptr() as *const c_uchar, 1);
+                (self.lib.XChangeProperty)(self.dpy, win as c_ulong, self.atom("_NET_WM_DESKTOP"), xlib::XA_CARDINAL, 32, xlib::PropModeReplace, desk.as_ptr() as *const c_uchar, 1);
                 (self.lib.XFlush)(self.dpy);
             }
         }
@@ -218,13 +291,13 @@ mod x11 {
         /// Said again once it is mapped, for window managers that read them
         /// only then; and the window brought forward and given the keys, as
         /// a pager asks (which focus stealing prevention lets through).
-        pub fn after_map(&self, win: u64) {
-            let [above, sticky, taskbar, pager] = self.states();
+        pub fn after_map(&self, win: u64, shape: &Shape) {
             const ADD: c_long = 1;
             const PAGER: c_long = 2;
-            self.message(win, "_NET_WM_STATE", [ADD, above as c_long, sticky as c_long, PAGER, 0]);
-            self.message(win, "_NET_WM_STATE", [ADD, taskbar as c_long, pager as c_long, PAGER, 0]);
-            self.message(win, "_NET_WM_DESKTOP", [0xFFFF_FFFF, PAGER, 0, 0, 0]);
+            for pair in self.states(shape).chunks(2) {
+                self.message(win, "_NET_WM_STATE", [ADD, pair[0] as c_long, pair.get(1).copied().unwrap_or(0) as c_long, PAGER, 0]);
+            }
+            self.message(win, "_NET_WM_DESKTOP", [self.desktop(shape), PAGER, 0, 0, 0]);
             self.message(win, "_NET_ACTIVE_WINDOW", [PAGER, 0, 0, 0, 0]);
             unsafe { (self.lib.XFlush)(self.dpy) };
         }

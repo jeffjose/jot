@@ -12,7 +12,7 @@ use crate::font;
 use crate::theme::{ACCENTS, THEMES};
 
 
-const SECTIONS: [&str; 5] = ["Appearance", "Workspaces", "Fonts", "Keys", "About"];
+const SECTIONS: [&str; 6] = ["Appearance", "Workspaces", "Fonts", "Quake", "Keys", "About"];
 
 /// A setting, for Reset.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -33,9 +33,17 @@ pub enum Key {
     CommandBars,
     WsColors,
     Bold,
+    QuakeHeight,
+    QuakeWidth,
+    QuakePosition,
+    QuakeAlign,
+    QuakeMonitor,
+    QuakeAllWorkspaces,
+    QuakeOnTop,
+    QuakeHideOnBlur,
 }
 
-const ALL_KEYS: [Key; 14] = [Key::Bold, Key::WsColors, Key::CommandBars, Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine];
+const ALL_KEYS: [Key; 22] = [Key::Bold, Key::WsColors, Key::CommandBars, Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine, Key::QuakeHeight, Key::QuakeWidth, Key::QuakePosition, Key::QuakeAlign, Key::QuakeMonitor, Key::QuakeAllWorkspaces, Key::QuakeOnTop, Key::QuakeHideOnBlur];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
@@ -114,6 +122,11 @@ pub struct Settings {
 /// The red of something that cannot be undone.
 const DANGER: u32 = 0xC9423A;
 
+/// The quake window's choices, as the config has them.
+const QUAKE_POSITIONS: &[&str] = &["top", "bottom"];
+const QUAKE_ALIGNS: &[&str] = &["left", "center", "right"];
+const QUAKE_MONITORS: &[&str] = &["pointer", "primary"];
+
 const KEYS: &[(&str, &str)] = &[
     ("Ctrl F", "Find in pane; Enter goes to the previous match"),
     ("Ctrl K", "Go to workspace, pane or folder"),
@@ -164,6 +177,14 @@ fn config_key(key: Key) -> &'static str {
         Key::CommandBars => "command-bars",
         Key::WsColors => "workspace-colors",
         Key::Bold => "bold-text",
+        Key::QuakeHeight => "quake-height",
+        Key::QuakeWidth => "quake-width",
+        Key::QuakePosition => "quake-position",
+        Key::QuakeAlign => "quake-align",
+        Key::QuakeMonitor => "quake-monitor",
+        Key::QuakeAllWorkspaces => "quake-all-workspaces",
+        Key::QuakeOnTop => "quake-on-top",
+        Key::QuakeHideOnBlur => "quake-hide-on-blur",
     }
 }
 
@@ -203,6 +224,14 @@ impl App {
             Key::CommandBars => c.command_bars,
             Key::WsColors => !c.workspace_colors,
             Key::Bold => !c.bold_text,
+            Key::QuakeHeight => c.quake_height != persist::default_quake_height(),
+            Key::QuakeWidth => c.quake_width != persist::default_quake_width(),
+            Key::QuakePosition => !c.quake_position.eq_ignore_ascii_case(&persist::default_quake_position()),
+            Key::QuakeAlign => !c.quake_align.eq_ignore_ascii_case(&persist::default_quake_align()),
+            Key::QuakeMonitor => !c.quake_monitor.eq_ignore_ascii_case(&persist::default_quake_monitor()),
+            Key::QuakeAllWorkspaces => !c.quake_all_workspaces,
+            Key::QuakeOnTop => !c.quake_on_top,
+            Key::QuakeHideOnBlur => c.quake_hide_on_blur,
         }
     }
 
@@ -285,6 +314,15 @@ impl App {
                 self.config.status_line = false;
                 self.relayout();
             }
+            // The quake window's: read again each time it is shown.
+            Key::QuakeHeight => self.config.quake_height = persist::default_quake_height(),
+            Key::QuakeWidth => self.config.quake_width = persist::default_quake_width(),
+            Key::QuakePosition => self.config.quake_position = persist::default_quake_position(),
+            Key::QuakeAlign => self.config.quake_align = persist::default_quake_align(),
+            Key::QuakeMonitor => self.config.quake_monitor = persist::default_quake_monitor(),
+            Key::QuakeAllWorkspaces => self.config.quake_all_workspaces = true,
+            Key::QuakeOnTop => self.config.quake_on_top = true,
+            Key::QuakeHideOnBlur => self.config.quake_hide_on_blur = false,
         }
         persist::unset_config_value(config_key(key));
     }
@@ -353,6 +391,18 @@ impl App {
                         self.config.ligatures = !self.config.ligatures;
                         self.config.ligatures
                     }
+                    Key::QuakeAllWorkspaces => {
+                        self.config.quake_all_workspaces = !self.config.quake_all_workspaces;
+                        self.config.quake_all_workspaces
+                    }
+                    Key::QuakeOnTop => {
+                        self.config.quake_on_top = !self.config.quake_on_top;
+                        self.config.quake_on_top
+                    }
+                    Key::QuakeHideOnBlur => {
+                        self.config.quake_hide_on_blur = !self.config.quake_hide_on_blur;
+                        self.config.quake_hide_on_blur
+                    }
                     _ => {
                         self.config.status_line = !self.config.status_line;
                         self.config.status_line
@@ -386,6 +436,25 @@ impl App {
                 self.config.line_height = v.clamp(0.8, 2.0);
                 persist::set_config_value("line-height", &format!("{:.2}", self.config.line_height));
                 self.reload_fonts();
+            }
+            // The quake window's size, by fives of a percent.
+            Hit::Step(key @ (Key::QuakeHeight | Key::QuakeWidth), by) => {
+                let v = if key == Key::QuakeHeight { &mut self.config.quake_height } else { &mut self.config.quake_width };
+                *v = ((*v as i32 + by * 5).clamp(10, 100)) as u32;
+                let v = *v;
+                persist::set_config_value(config_key(key), &v.to_string());
+            }
+            // Its choices, the arrows going round them.
+            Hit::Step(key @ (Key::QuakePosition | Key::QuakeAlign | Key::QuakeMonitor), by) => {
+                let (choices, now): (&[&str], &mut String) = match key {
+                    Key::QuakePosition => (QUAKE_POSITIONS, &mut self.config.quake_position),
+                    Key::QuakeAlign => (QUAKE_ALIGNS, &mut self.config.quake_align),
+                    _ => (QUAKE_MONITORS, &mut self.config.quake_monitor),
+                };
+                let i = choices.iter().position(|c| c.eq_ignore_ascii_case(now)).unwrap_or(0) as i32;
+                let next = choices[(i + by).rem_euclid(choices.len() as i32) as usize];
+                *now = next.to_string();
+                persist::set_config_value(config_key(key), &format!("{next:?}"));
             }
             Hit::Step(_, by) => {
                 self.config.ui_font_size = (self.config.ui_font_size + by as f32).clamp(8.0, 32.0);
@@ -749,6 +818,8 @@ impl App {
         let ligatures = self.config.ligatures;
         let bold_text = self.config.bold_text;
         let command_bars = self.config.command_bars;
+        let q = &self.config;
+        let quake = (q.quake_height, q.quake_width, capitalize(&q.quake_position), capitalize(&q.quake_align), capitalize(&q.quake_monitor), q.quake_all_workspaces, q.quake_on_top, q.quake_hide_on_blur);
         let version = crate::version();
         let canvas_h = self.canvas.height;
         let canvas = &mut self.canvas;
@@ -1127,6 +1198,45 @@ impl App {
 
         }
         if section == 3 {
+        // ---- Quake ----
+        heading(canvas, fonts, &mut y, &mut tops, "Quake");
+        canvas.text(&mut fonts.small, "jot --quake shows a terminal over everything, and hides it again: bind a key to it in", body.x as f32, y - px(8.0), c.dim, view);
+        y += sh_ + px(4.0);
+        canvas.text(&mut fonts.small, "your desktop's keyboard settings. Changes hold from the next time it is shown.", body.x as f32, y - px(8.0), c.dim, view);
+        y += sh_ + px(12.0);
+        let (height, width, position, align, monitor, all, top, blur) = quake;
+        for (name, what, key, value) in [
+            ("Height", "Its share of the monitor's height.", Key::QuakeHeight, format!("{height}%")),
+            ("Width", "Its share of the monitor's width.", Key::QuakeWidth, format!("{width}%")),
+            ("Position", "Along the top of the screen, or the bottom.", Key::QuakePosition, position),
+            ("Alignment", "Where it sits when narrower than the screen.", Key::QuakeAlign, align),
+            ("Monitor", "The one the pointer is on, or the primary.", Key::QuakeMonitor, monitor),
+        ] {
+            let mid = title(canvas, fonts, &mut page, y, name, what, key);
+            stepper(canvas, fonts, &mut page, mid, key, &value);
+            y += row_h;
+            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
+        }
+        for (name, what, key, value) in [
+            ("On every workspace", "Shown on whichever workspace you are on.", Key::QuakeAllWorkspaces, all),
+            ("Keep on top", "Over every other window, even one you click.", Key::QuakeOnTop, top),
+            ("Hide when focus leaves", "Hidden when you click another window, not only on its key.", Key::QuakeHideOnBlur, blur),
+        ] {
+            let mid = title(canvas, fonts, &mut page, y, name, what, key);
+            let (sw, sh) = (px(40.0), px(22.0));
+            let pill = Rect { x: right - sw, y: mid - sh / 2, w: sw, h: sh };
+            canvas.round_fill(pill, sh / 2, if value { accent } else { c.hover }, 255);
+            let k = sh - px(6.0);
+            let kx = if value { pill.x + sw - k - px(3.0) } else { pill.x + px(3.0) };
+            canvas.round_fill(Rect { x: kx, y: pill.y + px(3.0), w: k, h: k }, k / 2, 0xFFFFFF, 255);
+            page.push((Rect { x: pill.x - px(4.0), y: pill.y - px(4.0), w: sw + px(8.0), h: sh + px(8.0) }, Hit::Toggle(key)));
+            y += row_h;
+            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
+        }
+        y += px(32.0);
+
+        }
+        if section == 4 {
         // ---- Keys ----
         heading(canvas, fonts, &mut y, &mut tops, "Keys");
         let key_h = sh_ + px(10.0);
@@ -1146,7 +1256,7 @@ impl App {
         y += px(32.0);
 
         }
-        if section == 4 {
+        if section == 5 {
         // ---- About ----
         heading(canvas, fonts, &mut y, &mut tops, "About");
         for (k, v) in [

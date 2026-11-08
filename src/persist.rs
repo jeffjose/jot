@@ -189,9 +189,29 @@ pub struct Config {
     /// A status line along the bottom: host, workspaces, clock.
     #[serde(default)]
     pub status_line: bool,
-    /// A caption along the bottom of each pane.
+    /// A caption along the top of each pane.
     #[serde(default = "yes")]
     pub captions: bool,
+    /// The quake window (jot --quake), as Tilix's Quake mode: its share of
+    /// the monitor's height and width, in percent; top or bottom; left,
+    /// center or right; on the monitor the pointer is on, or the primary;
+    /// on every workspace; over every window; hidden when it loses focus.
+    #[serde(default = "default_quake_height")]
+    pub quake_height: u32,
+    #[serde(default = "default_quake_width")]
+    pub quake_width: u32,
+    #[serde(default = "default_quake_position")]
+    pub quake_position: String,
+    #[serde(default = "default_quake_align")]
+    pub quake_align: String,
+    #[serde(default = "default_quake_monitor")]
+    pub quake_monitor: String,
+    #[serde(default = "yes")]
+    pub quake_all_workspaces: bool,
+    #[serde(default = "yes")]
+    pub quake_on_top: bool,
+    #[serde(default)]
+    pub quake_hide_on_blur: bool,
     /// Characters joined as the font draws them, => and != in Fira Code.
     #[serde(default = "yes")]
     pub ligatures: bool,
@@ -282,6 +302,27 @@ pub fn default_ui_font_size() -> f32 {
     13.0
 }
 
+/// Tilix's Quake defaults.
+pub fn default_quake_height() -> u32 {
+    40
+}
+
+pub fn default_quake_width() -> u32 {
+    100
+}
+
+pub fn default_quake_position() -> String {
+    "top".into()
+}
+
+pub fn default_quake_align() -> String {
+    "center".into()
+}
+
+pub fn default_quake_monitor() -> String {
+    "pointer".into()
+}
+
 pub fn default_subpixel() -> String {
     "auto".into()
 }
@@ -296,7 +337,7 @@ fn default_projects() -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), restore: default_restore(), status_line: false, captions: true, ligatures: true, command_bars: false, bold_text: true, subpixel: default_subpixel(), workspace_colors: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), slash: Default::default(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), restore: default_restore(), status_line: false, captions: true, quake_height: default_quake_height(), quake_width: default_quake_width(), quake_position: default_quake_position(), quake_align: default_quake_align(), quake_monitor: default_quake_monitor(), quake_all_workspaces: true, quake_on_top: true, quake_hide_on_blur: false, ligatures: true, command_bars: false, bold_text: true, subpixel: default_subpixel(), workspace_colors: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), slash: Default::default(), workspaces: Vec::new() }
     }
 }
 

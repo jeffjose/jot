@@ -569,7 +569,7 @@ impl App {
             }
         };
         let id = crate::mux::app_id(m, pane);
-        let pty = Pty { pane, machine: m, pid, mux: client.clone(), raw: false, proc: Default::default() };
+        let pty = Pty { pane, machine: m, pid, mux: client.clone(), raw: false, proc: Default::default(), end: false };
         let term = Terminal::new(cols, rows, self.config.scrollback, self.theme, reply_to(&client, pane));
         let caption = folder_name(&pty.cwd().unwrap_or(start.cwd));
         self.panes.insert(
@@ -2586,6 +2586,9 @@ impl ApplicationHandler<()> for App {
             }
             WindowEvent::Focused(on) => {
                 self.focused_window = on;
+                if !on {
+                    self.quake_blurred();
+                }
                 if let Some(id) = self.focused() {
                     if let Some(p) = self.panes.get_mut(&id) {
                         p.full = true;
@@ -2983,6 +2986,9 @@ impl App {
                 ws.focus = new;
             }
             // Its own shell, here, ended.
+            if let Some(p) = self.panes.get_mut(&at) {
+                p.pty.end = true;
+            }
             self.panes.remove(&at);
         }
         self.changed();
