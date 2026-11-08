@@ -323,6 +323,8 @@ pub struct App {
     side_heading: Option<usize>,
     /// What the sidebar showed last, as `sidebar_moved` counts it.
     side_sig: u64,
+    /// When the debug log was last given its counts.
+    dbg_at: Instant,
     /// Panes the session had when this window took it up, until the
     /// layout takes them up.
     held: HashMap<u64, crate::mux::Held>,
@@ -517,6 +519,7 @@ impl App {
             side_toggle: None,
             side_heading: None,
             side_sig: 0,
+            dbg_at: Instant::now(),
             mux: attached.client,
             held,
             replays: Vec::new(),
@@ -860,6 +863,7 @@ impl App {
             // Only a change of rows or columns is told to the program: a
             // shell such as tcsh draws its prompt again on each telling.
             if (cols, rows) != (p.cols, p.rows) {
+                crate::debuglog::log(format!("pane {id:x}: {}x{} -> {cols}x{rows}", p.cols, p.rows));
                 p.term.resize(cols, rows, cw as u32, ch as u32);
                 p.pty.resize(cols, rows, ((cols as i32 * cw) as u32, (rows as i32 * ch) as u32));
                 p.cols = cols;
@@ -1806,6 +1810,19 @@ impl App {
         let searched = self.find.as_ref().map(|f| f.pane);
         let mut search_again = false;
         while let Ok(out) = self.rx.try_recv() {
+            crate::debuglog::count(match &out {
+                Output::Bytes(..) => "heard output",
+                Output::Exit(..) => "heard exit",
+                Output::Mode(..) => "heard mode",
+                Output::Ran(..) => "heard ran",
+                Output::TeeLines(..) | Output::TeeEnd(..) => "heard tee",
+                Output::Proc(..) => "heard proc",
+                Output::Back(..) => "heard back",
+                Output::Failed(..) => "heard failed",
+                Output::Listing(..) => "heard listing",
+                Output::Taken(..) => "heard taken",
+                Output::Gone(..) => "heard gone",
+            });
             match out {
                 Output::Bytes(id, bytes) => {
                     let watched = self.panes.get(&id).is_some_and(|p| p.tee.is_some() || p.filter.is_some());
@@ -1854,6 +1871,7 @@ impl App {
                 // machine's session ended, or the other runs another jot): the
                 // window goes.
                 Output::Gone(k) if self.machines.get(k).is_some_and(|m| m.host.is_some() && m.client.connected()) => {
+                    crate::debuglog::log(format!("machine {k}: link lost, reaching it again"));
                     self.machines[k].client.reconnect();
                     self.set_title();
                 }
@@ -1881,6 +1899,7 @@ impl App {
                         m.listing = l;
                     }
                     if changed {
+                        crate::debuglog::log(format!("machine {k}: its listing changed ({} entries)", self.machines.get(k).map_or(0, |m| m.listing.len())));
                         self.full = true;
                         self.redraw();
                     }
@@ -1980,7 +1999,14 @@ impl App {
         self.refresh_captions();
         // With notices up, the frame is drawn whole, so panes do not draw
         // over them.
-        let full = std::mem::take(&mut self.full) || !self.toasts.is_empty() || self.offered.is_some() || self.slash.is_some() || self.bar_list_open();
+        let asked = std::mem::take(&mut self.full);
+        let full = asked || !self.toasts.is_empty() || self.offered.is_some() || self.slash.is_some() || self.bar_list_open();
+        crate::debuglog::count(match (full, asked) {
+            (false, _) => "frame partial",
+            (true, true) => "frame full (asked)",
+            (true, false) if !self.toasts.is_empty() => "frame full (a notice up)",
+            _ => "frame full (an overlay up)",
+        });
         if full {
             // The sidebar's button, tucked away, is placed again this frame.
             self.side_toggle = None;
@@ -2515,6 +2541,7 @@ impl App {
         // window's together for after a restart. Each other machine's keeps
         // its own, for a window opened on it.
         if let Ok(text) = toml::to_string(&session) {
+            crate::debuglog::count("layout sent");
             self.mux.layout(text);
         }
         for (k, m) in machines.iter().enumerate().skip(1) {
@@ -2654,10 +2681,16 @@ impl ApplicationHandler<()> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Debugging: what happened this last second, counted.
+        if self.dbg_at.elapsed() >= Duration::from_secs(1) {
+            self.dbg_at = Instant::now();
+            crate::debuglog::summary();
+        }
         // Queues changed by what was done: told to the session.
         self.sync_queues();
         // The sidebar drawn again when what it shows changed by itself.
         if self.sidebar_moved() {
+            crate::debuglog::count("sidebar changed");
             self.full = true;
             self.redraw();
         }

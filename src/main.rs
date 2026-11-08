@@ -8,6 +8,7 @@ mod emoji;
 mod font;
 mod gpu;
 mod keys;
+mod debuglog;
 mod layout;
 mod mux;
 mod persist;
@@ -21,9 +22,11 @@ use winit::event_loop::EventLoop;
 
 static DEBUG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Whether --debug was given: each key is printed as it is sent.
+/// Whether --debug was given (or JOT_DEBUG=1): each key printed as it is
+/// sent, and what jot does kept in debug.log (see debuglog).
 pub fn debug() -> bool {
-    DEBUG.load(std::sync::atomic::Ordering::Relaxed)
+    static FROM_ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FROM_ENV.get_or_init(|| std::env::var_os("JOT_DEBUG").is_some_and(|v| !v.is_empty() && v != "0")) || DEBUG.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 static QUAKE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
