@@ -2672,8 +2672,9 @@ impl App {
     }
 
     /// The project bar: a quiet line along the window's foot. At its left
-    /// the workspace you are in, its name and the folder of the pane you are
-    /// in on a chip of its color; then the other workspaces, a dot of each
+    /// the workspace you are in: a square of its color with its number, then
+    /// its name and the folder of the pane you are in; then the other
+    /// workspaces, a dot of each
     /// one's color (ringed amber when one of its panes has news), clicked to
     /// go there; at the right the machine that pane runs on, and the clock
     /// when the status line is not showing it.
@@ -2725,26 +2726,29 @@ impl App {
         right -= self.fonts.ui.width(&machine);
         self.canvas.text(&mut self.fonts.ui, &machine, right as f32, ty, c.dim, bar);
         right -= gap;
-        // The chip. Dark words or light ones, whichever reads better on the
-        // color, as WCAG reckons it: cyan, teal and amber get dark ones.
+        // The tile: a square of the workspace's color at the corner, its
+        // number in it (Alt and the number go there; one day the icon its
+        // settings give it). Dark or light, whichever reads better on the
+        // color, as WCAG reckons it: cyan, teal and amber get dark.
         let (dark, light) = (mix(accent, 0x000000, 215), mix(accent, 0xFFFFFF, 235));
         let fg = if crate::canvas::contrast(dark, accent) >= crate::canvas::contrast(light, accent) { dark } else { light };
-        let soft = mix(accent, fg, 170);
-        let words = self.fonts.ui.width(&name) + if folder.is_empty() { 0 } else { self.px(10.0) + self.fonts.ui.width(&folder) };
-        let room = (right - bar.x - self.px(60.0)).max(0);
-        let chip = Rect { x: bar.x, y: bar.y, w: (words + 2 * pad).min(room), h };
-        self.canvas.fill(chip, accent);
-        let clip = Rect { x: chip.x, y: chip.y, w: (chip.w - pad).max(0), h };
-        let after = self.canvas.text_fit(&mut self.fonts.ui, &name, chip.x + pad, ty, (clip.w - pad).max(0), fg, clip);
+        let number = (self.current + 1).to_string();
+        let tile = Rect { x: bar.x, y: bar.y, w: h.max(self.fonts.ui.width(&number) + pad), h };
+        self.canvas.fill(tile, accent);
+        let nw = self.fonts.ui.width(&number);
+        self.canvas.text(&mut self.fonts.ui, &number, (tile.x + (tile.w - nw) / 2) as f32, ty, fg, tile);
+        // Its name, plain; the folder of the pane you are in, dim.
+        let clip = Rect { x: tile.x + tile.w, y: bar.y, w: (right - self.px(60.0) - tile.x - tile.w).max(0), h };
+        let mut end = self.canvas.text_fit(&mut self.fonts.ui, &name, clip.x + pad, ty, (clip.w - pad).max(0), c.text, clip);
         if !folder.is_empty() {
-            let x = after + self.px(10.0);
-            self.canvas.text_fit(&mut self.fonts.ui, &folder, x, ty, (clip.x + clip.w - x).max(0), soft, clip);
+            let x = end + self.px(10.0);
+            end = self.canvas.text_fit(&mut self.fonts.ui, &folder, x, ty, (clip.x + clip.w - x).max(0), c.dim, clip);
         }
         // The other workspaces, a dot each.
         self.foot_dots.clear();
         let (d, step, ring, inner) = (self.px(7.0), self.px(15.0), self.px(13.0), self.px(10.0));
         let cy = bar.y + (h + 1) / 2;
-        let mut x = chip.x + chip.w + self.px(6.0);
+        let mut x = end.min(clip.x + clip.w) + self.px(8.0);
         for (i, color, busy) in others {
             if x + step > right {
                 break;
