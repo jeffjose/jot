@@ -814,28 +814,57 @@ fn restart() -> i32 {
 pub fn command(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("status") => match peek() {
-            // A tree: the server, each window with its workspaces, the panes
-            // no window shows. Which jot each is, marked when it is not this
-            // one.
+            // A table: the server, each window, the terminals no window
+            // shows; which jot each runs, against the one running this (the
+            // server says its own; a window says its own when it connects,
+            // and one from before windows did says nothing: older).
             Ok(ToClient::Info { panes, version, windows, free, list, .. }) if !list.is_empty() || windows == 0 && !version.is_empty() => {
+                let short = |v: &str| v.split_once('(').and_then(|(_, r)| r.split_once(')')).map(|(s, _)| s.to_string()).unwrap_or_else(|| v.trim_start_matches("jot ").to_string());
                 let me = crate::version();
                 let host = std::fs::read_to_string("/proc/sys/kernel/hostname").map(|h| h.trim().to_string()).unwrap_or_default();
-                let count = |n: u32| if n == 1 { "1 pane".to_string() } else { format!("{n} panes") };
-                let wins = if windows == 1 { "1 window".to_string() } else { format!("{windows} windows") };
-                println!("{host} · {} · {wins}", count(panes));
-                let older = |v: &str| if v.starts_with(&me) { "" } else { "   ⚠ not this jot" };
-                let last = free == 0 && list.is_empty();
-                println!("{} server   {version}{}", if last { "└─" } else { "├─" }, if version == me { String::new() } else { format!("   ⚠ this is {me}: jot restart swaps it") });
-                for (i, (about, names, n)) in list.iter().enumerate() {
-                    let last = i + 1 == list.len() && free == 0;
-                    let about = if about.is_empty() { "an older jot" } else { about.as_str() };
-                    println!("{} window   {about} · {}{}", if last { "└─" } else { "├─" }, count(*n), older(about));
-                    if !names.is_empty() {
-                        println!("{}  └─ {names}", if last { " " } else { "│" });
-                    }
+                let exe = std::env::current_exe().map(|p| crate::persist::shorten(&p)).unwrap_or_default();
+                let (bold, dim, warn, off) = if unsafe { libc::isatty(1) } == 1 { ("\x1b[1m", "\x1b[2m", "\x1b[33m", "\x1b[0m") } else { ("", "", "", "") };
+                println!("{bold}{host}{off}  {dim}compared with this jot: {} ({exe}){off}", short(&me));
+                println!();
+                // Each row: what, which jot (and whether it is this one), its
+                // terminals, its workspaces.
+                let mut rows: Vec<(String, String, bool, String, String)> = Vec::new();
+                rows.push(("server".into(), short(&version), version == me, panes.to_string(), String::new()));
+                let mut stale = 0;
+                for (about, names, n) in &list {
+                    let mut parts = about.split(" · ");
+                    let (v, on, quake) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next() == Some("quake"));
+                    let what = match (quake, !on.is_empty() && on != host) {
+                        (true, _) => "quake window".to_string(),
+                        (false, true) => format!("window on {on}"),
+                        _ => "window".to_string(),
+                    };
+                    let current = v == me;
+                    stale += usize::from(!current);
+                    rows.push((what, if v.is_empty() { "older".into() } else { short(v) }, current, n.to_string(), names.clone()));
                 }
                 if free > 0 {
-                    println!("└─ no window   {}", count(free));
+                    rows.push(("no window".into(), String::new(), true, free.to_string(), String::new()));
+                }
+                let w0 = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0).max(4);
+                let w1 = rows.iter().map(|r| r.1.chars().count() + if r.2 { 0 } else { 2 }).max().unwrap_or(0).max(3);
+                println!("  {dim}{:w0$}   {:w1$}   {:>9}   WORKSPACES{off}", "WHAT", "JOT", "TERMINALS");
+                for (what, v, current, n, names) in &rows {
+                    let v = if *current { format!("{v:w1$}") } else { format!("{warn}{:w1$}{off}", format!("{v} ⚠")) };
+                    println!("  {what:w0$}   {v}   {n:>9}   {names}");
+                }
+                if version != me || stale > 0 {
+                    println!();
+                }
+                if version != me {
+                    println!("{warn}⚠{off} The session runs {}: jot restart swaps it for this one, every terminal kept.", short(&version));
+                }
+                if stale > 0 {
+                    if stale == 1 {
+                        println!("{warn}⚠{off} 1 window runs another jot: close it and run jot again; its terminals stay.");
+                    } else {
+                        println!("{warn}⚠{off} {stale} windows run another jot: close them and run jot again; their terminals stay.");
+                    }
                 }
                 0
             }
