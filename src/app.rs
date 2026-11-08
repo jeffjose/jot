@@ -2718,8 +2718,7 @@ impl App {
         };
         let accent = self.cur_accent;
         let accents = self.ws_accents();
-        let others: Vec<(usize, u32, bool)> = (0..self.workspaces.len())
-            .filter(|&i| i != self.current)
+        let all: Vec<(usize, u32, bool)> = (0..self.workspaces.len())
             .map(|i| {
                 let mut ids = Vec::new();
                 self.workspaces[i].root.panes(&mut ids);
@@ -2728,7 +2727,7 @@ impl App {
             })
             .collect();
         let clock = if self.config.status_line { String::new() } else { self.clock.clone() };
-        let said = format!("{name}\0{folder}\0{machine}\0{accent}\0{others:?}\0{clock}\0{}\0{}", self.canvas.width, self.cur_theme.bg);
+        let said = format!("{name}\0{folder}\0{machine}\0{accent}\0{all:?}\0{}\0{clock}\0{}\0{}", self.current, self.canvas.width, self.cur_theme.bg);
         if !full && said == self.foot_said {
             return;
         }
@@ -2768,22 +2767,25 @@ impl App {
             let x = end + self.px(10.0);
             end = self.canvas.text_fit(&mut self.fonts.ui, &folder, x, ty, (clip.x + clip.w - x).max(0), c.dim, clip);
         }
-        // The other workspaces, a dot each.
+        // Every workspace, a dot each in order, all one size: the one you
+        // are in ringed in its color, one with news ringed amber.
         self.foot_dots.clear();
-        let (d, step, ring, inner) = (self.px(7.0), self.px(15.0), self.px(13.0), self.px(10.0));
-        let cy = bar.y + (h + 1) / 2;
-        let mut x = end.min(clip.x + clip.w) + self.px(8.0);
-        for (i, color, busy) in others {
+        let s = self.scale;
+        let (r, ring_in, ring_out, step) = (3.5 * s, 5.5 * s, 7.0 * s, self.px(18.0));
+        // The middle of the line under the bar's top hairline.
+        let cy = bar.y as f32 + 1.0 + (h - 1) as f32 / 2.0;
+        let mut x = end.min(clip.x + clip.w) + self.px(10.0);
+        for (i, color, busy) in all {
             if x + step > right {
                 break;
             }
-            let cx = x + step / 2;
-            let disc = |canvas: &mut Canvas, size: i32, color: u32| canvas.round_fill(Rect { x: cx - size / 2, y: cy - size / 2, w: size, h: size }, size / 2, color, 255);
-            if busy {
-                disc(&mut self.canvas, ring, ACTIVITY);
-                disc(&mut self.canvas, inner, c.side);
+            let cx = x as f32 + step as f32 / 2.0;
+            if i == self.current {
+                self.canvas.annulus(cx, cy, ring_in, ring_out, color);
+            } else if busy {
+                self.canvas.annulus(cx, cy, ring_in, ring_out, ACTIVITY);
             }
-            disc(&mut self.canvas, d, color);
+            self.canvas.disc(cx, cy, r, color);
             self.foot_dots.push((Rect { x, y: bar.y, w: step, h }, i));
             x += step;
         }

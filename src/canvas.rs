@@ -96,6 +96,33 @@ impl Canvas {
         }
     }
 
+    /// A round dot centred on (cx, cy), `r` across half, its edge smoothed
+    /// by how much of each pixel it covers: the same at any size, unlike a
+    /// rounded square, which is flat at odd sizes.
+    pub fn disc(&mut self, cx: f32, cy: f32, r: f32, color: u32) {
+        self.annulus(cx, cy, 0.0, r, color);
+    }
+
+    /// A round ring centred on (cx, cy), from radius `inner` out to `outer`,
+    /// its edges smoothed.
+    pub fn annulus(&mut self, cx: f32, cy: f32, inner: f32, outer: f32, color: u32) {
+        let reach = outer.ceil() as i32 + 1;
+        let r = Rect { x: cx.floor() as i32 - reach, y: cy.floor() as i32 - reach, w: 2 * reach + 1, h: 2 * reach + 1 };
+        let (x0, y0, x1, y1) = self.bounds(r);
+        for y in y0..y1 {
+            let row = (y * self.width) as usize;
+            for x in x0..x1 {
+                let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+                let cover = (outer + 0.5 - d).clamp(0.0, 1.0) * if inner > 0.0 { (d - inner + 0.5).clamp(0.0, 1.0) } else { 1.0 };
+                let a = (cover * 255.0) as u32;
+                if a > 0 {
+                    let p = &mut self.pixels[row + x as usize];
+                    *p = blend(*p, color, a);
+                }
+            }
+        }
+    }
+
     /// A rounded outline `width` thick, the inside left as it is.
     pub fn ring(&mut self, r: Rect, radius: i32, width: i32, color: u32) {
         // Drawn row by row as the difference of two rounded shapes.
