@@ -143,7 +143,7 @@ impl App {
         self.side_toggle = None;
         let c = self.cur_theme.chrome();
         let w = self.sidebar_w();
-        let h = self.canvas.height - self.status_h() - if self.quake_bar_on_top() { 0 } else { self.quake_bar_h() };
+        let h = self.canvas.height - self.bottom_h() - if self.quake_bar_on_top() { 0 } else { self.quake_bar_h() };
         let area = Rect { x: 0, y: 0, w, h };
         self.canvas.fill(area, c.side);
         self.canvas.fill(Rect { x: w - 1, y: 0, w: 1, h }, c.edge);

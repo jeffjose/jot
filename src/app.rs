@@ -327,6 +327,8 @@ pub struct App {
     side_heading: Option<usize>,
     /// What the sidebar showed last, as `sidebar_moved` counts it.
     side_sig: u64,
+    /// What the project bar said when last drawn: drawn again when it changes.
+    foot_said: String,
     /// When the debug log was last given its counts.
     dbg_at: Instant,
     /// Panes the session had when this window took it up, until the
@@ -523,6 +525,7 @@ impl App {
             side_toggle: None,
             side_heading: None,
             side_sig: 0,
+            foot_said: String::new(),
             dbg_at: Instant::now(),
             mux: attached.client,
             held,
@@ -545,6 +548,23 @@ impl App {
         } else {
             0
         }
+    }
+
+    /// The project bar along the window's foot: the workspace in its color,
+    /// the folder of the pane you are in, its machine. Not in the quake
+    /// window, which has its own bar.
+    fn foot_h(&self) -> i32 {
+        if self.config.project_bar && !crate::quake_mode() {
+            self.fonts.ui.height + self.px(10.0)
+        } else {
+            0
+        }
+    }
+
+    /// All taken along the bottom: the project bar, and the status line
+    /// under it.
+    fn bottom_h(&self) -> i32 {
+        self.status_h() + self.foot_h()
     }
 
     fn caption_h(&self) -> i32 {
@@ -798,7 +818,7 @@ impl App {
         // The quake window's bar along its open edge.
         let bar = self.quake_bar_h();
         let top = if self.quake_bar_on_top() { bar } else { 0 };
-        Rect { x: side, y: top, w: self.canvas.width - side, h: self.canvas.height - self.status_h() - bar }
+        Rect { x: side, y: top, w: self.canvas.width - side, h: self.canvas.height - self.bottom_h() - bar }
     }
 
     /// Lays out every workspace, so panes not shown are the right size
@@ -2122,6 +2142,7 @@ impl App {
         if full && self.config.status_line {
             self.draw_status();
         }
+        self.draw_foot(full);
         if full {
             self.draw_carry();
         }
@@ -2352,11 +2373,12 @@ impl App {
         let h = self.caption_h();
         let bar = Rect { x: rect.x, y: rect.y, w: rect.w, h };
         let t = self.cur_theme;
-        let accent = self.cur_accent;
         let (white, black) = (0xFFFFFF, 0x000000);
         let (bg, fg, dim, num) = match (focused, t.dark) {
-            (true, true) => (mix(mix(t.bg, white, 33), accent, 26), 0xF2F2F3, 0xA9ABB2, mix(accent, white, 64)),
-            (true, false) => (mix(white, accent, 15), 0x17181B, 0x5C5F66, mix(accent, black, 64)),
+            // The pane you are in: a neutral step lighter, never tinted; the
+            // workspace's color is the window's, in the bar at its foot.
+            (true, true) => (mix(t.bg, white, 24), 0xF2F2F3, 0xA9ABB2, 0xA9ABB2),
+            (true, false) => (mix(t.bg, black, 6), 0x17181B, 0x5C5F66, 0x5C5F66),
             (false, true) => (mix(t.bg, white, 12), if activity { ACTIVITY } else { 0x9A9CA2 }, 0x6E7077, 0x6E7077),
             (false, false) => (mix(t.bg, black, 18), if activity { ACTIVITY } else { 0x5C5F66 }, 0x8A8D94, 0x8A8D94),
         };
@@ -2472,6 +2494,49 @@ impl App {
         }
         let room = right - self.px(8.0) - x;
         self.canvas.text_fit(&mut self.fonts.ui, caption, x, ty, room.max(0), fg, bar);
+        self.damage.push(bar);
+    }
+
+    /// The project bar: the window in its workspace's color, said once
+    /// for the window rather than on every pane. Its name; the folder of the
+    /// pane you are in; at the right, the machine that pane runs on.
+    fn draw_foot(&mut self, full: bool) {
+        let h = self.foot_h();
+        if h == 0 || self.workspaces.is_empty() {
+            return;
+        }
+        let ws = self.ws();
+        let name = ws.name.clone();
+        let focus = ws.focus;
+        let folder = self.panes.get(&focus).and_then(|p| p.pty.cwd()).map(|c| persist::shorten(&c)).unwrap_or_default();
+        let machine = match self.machines.get(self.machine_of(focus)).and_then(|m| m.host.clone()) {
+            Some(host) => host,
+            None => hostname(),
+        };
+        let accent = self.cur_accent;
+        let said = format!("{name}\0{folder}\0{machine}\0{accent}\0{}", self.canvas.width);
+        if !full && said == self.foot_said {
+            return;
+        }
+        self.foot_said = said;
+        let bar = Rect { x: 0, y: self.canvas.height - self.status_h() - h, w: self.canvas.width, h };
+        // Dark words on a light color, light on a dark one.
+        let (r, g, b) = ((accent >> 16) & 0xFF, (accent >> 8) & 0xFF, accent & 0xFF);
+        let light = (r * 299 + g * 587 + b * 114) / 1000 > 140;
+        let fg = if light { mix(accent, 0x000000, 215) } else { mix(accent, 0xFFFFFF, 235) };
+        let soft = mix(accent, fg, 170);
+        self.canvas.fill(bar, accent);
+        let ty = bar.y + (h - self.fonts.ui.height) / 2;
+        let pad = self.px(10.0);
+        let right_w = self.fonts.ui.width(&machine);
+        let right = bar.x + bar.w - pad - right_w;
+        self.canvas.text(&mut self.fonts.ui, &machine, right as f32, ty, soft, bar);
+        let clip = Rect { x: bar.x, y: bar.y, w: (right - self.px(12.0) - bar.x).max(0), h };
+        let after = self.canvas.text_fit(&mut self.fonts.ui, &name, bar.x + pad, ty, (clip.w - pad).max(0), fg, clip);
+        if !folder.is_empty() {
+            let x = after + self.px(10.0);
+            self.canvas.text_fit(&mut self.fonts.ui, &folder, x, ty, (clip.x + clip.w - x).max(0), soft, clip);
+        }
         self.damage.push(bar);
     }
 

@@ -189,6 +189,10 @@ pub struct Config {
     /// A status line along the bottom: host, workspaces, clock.
     #[serde(default)]
     pub status_line: bool,
+    /// A bar along the bottom in the workspace's color: its name, the folder
+    /// of the pane you are in, and its machine.
+    #[serde(default = "yes")]
+    pub project_bar: bool,
     /// A caption along the top of each pane.
     #[serde(default = "yes")]
     pub captions: bool,
@@ -336,7 +340,7 @@ fn default_projects() -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), restore: default_restore(), status_line: false, captions: true, quake_height: default_quake_height(), quake_width: default_quake_width(), quake_position: default_quake_position(), quake_align: default_quake_align(), quake_monitor: default_quake_monitor(), quake_all_workspaces: true, quake_hide_on_blur: false, ligatures: true, command_bars: false, bold_text: true, subpixel: default_subpixel(), workspace_colors: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), slash: Default::default(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), restore: default_restore(), status_line: false, project_bar: true, captions: true, quake_height: default_quake_height(), quake_width: default_quake_width(), quake_position: default_quake_position(), quake_align: default_quake_align(), quake_monitor: default_quake_monitor(), quake_all_workspaces: true, quake_hide_on_blur: false, ligatures: true, command_bars: false, bold_text: true, subpixel: default_subpixel(), workspace_colors: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), slash: Default::default(), workspaces: Vec::new() }
     }
 }
 
