@@ -256,6 +256,7 @@ impl Pane {
     /// each draws it at the one size its program writes for.
     fn size_for(&mut self, c: u64) -> bool {
         let Some(s) = self.sizes.get(&c).copied().filter(|s| *s != self.size) else { return false };
+        crate::debuglog::log(format!("session: pane {}: {}x{} -> {}x{}, window {c}'s", self.pty.pid, self.size.0, self.size.1, s.0, s.1));
         self.pty.resize(s.0, s.1, s.2);
         self.log.size(s.0, s.1);
         self.size = s;

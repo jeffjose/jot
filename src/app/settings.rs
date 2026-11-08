@@ -12,7 +12,7 @@ use crate::font;
 use crate::theme::{ACCENTS, THEMES};
 
 
-const SECTIONS: [&str; 6] = ["Appearance", "Workspaces", "Fonts", "Quake", "Keys", "About"];
+const SECTIONS: [&str; 7] = ["Appearance", "Workspaces", "Fonts", "Quake", "Keys", "Debug", "About"];
 
 /// A setting, for Reset.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -42,6 +42,8 @@ pub enum Key {
     QuakeHideOnBlur,
     /// The long-command editor's colors.
     EditorColors,
+    /// The debug log: a switch every jot on the machine shares, not a setting.
+    Debug,
 }
 
 const ALL_KEYS: [Key; 22] = [Key::Bold, Key::WsColors, Key::CommandBars, Key::Ligatures, Key::Theme, Key::Accent, Key::Contrast, Key::EditorColors, Key::Family, Key::Size, Key::LineHeight, Key::UiFamily, Key::UiSize, Key::Captions, Key::StatusLine, Key::QuakeHeight, Key::QuakeWidth, Key::QuakePosition, Key::QuakeAlign, Key::QuakeMonitor, Key::QuakeAllWorkspaces, Key::QuakeHideOnBlur];
@@ -186,6 +188,7 @@ fn config_key(key: Key) -> &'static str {
         Key::QuakeAllWorkspaces => "quake-all-workspaces",
         Key::QuakeHideOnBlur => "quake-hide-on-blur",
         Key::EditorColors => "editor-colors",
+        Key::Debug => "",
     }
 }
 
@@ -233,6 +236,7 @@ impl App {
             Key::QuakeAllWorkspaces => !c.quake_all_workspaces,
             Key::QuakeHideOnBlur => c.quake_hide_on_blur,
             Key::EditorColors => !c.editor_colors.eq_ignore_ascii_case(&persist::default_editor_colors()),
+            Key::Debug => false,
         }
     }
 
@@ -324,6 +328,7 @@ impl App {
             Key::QuakeMonitor => self.config.quake_monitor = persist::default_quake_monitor(),
             Key::QuakeAllWorkspaces => self.config.quake_all_workspaces = true,
             Key::QuakeHideOnBlur => self.config.quake_hide_on_blur = false,
+            Key::Debug => return,
         }
         persist::unset_config_value(config_key(key));
     }
@@ -369,6 +374,15 @@ impl App {
                 self.accent = color;
                 self.config.accent = name.to_string();
                 persist::set_config_value("accent", &format!("{name:?}"));
+            }
+            // The switch every jot here looks for, not a setting.
+            Hit::Toggle(Key::Debug) => {
+                let on = !crate::debug();
+                if let Err(e) = crate::debuglog::set(on) {
+                    self.toast("Debug log", &e.to_string(), None, None);
+                }
+                self.full = true;
+                self.redraw();
             }
             Hit::Toggle(key) => {
                 let on = match key {
@@ -1297,6 +1311,31 @@ impl App {
 
         }
         if section == 5 {
+        // ---- Debug ----
+        heading(canvas, fonts, &mut y, &mut tops, "Debug");
+        {
+            let value = crate::debug();
+            let mid = title(canvas, fonts, &mut page, y, "Debug log", "Every jot here writes what it does to the log. Also jot debug on, off.", Key::Debug);
+            let (sw, sh) = (px(40.0), px(22.0));
+            let pill = Rect { x: right - sw, y: mid - sh / 2, w: sw, h: sh };
+            canvas.round_fill(pill, sh / 2, if value { accent } else { c.hover }, 255);
+            let k = sh - px(6.0);
+            let kx = if value { pill.x + sw - k - px(3.0) } else { pill.x + px(3.0) };
+            canvas.round_fill(Rect { x: kx, y: pill.y + px(3.0), w: k, h: k }, k / 2, 0xFFFFFF, 255);
+            page.push((Rect { x: pill.x - px(4.0), y: pill.y - px(4.0), w: sw + px(8.0), h: sh + px(8.0) }, Hit::Toggle(Key::Debug)));
+            y += row_h;
+            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
+            y += px(16.0);
+            let log = crate::debuglog::log_path();
+            let size = std::fs::metadata(&log).map(|m| format!("{} KB", m.len().div_ceil(1024))).unwrap_or_else(|_| "none yet".into());
+            for (k, v) in [("Log file", persist::shorten(&log)), ("Size", size)] {
+                canvas.text(&mut fonts.ui, k, body.x as f32, y, c.dim, view);
+                canvas.text(&mut fonts.ui, &v, (body.x + body.w * 2 / 5) as f32, y, c.text, view);
+                y += uh + px(14.0);
+            }
+        }
+        }
+        if section == 6 {
         // ---- About ----
         heading(canvas, fonts, &mut y, &mut tops, "About");
         for (k, v) in [

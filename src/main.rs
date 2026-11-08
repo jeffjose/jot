@@ -22,11 +22,12 @@ use winit::event_loop::EventLoop;
 
 static DEBUG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Whether --debug was given (or JOT_DEBUG=1): each key printed as it is
-/// sent, and what jot does kept in debug.log (see debuglog).
+/// Whether --debug was given, JOT_DEBUG=1, or the switch is on (`jot debug
+/// on`, or Settings): each key printed as it is sent, and what jot does
+/// kept in debug.log (see debuglog).
 pub fn debug() -> bool {
     static FROM_ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FROM_ENV.get_or_init(|| std::env::var_os("JOT_DEBUG").is_some_and(|v| !v.is_empty() && v != "0")) || DEBUG.load(std::sync::atomic::Ordering::Relaxed)
+    *FROM_ENV.get_or_init(|| std::env::var_os("JOT_DEBUG").is_some_and(|v| !v.is_empty() && v != "0")) || DEBUG.load(std::sync::atomic::Ordering::Relaxed) || debuglog::switched_on()
 }
 
 static QUAKE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -42,6 +43,9 @@ jot: a terminal with splits and workspaces
   jot            start, offering to restore the last session
   jot --fresh    start from the workspaces in the config
   jot --debug    print each key as it is sent to the program
+  jot debug on | off | toggle | status
+                 every jot here writes what it does to
+                 ~/.local/state/jot/debug.log, from now, no restart
   jot list | open DIR | split [--down] [-- CMD] | run CMD
         | send PANE TEXT | focus PANE | notify TEXT
                    control the running jot
@@ -98,6 +102,9 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| remote::COMMANDS.contains(&a.as_str())) {
         std::process::exit(remote::client(&args));
+    }
+    if args.first().is_some_and(|a| a == "debug") {
+        std::process::exit(debuglog::command(&args));
     }
     if args.first().is_some_and(|a| a == "setup") {
         return setup();
