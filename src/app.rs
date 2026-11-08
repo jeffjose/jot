@@ -240,6 +240,10 @@ pub struct App {
     quake_drag_h: Option<(i32, i32)>,
     /// Names given to terminals, as the file every window shares holds them.
     term_names: Vec<(String, u64, String)>,
+    /// The last step (Alt , or Alt .): the pane, and the terminal on its way
+    /// to it; and panes that took another's place, old and new.
+    stepping: Option<(PaneId, (usize, u64))>,
+    replaced: Vec<(PaneId, PaneId)>,
     /// Minimized panes' rows, to click, and the one the pointer is on.
     mini_hits: Vec<(Rect, PaneId)>,
     mini_lit: Option<PaneId>,
@@ -475,6 +479,8 @@ impl App {
             quake_lit: None,
             quake_drag_h: None,
             term_names: persist::load_term_names(),
+            stepping: None,
+            replaced: Vec::new(),
             mini_hits: Vec::new(),
             mini_lit: None,
             mini_btns: Vec::new(),
@@ -3311,7 +3317,10 @@ impl App {
         let (_, spec, place) = self.taking.remove(i);
         // Where it was to go: a pane still there, a workspace to put it in.
         let at = match place {
-            terminals::Place::Into(p) | terminals::Place::Split(p, ..) => self.workspaces.iter().position(|w| w.root.contains(p)).map(|wi| (wi, p)),
+            terminals::Place::Into(p) | terminals::Place::Split(p, ..) => {
+                let p = self.replaced_by(p);
+                self.workspaces.iter().position(|w| w.root.contains(p)).map(|wi| (wi, p))
+            }
             _ => None,
         };
         let placed = !self.workspaces.is_empty();
@@ -3328,6 +3337,15 @@ impl App {
                     }
                     if ws.zoom == Some(old) {
                         ws.zoom = Some(new);
+                    }
+                    // Listed as running on at once, and where it stood noted,
+                    // for a step already on its way to this pane.
+                    self.list_free(old);
+                    // An id back in use is no longer a pane that was replaced.
+                    self.replaced.retain(|(o, _)| *o != new && *o != old);
+                    self.replaced.push((old, new));
+                    if self.replaced.len() > 32 {
+                        self.replaced.remove(0);
                     }
                     self.let_go(old);
                     if wi != self.current {

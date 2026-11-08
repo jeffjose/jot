@@ -104,13 +104,56 @@ impl App {
         if self.roam == Some(at) {
             return;
         }
-        let free: Vec<Free> = self.free_terminals().into_iter().filter(|f| !f.elsewhere).collect();
-        if free.is_empty() {
+        // In one order that does not move, the order the terminals were
+        // made, as screen numbers its windows: from the one this pane shows
+        // (or is about to, a step still on its way) to the one after or
+        // before it, round the end, past those other panes show.
+        let at = self.replaced_by(at);
+        let here = self.stepping.filter(|(p, _)| *p == at).map(|(_, t)| t).unwrap_or_else(|| crate::mux::split_id(at));
+        let mut ring: Vec<(usize, u64)> = self.free_terminals().into_iter().filter(|f| !f.elsewhere).map(|f| (f.k, f.sid)).collect();
+        ring.retain(|t| *t != here);
+        if ring.is_empty() {
             return self.toast("No other terminals", "Every terminal is shown in a pane", None, None);
         }
-        let i = if by > 0 { 0 } else { free.len() - 1 };
-        let f = free[i].clone();
-        self.take_terminal(f.k, f.sid, Place::Into(at));
+        ring.push(here);
+        ring.sort();
+        ring.dedup();
+        let i = ring.iter().position(|t| *t == here).unwrap_or(0) as i32;
+        let n = ring.len() as i32;
+        let (k, sid) = ring[(i + by).rem_euclid(n) as usize];
+        self.stepping = Some((at, (k, sid)));
+        self.take_terminal(k, sid, Place::Into(at));
+    }
+
+    /// The pane that stands where `id` stood, a step having put another
+    /// terminal there.
+    pub(super) fn replaced_by(&self, mut id: PaneId) -> PaneId {
+        // A pane's id is its terminal's, so ids come round again: a pane
+        // that is there is the answer, and the trail is followed only so far.
+        for _ in 0..32 {
+            if self.workspaces.iter().any(|w| w.root.contains(id)) {
+                return id;
+            }
+            match self.replaced.iter().rev().find(|(old, _)| *old == id) {
+                Some((_, new)) => id = *new,
+                None => return id,
+            }
+        }
+        id
+    }
+
+    /// A terminal a pane here stopped showing, listed as running on at once,
+    /// before its session's own list says so.
+    pub(super) fn list_free(&mut self, id: PaneId) {
+        let (k, sid) = crate::mux::split_id(id);
+        let Some(p) = self.panes.get(&id) else { return };
+        let running = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.trim().to_string()).filter(|s| !s.is_empty());
+        let label = running.clone().unwrap_or_else(|| p.pty.cwd().map(|c| persist::shorten(&c)).unwrap_or_else(|| "~".into()));
+        if let Some(m) = self.machines.get_mut(k) {
+            if !m.listing.iter().any(|l| l.panes.contains(&sid)) {
+                m.listing.push(crate::mux::Listed { spec: String::new(), panes: vec![sid], elsewhere: false, label, running: running.is_some() });
+            }
+        }
     }
 
     /// The picker (Alt '): the terminals no pane here shows, to show one in
