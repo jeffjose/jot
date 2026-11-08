@@ -48,8 +48,11 @@ impl Shape {
 
 impl App {
     /// `jot --quake`: shown, or hidden if it shows.
+    /// Hidden only when it is the window you are in: shown but under
+    /// another (not kept on top), it is brought forward instead, as Tilix
+    /// does, so the key never seems to do nothing.
     pub(super) fn quake_toggle(&mut self) {
-        if self.quake_shown {
+        if self.quake_shown && self.focused_window {
             self.quake_hide();
         } else {
             self.quake_show();
@@ -583,4 +586,29 @@ fn tab_name(p: &Pane) -> String {
     }
     let c = p.caption.trim_end_matches('/');
     c.rsplit(['/', ':']).next().filter(|s| !s.is_empty()).unwrap_or(c).to_string()
+}
+
+thread_local! {
+    /// What the quake bar showed when last drawn.
+    static BAR_SEEN: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+impl App {
+    /// The quake bar, drawn when the frame is drawn whole, or when what it
+    /// shows has changed: the workspace, the pane gone to (keys move it
+    /// without a whole frame), its panes and their names, kept on top.
+    pub(super) fn quake_bar_frame(&mut self, full: bool) {
+        if !crate::quake_mode() {
+            return;
+        }
+        let mut ids = Vec::new();
+        self.ws().root.panes(&mut ids);
+        let names: Vec<String> = ids.iter().filter_map(|id| self.panes.get(id).map(tab_name)).collect();
+        let key = format!("{} {} {:?} {:?} {:?} {}", self.current, self.ws().name, self.ws().focus, ids, names, self.config.quake_on_top);
+        let changed = BAR_SEEN.with(|s| *s.borrow() != key);
+        if full || changed {
+            self.draw_quake_bar();
+            BAR_SEEN.with(|s| *s.borrow_mut() = key);
+        }
+    }
 }
