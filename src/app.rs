@@ -1808,17 +1808,17 @@ impl App {
                     self.send_mouse(id, sys::GHOSTTY_MOUSE_ACTION_MOTION, None);
                 }
                 let on_divider = if self.roam_shown { None } else { self.divider_at(x, y) };
-                // On a pane's caption, the arrow: it is not text to select
-                // (its buttons and tags give the hand, above).
+                // On a pane's caption, the hand: it is clicked, and dragged to
+                // carry the pane. On empty space, the arrow: no text there.
                 let cap = self.caption_h();
-                // Empty space too, with no text in it.
-                let on_caption = self.pane_at(x, y).and_then(|(id, _)| self.panes.get(&id)).is_some_and(|p| y < p.rect.y + cap)
-                    || (!self.roam_shown && self.ws().spaces.iter().any(|s| self.panes.get(s).is_some_and(|p| p.rect.contains(x, y))));
+                let on_caption = self.pane_at(x, y).and_then(|(id, _)| self.panes.get(&id)).is_some_and(|p| y < p.rect.y + cap);
+                let on_space = !self.roam_shown && self.ws().spaces.iter().any(|s| self.panes.get(s).is_some_and(|p| p.rect.contains(x, y)));
                 if let Some(w) = &self.window {
                     w.set_cursor(match on_divider {
                         Some(d) if d.dir == Dir::Across => CursorIcon::ColResize,
                         Some(_) => CursorIcon::RowResize,
-                        None if on_caption => CursorIcon::Default,
+                        None if on_caption => CursorIcon::Pointer,
+                        None if on_space => CursorIcon::Default,
                         None => CursorIcon::Text,
                     });
                 }
