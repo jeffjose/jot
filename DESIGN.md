@@ -67,9 +67,12 @@ time, and the reader always knows what it means.
   what is in use, hairlines between groups. Right click gives one wherever
   something can be acted on (a bar, a pin, a tag).
 - **Buttons**: one filled (accent) button a screen; the rest a quiet lift.
-- **Choices**: a two-way switch for two, a stepper (`−  value  +`) for an
-  ordered few or a number, a dropdown with `⌄` for an unordered list, a
-  switch for on and off.
+- **Choices**: every option visible in one segmented switch, up to about
+  five (a "recommended" mark on the option it means, not beside the label);
+  a dropdown with `⌄` beyond that; a toggle for on and off.
+- **Numbers**: a slider for a range where "about here" matters (quality,
+  volume), its number beside it to type exactly; a stepper (`−  value  +`)
+  for small counts and sizes.
 - **Numbers and badges**: a pane's number in an outlined box; a count in a
   pill only when it is a label (`current`).
 - **Dropups** open from the foot bar's buttons, upward, their edges in line
