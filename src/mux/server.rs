@@ -540,7 +540,7 @@ impl Server {
 
     fn info(&self) -> ToClient {
         let names = merge(self.layouts.values().map(String::as_str).chain(self.left.iter().map(|(_, l)| l.as_str()))).map(|s| s.workspaces.iter().map(|w| w.name.clone()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
-        ToClient::Info { attached: !self.windows.is_empty(), panes: self.panes.len() as u32, names }
+        ToClient::Info { attached: !self.windows.is_empty(), panes: self.panes.len() as u32, names, version: crate::version(), windows: self.windows.len() as u32 }
     }
 
     /// A new pane for window `c`: its name and its shell's process id (-1 if

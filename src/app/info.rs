@@ -99,18 +99,123 @@ impl App {
         rows
     }
 
-    /// The rows as text, the names in a column.
-    fn info_text(rows: &[(String, String)], color: bool) -> Vec<String> {
-        let w = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
-        rows.iter()
-            .map(|(k, v)| if color { format!("\x1b[2m{k:>w$}\x1b[0m  {v}") } else { format!("{k:>w$}  {v}") })
-            .collect()
+    /// What /info says, in four: the pane, its workspace, this window (the
+    /// jot it is, and the machines it reaches), and the session's server.
+    pub(super) fn info_sections(&self, id: PaneId) -> Vec<(&'static str, Vec<(String, String)>)> {
+        vec![("pane", self.pane_info(id)), ("workspace", self.workspace_info(id)), ("window", self.window_info()), ("session", self.session_info())]
+    }
+
+    /// The pane's workspace: its name, its panes, and where they run.
+    fn workspace_info(&self, id: PaneId) -> Vec<(String, String)> {
+        let Some(ws) = self.workspaces.iter().find(|w| {
+            let mut ids = Vec::new();
+            w.root.panes(&mut ids);
+            ids.contains(&id)
+        }) else {
+            return vec![("name".into(), "none (a pane on its own)".into())];
+        };
+        let mut ids = Vec::new();
+        ws.root.panes(&mut ids);
+        let panes = ids.iter().filter(|p| !ws.spaces.contains(p)).count();
+        let spaces = ids.len() - panes;
+        let mut rows = vec![("name".to_string(), ws.name.clone())];
+        rows.push(("panes".into(), if spaces > 0 { format!("{panes}, and {spaces} empty") } else { panes.to_string() }));
+        let mut machines: Vec<String> = ids.iter().filter(|p| !ws.spaces.contains(p)).map(|p| self.machine_name(self.machine_of(*p))).collect();
+        machines.dedup();
+        machines.sort();
+        machines.dedup();
+        rows.push(("on".into(), machines.join(", ")));
+        if ws.broadcast {
+            rows.push(("typing".into(), "into every pane".into()));
+        }
+        rows
+    }
+
+    /// This window: the jot it runs, and the machines whose panes it shows.
+    fn window_info(&self) -> Vec<(String, String)> {
+        let panes = self.workspaces.iter().map(|w| {
+            let mut ids = Vec::new();
+            w.root.panes(&mut ids);
+            ids.iter().filter(|p| !w.spaces.contains(p)).count()
+        });
+        let panes: usize = panes.sum();
+        let mut rows = vec![("version".to_string(), format!("{} · pid {}", crate::version(), std::process::id()))];
+        rows.push(("shows".into(), format!("{} · {}", count(self.workspaces.len(), "workspace"), count(panes, "pane"))));
+        let machines: Vec<String> = self
+            .machines
+            .iter()
+            .enumerate()
+            .map(|(k, m)| {
+                let state = if k == 0 && m.host.is_none() { String::new() } else if m.client.connected() { " (connected)".into() } else { " (reaching it)".into() };
+                format!("{}{state}", self.machine_name(k))
+            })
+            .collect();
+        rows.push(("machines".into(), machines.join(", ")));
+        rows
+    }
+
+    /// The session's server, on this machine: the jot it runs (another
+    /// than the window's after an update, until jot restart), how long it
+    /// has, and all it holds, every window's.
+    fn session_info(&self) -> Vec<(String, String)> {
+        if let Some(host) = &self.mux.host {
+            return vec![("machine".into(), host.clone()), ("note".into(), "more is said of the session on this machine, for now".into())];
+        }
+        let mut rows = Vec::new();
+        let pid = crate::mux::server_pid(&crate::mux::socket());
+        match crate::mux::peek() {
+            Ok(crate::mux::ToClient::Info { panes, names, version, windows, .. }) => {
+                let said = if version.is_empty() {
+                    "a jot older than jot restart (jot kill once, to be done with it)".to_string()
+                } else if version != crate::version() {
+                    format!("{version} · not this window's, jot restart swaps it")
+                } else {
+                    version
+                };
+                rows.push(("server".into(), said));
+                if let Some(pid) = pid {
+                    let up = age(pid).map(|d| format!(" · up {}", commands::human(d))).unwrap_or_default();
+                    rows.push(("pid".into(), format!("{pid}{up}")));
+                }
+                let n = names.split(", ").filter(|n| !n.is_empty()).count();
+                rows.push(("holds".into(), format!("{} · {}", count(panes as usize, "pane"), count(n, "workspace"))));
+                rows.push(("windows".into(), if windows == 0 { "?".into() } else { windows.to_string() }));
+            }
+            _ => rows.push(("server".into(), "not answering".into())),
+        }
+        rows.push(("socket".into(), persist::shorten(&crate::mux::socket())));
+        rows
+    }
+
+    /// A machine as /info names it: its host, or this one's name.
+    fn machine_name(&self, k: usize) -> String {
+        match self.machines.get(k).and_then(|m| m.host.clone()) {
+            Some(h) => h,
+            None => std::fs::read_to_string("/proc/sys/kernel/hostname").map(|s| s.trim().to_string()).unwrap_or_else(|_| "this machine".into()),
+        }
+    }
+
+    /// The sections as text: each under its heading, the names in one
+    /// column throughout.
+    fn info_text(sections: &[(&str, Vec<(String, String)>)], color: bool) -> Vec<String> {
+        let w = sections.iter().flat_map(|(_, rows)| rows.iter().map(|(k, _)| k.chars().count())).max().unwrap_or(0);
+        let mut out = Vec::new();
+        for (i, (head, rows)) in sections.iter().enumerate() {
+            if i > 0 {
+                out.push(String::new());
+            }
+            out.push(if color { format!("\x1b[1m{head}\x1b[0m") } else { head.to_string() });
+            for (k, v) in rows {
+                out.push(if color { format!("\x1b[2m  {k:>w$}\x1b[0m  {v}") } else { format!("  {k:>w$}  {v}") });
+            }
+        }
+        out
     }
 
     /// /info at a prompt: printed into the terminal under `/info`, as a
     /// command's output would be, and the shell given a fresh prompt.
     pub(super) fn print_info(&mut self, id: PaneId) {
-        let lines = Self::info_text(&self.pane_info(id), true);
+        let lines = Self::info_text(&self.info_sections(id), true);
         let text = format!("/info\r\n{}", lines.join("\r\n"));
         if let Some(p) = self.panes.get_mut(&id) {
             p.print = Some(info::Print { text, asked: Instant::now() });
@@ -119,7 +224,7 @@ impl App {
 
     /// /info in a pane's command line: shown there.
     pub(super) fn bar_info(&mut self, id: PaneId) {
-        let text = Self::info_text(&self.pane_info(id), false).join("\n");
+        let text = Self::info_text(&self.info_sections(id), false).join("\n");
         if let Some(p) = self.panes.get_mut(&id) {
             p.shell.ran = Some(("/info".into(), text, Some(0)));
         }
@@ -310,4 +415,9 @@ impl App {
             p.shell.ran = Some((title.into(), lines.join("\n"), Some(0)));
         }
     }
+}
+
+/// "1 pane", "3 panes".
+fn count(n: usize, what: &str) -> String {
+    if n == 1 { format!("1 {what}") } else { format!("{n} {what}s") }
 }

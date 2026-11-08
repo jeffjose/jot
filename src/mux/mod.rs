@@ -113,7 +113,9 @@ pub enum ToClient {
     /// A /tee ended: stopped, its command done, or the file failed.
     TeeEnd { pane: u64, lines: u64, error: String },
     /// For Peek: whether a window has it, and its workspaces and panes.
-    Info { attached: bool, panes: u32, names: String },
+    /// `version` and `windows` were added after: empty and 0 from an older
+    /// server.
+    Info { attached: bool, panes: u32, names: String, version: String, windows: u32 },
     /// What a pane's program is doing, when it changes.
     Proc { pane: u64, proc: crate::pty::Proc },
     /// For List: its workspaces this window does not show.
@@ -342,8 +344,8 @@ impl ToClient {
             ToClient::TeeEnd { pane, lines, error } => {
                 o.u8(8).u64(*pane).u64(*lines).str(error);
             }
-            ToClient::Info { attached, panes, names } => {
-                o.u8(9).u8(*attached as u8).u32(*panes).str(names);
+            ToClient::Info { attached, panes, names, version, windows } => {
+                o.u8(9).u8(*attached as u8).u32(*panes).str(names).str(version).u32(*windows);
             }
             ToClient::Proc { pane, proc } => {
                 o.u8(10).u64(*pane).str(&proc.cwd).str(&proc.fg).u32(proc.pgrp as u32).u8(proc.busy as u8);
@@ -401,7 +403,7 @@ impl ToClient {
             6 => ToClient::Ran { pane: i.u64()?, cmd: i.str()? },
             7 => ToClient::TeeLines { pane: i.u64()?, lines: i.u64()? },
             8 => ToClient::TeeEnd { pane: i.u64()?, lines: i.u64()?, error: i.str()? },
-            9 => ToClient::Info { attached: i.u8()? != 0, panes: i.u32()?, names: i.str()? },
+            9 => ToClient::Info { attached: i.u8()? != 0, panes: i.u32()?, names: i.str()?, version: i.str().unwrap_or_default(), windows: i.u32().unwrap_or(0) },
             10 => ToClient::Proc { pane: i.u64()?, proc: crate::pty::Proc { cwd: i.str()?, fg: i.str()?, pgrp: i.u32()? as i32, busy: i.u8()? != 0 } },
             11 => {
                 let n = i.u32()?;
@@ -737,7 +739,7 @@ fn listen(mut r: Box<dyn Read + Send>, spawned: Sender<(u64, i32)>, hear: Arc<dy
 
 /// The process at the other end of a socket: a session's server,
 /// whatever its version.
-fn server_pid(path: &std::path::Path) -> Option<i32> {
+pub fn server_pid(path: &std::path::Path) -> Option<i32> {
     use std::os::fd::AsRawFd;
     let s = UnixStream::connect(path).ok()?;
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
@@ -747,7 +749,7 @@ fn server_pid(path: &std::path::Path) -> Option<i32> {
 }
 
 /// What the session holds, asked without taking anything up.
-fn peek() -> io::Result<ToClient> {
+pub fn peek() -> io::Result<ToClient> {
     let mut s = UnixStream::connect(socket())?;
     s.set_read_timeout(Some(Duration::from_secs(2)))?;
     s.write_all(&ToServer::Peek.encode())?;
@@ -797,10 +799,20 @@ fn restart() -> i32 {
 pub fn command(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("status") => match peek() {
-            Ok(ToClient::Info { attached, panes, names }) => {
+            Ok(ToClient::Info { attached, panes, names, version, windows }) => {
                 let panes = if panes == 1 { "1 pane".to_string() } else { format!("{panes} panes") };
-                let shown = if attached { "in a window" } else { "no window" };
+                let shown = match (attached, windows) {
+                    (false, _) => "no window".to_string(),
+                    (true, 0 | 1) => "in a window".to_string(),
+                    (true, n) => format!("in {n} windows"),
+                };
                 println!("{panes} · {shown}{}", if names.is_empty() { String::new() } else { format!(" · {names}") });
+                // Which jot it runs: after an update, jot restart swaps it.
+                match version.as_str() {
+                    "" => println!("server: a jot older than jot restart (jot kill once, to be done with it)"),
+                    v if v != crate::version() => println!("server: {v} (this is {}; jot restart swaps it)", crate::version()),
+                    v => println!("server: {v}"),
+                }
                 0
             }
             Ok(_) => {
