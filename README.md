@@ -11,20 +11,36 @@ cd jot && cargo build --release   # needs Zig 0.17
 target/release/jot setup          # add it, with its icon, to your programs
 ```
 
-### Terminals that stay
+### Split it up
 
-Every terminal lives in a session on its machine, so closing a pane or the
-window only stops looking at it. Add a machine and its terminals and
-workspaces sit beside this one's; the bar shows one machine's workspaces at
-a time.
+Start with one terminal. `Alt V` splits it to the right, `Alt S` down; drag
+a pane by its caption to put it somewhere else. A set of panes is a
+workspace, each with a color of its own: `Ctrl N` makes another, `Alt 1`…`9`
+goes there.
+
+<p align="center"><img src="docs/splits.png" width="640" alt="Four panes: an editor, tests, htop and a shell"></p>
+
+### Close it, keep it
+
+Every terminal runs in a session that outlives the window. Close the window
+and the shells, builds and logs carry on; run `jot` and they are back where
+you left them. After a reboot, jot offers your layout and scrollback again.
+
+<p align="center"><img src="docs/persist.png" width="520" alt="jot offering to restore the last session"></p>
+
+### Other machines
+
+Add a machine and its terminals sit in the sidebar beside this one's, as
+close as local ones. The bar shows one machine's workspaces at a time; its
+machine button switches to another's.
 
 <p align="center"><img src="docs/machines.png" width="520" alt="The bar's machine list: woodwind, cinderblock, skyfall"></p>
 
 ### Quake
 
-`jot --quake` drops a terminal from the top of the screen, laid out once for
-this desk. Its bar lists every terminal of a machine; pick one and the pane
-shows it.
+Bind a key to `jot --quake` and a terminal drops from the top of the screen,
+laid out once for this desk. Its bar lists every terminal of a machine: pick
+one and the pane shows it.
 
 <p align="center"><img src="docs/quake.png" width="640" alt="The quake window's bar: jot's mark and a machine's terminals"></p>
 
