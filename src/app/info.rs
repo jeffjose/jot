@@ -59,7 +59,6 @@ impl App {
                 rows.push(("folder".into(), cwd.display().to_string()));
             }
             rows.push(("running".into(), p.pty.foreground().unwrap_or_default()));
-            rows.push(("note".into(), "more of /info is for panes on this machine, for now".into()));
             return rows;
         }
         let mut rows: Vec<(String, String)> = Vec::new();
@@ -159,7 +158,7 @@ impl App {
     /// has, and all it holds, every window's.
     fn session_info(&self) -> Vec<(String, String)> {
         if let Some(host) = &self.mux.host {
-            return vec![("machine".into(), host.clone()), ("note".into(), "more is said of the session on this machine, for now".into())];
+            return vec![("machine".into(), host.clone())];
         }
         let mut rows = Vec::new();
         let pid = crate::mux::server_pid(&crate::mux::socket());
