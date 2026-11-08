@@ -95,6 +95,9 @@ pub struct Pane {
     activity: bool,
     /// When it started: what it prints at first, its prompt, is not news.
     started: Instant,
+    /// When its size last changed: what it prints just after, a shell such
+    /// as tcsh drawing its prompt again, is not news either.
+    resized: Instant,
     /// The characters of each row as last drawn, to find links in.
     lines: Vec<Vec<char>>,
     /// What the shell's marks have told of its commands.
@@ -693,7 +696,7 @@ impl App {
         let caption = folder_name(&pty.cwd().unwrap_or(start.cwd));
         self.panes.insert(
             id,
-            Pane { term, pty, cmd, content: Rect::default(), rect: Rect::default(), cols, rows, want: (cols, rows), full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0 },
+            Pane { term, pty, cmd, content: Rect::default(), rect: Rect::default(), cols, rows, want: (cols, rows), full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), resized: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0 },
         );
         // A tee and a queue the session kept going, shown again.
         if let (Some((tee, queue)), Some(p)) = (kept, self.panes.get_mut(&id)) {
@@ -990,6 +993,7 @@ impl App {
             if (cols, rows) != p.want {
                 crate::debuglog::log(format!("pane {id:x}: {}x{} -> {cols}x{rows}", p.want.0, p.want.1));
                 p.want = (cols, rows);
+                p.resized = Instant::now();
                 p.pty.resize(cols, rows, ((cols as i32 * cw) as u32, (rows as i32 * ch) as u32));
                 if (cols, rows) != (p.cols, p.rows) {
                     p.term.resize(cols, rows, cw as u32, ch as u32);
@@ -2019,7 +2023,7 @@ impl App {
                             if !p.has_images && bytes.windows(3).any(|w| w == b"\x1b_G") {
                                 p.has_images = true;
                             }
-                            if !shown.contains(&id) && !p.activity && p.started.elapsed() > Duration::from_secs(3) {
+                            if !shown.contains(&id) && !p.activity && p.started.elapsed() > Duration::from_secs(3) && p.resized.elapsed() > Duration::from_secs(2) {
                                 p.activity = true;
                                 self.full = true;
                             }
@@ -2062,6 +2066,7 @@ impl App {
                     for id in self.views(id) {
                         if let Some(p) = self.panes.get_mut(&id).filter(|p| (p.cols, p.rows) != (cols, rows)) {
                             crate::debuglog::log(format!("pane {id:x}: the session says {cols}x{rows}"));
+                            p.resized = Instant::now();
                             p.term.resize(cols, rows, cw, ch);
                             p.cols = cols;
                             p.rows = rows;
@@ -2697,10 +2702,9 @@ impl App {
 
     /// The project bar: a quiet line along the window's foot. At its left
     /// the workspace you are in: a square of its color with its number, then
-    /// its name and the folder of the pane you are in; then the other
-    /// workspaces, a dot of each
-    /// one's color (ringed amber when one of its panes has news), clicked to
-    /// go there; at the right the machine that pane runs on, and the clock
+    /// its name and the folder of the pane you are in; then every workspace,
+    /// a dot of each one's color (the one you are in ringed), clicked to go
+    /// there; at the right the machine that pane runs on, and the clock
     /// when the status line is not showing it.
     fn draw_foot(&mut self, full: bool) {
         let h = self.foot_h();
@@ -2718,14 +2722,7 @@ impl App {
         };
         let accent = self.cur_accent;
         let accents = self.ws_accents();
-        let all: Vec<(usize, u32, bool)> = (0..self.workspaces.len())
-            .map(|i| {
-                let mut ids = Vec::new();
-                self.workspaces[i].root.panes(&mut ids);
-                let busy = ids.iter().any(|id| self.panes.get(id).is_some_and(|p| p.activity));
-                (i, accents.get(i).map_or(self.accent, |a| a.0), busy)
-            })
-            .collect();
+        let all: Vec<(usize, u32)> = (0..self.workspaces.len()).map(|i| (i, accents.get(i).map_or(self.accent, |a| a.0))).collect();
         let clock = if self.config.status_line { String::new() } else { self.clock.clone() };
         let said = format!("{name}\0{folder}\0{machine}\0{accent}\0{all:?}\0{}\0{clock}\0{}\0{}", self.current, self.canvas.width, self.cur_theme.bg);
         if !full && said == self.foot_said {
@@ -2768,22 +2765,21 @@ impl App {
             end = self.canvas.text_fit(&mut self.fonts.ui, &folder, x, ty, (clip.x + clip.w - x).max(0), c.dim, clip);
         }
         // Every workspace, a dot each in order, all one size: the one you
-        // are in ringed in its color, one with news ringed amber.
+        // are in ringed in its color, and nothing else (no color for news,
+        // which would read as another workspace's).
         self.foot_dots.clear();
         let s = self.scale;
         let (r, ring_in, ring_out, step) = (3.5 * s, 5.5 * s, 7.0 * s, self.px(18.0));
         // The middle of the line under the bar's top hairline.
         let cy = bar.y as f32 + 1.0 + (h - 1) as f32 / 2.0;
         let mut x = end.min(clip.x + clip.w) + self.px(10.0);
-        for (i, color, busy) in all {
+        for (i, color) in all {
             if x + step > right {
                 break;
             }
             let cx = x as f32 + step as f32 / 2.0;
             if i == self.current {
                 self.canvas.annulus(cx, cy, ring_in, ring_out, color);
-            } else if busy {
-                self.canvas.annulus(cx, cy, ring_in, ring_out, ACTIVITY);
             }
             self.canvas.disc(cx, cy, r, color);
             self.foot_dots.push((Rect { x, y: bar.y, w: step, h }, i));
