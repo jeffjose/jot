@@ -92,7 +92,7 @@ impl App {
         for (id, r) in rows {
             let Some(p) = self.panes.get(&id) else { continue };
             let h = r.h;
-            let number = ids.iter().position(|p| *p == id).map_or(0, |n| n + 1);
+            let number = self.term_number(id).or_else(|| ids.iter().position(|p| *p == id).map(|n| n + 1)).unwrap_or(0);
             let lit = self.mini_lit == Some(id);
             self.canvas.fill(r, c.side);
             self.canvas.fill(Rect { y: r.y + r.h - 1, h: 1, ..r }, c.edge);

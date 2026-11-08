@@ -344,3 +344,33 @@ impl App {
         v
     }
 }
+
+impl App {
+    /// Numbers for terminals new since last time (the lowest free, in the
+    /// order their sessions made them); those of terminals gone, free again.
+    pub(super) fn number_terminals(&mut self) {
+        let mut live: Vec<(usize, u64)> = self.side_terminals().into_iter().map(|t| (t.k, t.sid)).collect();
+        // On its way into a pane, in no list for now: still its own.
+        for (k, spec, _) in &self.taking {
+            live.extend(spec.layout.as_ref().map(persist::ids_in_order).unwrap_or_default().into_iter().map(|sid| (*k, sid)));
+        }
+        let before = self.term_numbers.len();
+        self.term_numbers.retain(|t, _| live.contains(t));
+        let mut changed = self.term_numbers.len() != before;
+        for t in live {
+            if !self.term_numbers.contains_key(&t) {
+                let n = (1..).find(|n| !self.term_numbers.values().any(|v| v == n)).unwrap_or(1);
+                self.term_numbers.insert(t, n);
+                changed = true;
+            }
+        }
+        if changed {
+            self.full = true;
+        }
+    }
+
+    /// The number of the terminal pane `id` shows.
+    pub(super) fn term_number(&self, id: PaneId) -> Option<usize> {
+        self.term_numbers.get(&crate::mux::split_id(id)).copied()
+    }
+}

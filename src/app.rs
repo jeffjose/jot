@@ -241,6 +241,10 @@ pub struct App {
     quake_drag_h: Option<(i32, i32)>,
     /// Names given to terminals, as the file every window shares holds them.
     term_names: Vec<(String, u64, String)>,
+    /// Each terminal's number, as screen numbers its windows: given when it
+    /// is first seen (the lowest free), kept while it runs, whatever pane
+    /// shows it.
+    term_numbers: HashMap<(usize, u64), usize>,
     /// The last step (Alt , or Alt .): the pane, and the terminal on its way
     /// to it; and panes that took another's place, old and new.
     stepping: Option<(PaneId, (usize, u64))>,
@@ -486,6 +490,7 @@ impl App {
             quake_lit: None,
             quake_drag_h: None,
             term_names: persist::load_term_names(),
+            term_numbers: HashMap::new(),
             stepping: None,
             replaced: Vec::new(),
             tip_shown: None,
@@ -2180,6 +2185,7 @@ impl App {
         self.take_resize();
         self.retint();
         self.refresh_captions();
+        self.number_terminals();
         // With notices up, the frame is drawn whole, so panes do not draw
         // over them.
         // A tooltip come or gone: the frame drawn whole, so that nothing
@@ -2236,7 +2242,9 @@ impl App {
                     continue;
                 }
                 let before = self.damage.len();
-                self.draw_pane(*id, n + 1, full, Some(*id) == focus && !self.roam_shown);
+                // Its number, its terminal's: the same in the sidebar.
+                let number = self.term_number(*id).unwrap_or(n + 1);
+                self.draw_pane(*id, number, full, Some(*id) == focus && !self.roam_shown);
                 if self.damage.len() > before {
                     drawn.push(*id);
                 }

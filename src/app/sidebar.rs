@@ -340,7 +340,8 @@ pub(super) struct SideTerm {
     pub label: String,
     pub cmd: Option<String>,
     pub status: u8,
-    pub badge: Option<String>,
+    /// Shown by a pane in the workspace you are in.
+    pub here: bool,
 }
 
 impl App {
@@ -352,40 +353,38 @@ impl App {
             let mut ids = Vec::new();
             ws.root.panes(&mut ids);
             ids.retain(|id| !ws.spaces.contains(id));
-            for (n, id) in ids.iter().enumerate() {
+            for id in &ids {
                 let Some(p) = self.panes.get(id) else { continue };
                 let (k, sid) = crate::mux::split_id(*id);
+                let here = wi == self.current;
+                // A terminal in two panes is one row, the pane here first.
+                if let Some(t) = out.iter_mut().find(|t: &&mut SideTerm| (t.k, t.sid) == (k, sid)) {
+                    if here && !t.here {
+                        t.here = true;
+                        t.pane = Some(*id);
+                    }
+                    continue;
+                }
                 let running = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.trim().to_string()).filter(|s| !s.is_empty());
                 let failed = running.is_none() && p.shell.blocks.last().is_some_and(|b| b.exit.is_some_and(|e| e != 0));
                 let status = if running.is_some() { 1 } else if failed { 2 } else { 0 };
                 let label = self.terminal_label(*id);
                 let cmd = running.filter(|r| r.split_whitespace().next() != Some(label.as_str()) || r.contains(' '));
-                let badge = (wi == self.current).then(|| format!("{}", n + 1));
-                // A terminal in two panes is one row: the pane here first,
-                // its numbers together.
-                if let Some(t) = out.iter_mut().find(|t: &&mut SideTerm| (t.k, t.sid) == (k, sid)) {
-                    match (&mut t.badge, badge) {
-                        (Some(b), Some(n)) => *b = format!("{b},{n}"),
-                        (b @ None, Some(n)) => {
-                            *b = Some(n);
-                            t.pane = Some(*id);
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-                out.push(SideTerm { k, sid, pane: Some(*id), label, cmd, status, badge });
+                out.push(SideTerm { k, sid, pane: Some(*id), label, cmd, status, here });
             }
         }
         for f in self.free_terminals() {
-            out.push(SideTerm { k: f.k, sid: f.sid, pane: None, label: self.given_name(f.k, f.sid).unwrap_or(f.label), cmd: None, status: u8::from(f.running), badge: f.elsewhere.then(|| "window".to_string()) });
+            let cmd = f.elsewhere.then(|| "in another window".to_string());
+            out.push(SideTerm { k: f.k, sid: f.sid, pane: None, label: self.given_name(f.k, f.sid).unwrap_or(f.label), cmd, status: u8::from(f.running), here: false });
         }
-        out.sort_by_key(|t| (t.k, t.sid));
+        // By machine, then by number (one new since numbers were last given
+        // at the end).
+        out.sort_by_key(|t| (t.k, self.term_numbers.get(&(t.k, t.sid)).copied().unwrap_or(usize::MAX), t.sid));
         out
     }
 
     /// A terminal's row: one line, its dot, its name, what it runs dimmed,
-    /// and at the right its pane's number; a terminal no pane shows a shade
+    /// and at the right its number; a terminal no pane shows a shade
     /// quieter.
     #[allow(clippy::too_many_arguments)]
     fn side_term_row(&mut self, t: &SideTerm, y: i32, h: i32, x0: i32, w: i32, focused: bool, clip: Rect, focus_fill: u32, hover: u32) -> i32 {
@@ -411,16 +410,21 @@ impl App {
         let mut x = row.x + px(10.0);
         self.canvas.round_fill(Rect { x, y: y + (h - d) / 2, w: d, h: d }, d / 2, dot, 255);
         x += d + px(10.0);
-        // At the right: its number, or the window that shows it.
+        // At the right: its number, which stays with it whatever pane shows
+        // it; ringed when a pane here shows it.
         let mut right = row.x + row.w - px(8.0);
-        if let Some(badge) = &t.badge {
+        if let Some(n) = self.term_numbers.get(&(t.k, t.sid)) {
+            let badge = n.to_string();
             let sh = self.fonts.side_small.height;
             // All the same width, the number in the middle, so that they line up.
-            let tw = self.fonts.side_small.width(badge);
+            let tw = self.fonts.side_small.width(&badge);
             let bw = (tw + px(10.0)).max(px(22.0));
             let chip = Rect { x: right - bw, y: y + (h - sh - px(4.0)) / 2, w: bw, h: sh + px(4.0) };
-            self.canvas.ring(chip, px(4.0), 1, mix(c.side, c.text, 40));
-            self.canvas.text(&mut self.fonts.side_small, badge, (chip.x + (bw - tw) / 2) as f32, chip.y + px(2.0), if focused { c.text } else { c.dim }, clip);
+            if t.here {
+                self.canvas.ring(chip, px(4.0), 1, mix(c.side, c.text, 40));
+            }
+            let color = if focused { c.text } else if t.here { c.dim } else { mix(c.side, c.dim, 160) };
+            self.canvas.text(&mut self.fonts.side_small, &badge, (chip.x + (bw - tw) / 2) as f32, chip.y + px(2.0), color, clip);
             right = chip.x - px(6.0);
         }
         let nh = self.fonts.side.height;

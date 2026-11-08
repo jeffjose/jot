@@ -429,7 +429,7 @@ impl App {
             let mut tx = x;
             let mut rects = Vec::new();
             for (n, (id, name)) in tabs.iter().enumerate() {
-                let num = format!("{}", n + 1);
+                let num = self.term_number(*id).unwrap_or(n + 1).to_string();
                 let w = (px(9.0) + self.fonts.small.width(&num) + px(5.0) + self.fonts.small.width(name) + px(9.0)).min(px(160.0));
                 if tx + w > end {
                     break;
