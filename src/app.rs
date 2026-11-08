@@ -1316,6 +1316,8 @@ impl App {
 
     fn set_font_size(&mut self, size: f32) {
         self.font_size = size.clamp(6.0, 48.0);
+        // Kept for the next start (see save_window).
+        self.unsaved = true;
         self.fonts = Fonts::new(&self.font_choice(), self.scale);
         // Its programs told the new size once the presses stop, not at each:
         // each telling has them draw all they show again.
@@ -2843,7 +2845,30 @@ impl App {
         self.scrollback_at = Instant::now();
     }
 
+    /// Where the main window is and how large, kept for the next start
+    /// (see persist::WindowState). Maximized, the size it had before is
+    /// kept.
+    fn save_window(&self) {
+        if crate::quake_mode() {
+            return;
+        }
+        let Some(w) = &self.window else { return };
+        let maximized = w.is_maximized();
+        let state = match (maximized, persist::load_window()) {
+            (true, Some(prev)) => persist::WindowState { maximized, font_size: self.font_size, ..prev },
+            _ => {
+                let Ok(pos) = w.outer_position() else { return };
+                let size = w.inner_size();
+                persist::WindowState { x: pos.x, y: pos.y, w: size.width, h: size.height, maximized, font_size: self.font_size }
+            }
+        };
+        if persist::load_window() != Some(state) {
+            persist::save_window(&state);
+        }
+    }
+
     fn save(&mut self) {
+        self.save_window();
         if self.offered.is_some() {
             return;
         }
@@ -2905,7 +2930,26 @@ impl ApplicationHandler<()> for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = if crate::quake_mode() { quake::attributes() } else { window_attributes("jot", LogicalSize::new(1400.0, 900.0)).with_decorations(self.config.title_bar.eq_ignore_ascii_case("system")) };
+        let attrs = if crate::quake_mode() {
+            quake::attributes()
+        } else {
+            let attrs = window_attributes("jot", LogicalSize::new(1400.0, 900.0)).with_decorations(self.config.title_bar.eq_ignore_ascii_case("system"));
+            // Where it was left, as large, maximized if it was, its font as
+            // zoomed; where it was only if a monitor is still there.
+            match persist::load_window() {
+                Some(s) => {
+                    self.font_size = s.font_size.clamp(6.0, 48.0);
+                    let seen = event_loop.available_monitors().any(|m| {
+                        let (p, z) = (m.position(), m.size());
+                        let (cx, cy) = (s.x + s.w as i32 / 2, s.y + s.h as i32 / 2);
+                        cx >= p.x && cy >= p.y && cx < p.x + z.width as i32 && cy < p.y + z.height as i32
+                    });
+                    let attrs = attrs.with_inner_size(winit::dpi::PhysicalSize::new(s.w, s.h)).with_maximized(s.maximized);
+                    if seen { attrs.with_position(winit::dpi::PhysicalPosition::new(s.x, s.y)) } else { attrs }
+                }
+                None => attrs,
+            }
+        };
         let window = Rc::new(event_loop.create_window(attrs).expect("failed to create window"));
         let context = Context::new(window.clone()).expect("failed to connect to display");
         self.surface = Some(Surface::new(&context, window.clone()).expect("failed to create surface"));
@@ -2963,7 +3007,10 @@ impl ApplicationHandler<()> for App {
                 self.save();
                 event_loop.exit();
             }
+            // Kept for the next start, with the session (see save_window).
+            WindowEvent::Moved(_) => self.unsaved = true,
             WindowEvent::Resized(size) => {
+                self.unsaved = true;
                 // Taken up when the frame is drawn, the last size only.
                 self.resized = Some((size.width, size.height));
                 self.redraw();
@@ -3015,6 +3062,11 @@ impl ApplicationHandler<()> for App {
             WindowEvent::RedrawRequested => self.draw(),
             _ => {}
         }
+    }
+
+    /// Quitting, by any way: the window kept as it is, for the next start.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.save_window();
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {

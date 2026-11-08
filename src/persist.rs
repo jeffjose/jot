@@ -670,3 +670,31 @@ pub fn save_term_names(names: &[(String, u64, String)]) {
     let _ = std::fs::create_dir_all(state_dir());
     let _ = std::fs::write(state_dir().join("names"), names.iter().map(|(h, s, n)| format!("{h}\t{s}\t{}\n", n.replace(['\t', '\n'], " "))).collect::<String>());
 }
+
+/// The main window as it was left: where, how large (in pixels, its size
+/// before it was maximized when it is), whether maximized, and the font
+/// size Ctrl = and Ctrl - had made it; opened so again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowState {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    pub maximized: bool,
+    pub font_size: f32,
+}
+
+pub fn load_window() -> Option<WindowState> {
+    let text = std::fs::read_to_string(state_dir().join("window")).ok()?;
+    let mut w = text.split_whitespace();
+    let mut next = || w.next();
+    let (x, y, width, height) = (next()?.parse().ok()?, next()?.parse().ok()?, next()?.parse().ok()?, next()?.parse().ok()?);
+    let maximized = next()? == "maximized";
+    let font_size = next()?.parse().ok()?;
+    (width > 0 && height > 0).then_some(WindowState { x, y, w: width, h: height, maximized, font_size })
+}
+
+pub fn save_window(s: &WindowState) {
+    let _ = std::fs::create_dir_all(state_dir());
+    let _ = std::fs::write(state_dir().join("window"), format!("{} {} {} {} {} {}\n", s.x, s.y, s.w, s.h, if s.maximized { "maximized" } else { "normal" }, s.font_size));
+}
