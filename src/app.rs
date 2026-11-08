@@ -101,6 +101,9 @@ pub struct Pane {
     /// When its size last changed: what it prints just after, a shell such
     /// as tcsh drawing its prompt again, is not news either.
     resized: Instant,
+    /// A size the pane has here that its program has not been told yet:
+    /// the window is being resized (see size_settle).
+    untold: Option<(u16, u16)>,
     /// The characters of each row as last drawn, to find links in.
     lines: Vec<Vec<char>>,
     /// What the shell's marks have told of its commands.
@@ -717,7 +720,7 @@ impl App {
         let caption = folder_name(&pty.cwd().unwrap_or(start.cwd));
         self.panes.insert(
             id,
-            Pane { term, pty, cmd, content: Rect::default(), rect: Rect::default(), cols, rows, want: (cols, rows), full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), resized: Instant::now(), lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0 },
+            Pane { term, pty, cmd, content: Rect::default(), rect: Rect::default(), cols, rows, want: (cols, rows), full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), resized: Instant::now(), untold: None, lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0 },
         );
         // A tee and a queue the session kept going, shown again.
         if let (Some((tee, queue)), Some(p)) = (kept, self.panes.get_mut(&id)) {
@@ -1015,12 +1018,16 @@ impl App {
             // it at once. While the window is being resized the program is
             // told only once it holds a size (see size_settle); the pane
             // reflows here meanwhile.
+            // Back at the size it was told: nothing to tell.
+            p.untold = None;
             if (cols, rows) != p.want {
                 if telling {
                     crate::debuglog::log(format!("pane {id:x}: {}x{} -> {cols}x{rows}", p.want.0, p.want.1));
                     p.want = (cols, rows);
                     p.resized = Instant::now();
                     p.pty.resize(cols, rows, ((cols as i32 * cw) as u32, (rows as i32 * ch) as u32));
+                } else {
+                    p.untold = Some((cols, rows));
                 }
                 if (cols, rows) != (p.cols, p.rows) {
                     p.term.resize(cols, rows, cw as u32, ch as u32);
@@ -3066,11 +3073,20 @@ impl ApplicationHandler<()> for App {
         let soon = if due.is_empty() && !printing { Duration::from_secs(1) } else { Duration::from_millis(50) };
         event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + soon));
         // The window has kept its size: its programs told it, each drawing
-        // itself again once.
+        // itself again once. Only told: the panes are laid out and drawn
+        // at it already, and drawing them all again here was a whole frame
+        // for nothing.
         if let Some(at) = self.size_settle {
             if at <= Instant::now() {
                 self.size_settle = None;
-                self.relayout();
+                let (cw, ch) = (self.fonts.cell_w, self.fonts.cell_h);
+                for (id, p) in self.panes.iter_mut() {
+                    let Some((cols, rows)) = p.untold.take().filter(|s| *s != p.want) else { continue };
+                    crate::debuglog::log(format!("pane {id:x}: {}x{} -> {cols}x{rows}", p.want.0, p.want.1));
+                    p.want = (cols, rows);
+                    p.resized = Instant::now();
+                    p.pty.resize(cols, rows, ((cols as i32 * cw) as u32, (rows as i32 * ch) as u32));
+                }
             } else {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(at.min(Instant::now() + soon)));
             }
