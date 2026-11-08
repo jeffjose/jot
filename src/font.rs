@@ -112,12 +112,18 @@ pub struct Face {
     pub font: Font,
     bytes: Vec<u8>,
     index: u32,
+    /// Its name for swash's caches, the same for every glyph: without one
+    /// swash takes each glyph for a new font, and sets the font up again
+    /// (its tables read, its hinting program run) for every glyph drawn.
+    key: u64,
 }
 
 impl Face {
     fn new(bytes: Vec<u8>, index: u32) -> Option<Face> {
         let font = Font::from_bytes(bytes.as_slice(), FontSettings { collection_index: index, ..FontSettings::default() }).ok()?;
-        Some(Face { font, bytes, index })
+        static KEYS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let key = KEYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Some(Face { font, bytes, index, key })
     }
 
     /// A glyph by number, hinted, as coverage: where its box starts right
@@ -126,7 +132,7 @@ impl Face {
     fn raster(&self, ctx: &mut ScaleContext, id: u16, px: f32, lcd: Option<Lcd>) -> Raster {
         let wide = if lcd.is_some() { 3.0 } else { 1.0 };
         let image = swash::FontRef::from_index(&self.bytes, self.index as usize).and_then(|font| {
-            let mut scaler = ctx.builder(font).size(px).hint(true).build();
+            let mut scaler = ctx.builder_with_id(font, [self.key, self.index as u64]).size(px).hint(true).build();
             Render::new(&[Source::Outline]).format(Format::Alpha).transform(Some(swash::zeno::Transform::scale(wide, 1.0))).render(&mut scaler, id)
         });
         let Some(img) = image else {
