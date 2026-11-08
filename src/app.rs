@@ -3396,6 +3396,11 @@ impl App {
                 self.held.insert(id, h);
                 continue;
             };
+            // Its size here told again: a session reached again (restarted,
+            // or the connection back) knows none of this window's, and
+            // typed into here, it would keep another window's.
+            let (cw, ch) = (self.fonts.cell_w, self.fonts.cell_h);
+            p.pty.resize(p.want.0, p.want.1, ((p.want.0 as i32 * cw) as u32, (p.want.1 as i32 * ch) as u32));
             p.term = Terminal::new(p.cols, p.rows, self.config.scrollback, p.theme, reply_to(&p.pty.mux, h.pane, p.pty.speaks.clone()));
             p.shell = commands::Shell::default();
             p.shell.queue = h.queue.items.clone();
