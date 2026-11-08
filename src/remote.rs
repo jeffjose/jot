@@ -16,7 +16,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
-pub const COMMANDS: &[&str] = &["list", "open", "split", "run", "send", "focus", "notify"];
+pub const COMMANDS: &[&str] = &["list", "open", "split", "run", "send", "focus", "notify", "click"];
 
 pub fn socket_path() -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir());

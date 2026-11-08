@@ -781,3 +781,51 @@ pub fn panes_in_order(spec: &Spec) -> Vec<(Option<String>, u64)> {
         Spec::Across { v: kids, .. } | Spec::Down { h: kids, .. } => kids.iter().flat_map(panes_in_order).collect(),
     }
 }
+
+#[cfg(test)]
+mod sharing_tests {
+    use super::*;
+
+    fn pane(host: Option<&str>, id: u64) -> Spec {
+        Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(id), host: host.map(str::to_string) }
+    }
+
+    #[test]
+    fn a_shape_tells_machines_apart() {
+        let here = Spec::Across { v: vec![pane(None, 5), pane(None, 6)], sizes: vec![] };
+        let there = Spec::Across { v: vec![pane(None, 5), pane(Some("skyfall"), 6)], sizes: vec![] };
+        assert_ne!(shape(&here), shape(&there), "terminal 6 here and on skyfall are two terminals");
+    }
+
+    #[test]
+    fn a_shape_is_not_its_sizes() {
+        let a = Spec::Down { h: vec![pane(None, 1), pane(None, 2)], sizes: vec![0.5, 0.5] };
+        let b = Spec::Down { h: vec![pane(None, 1), pane(None, 2)], sizes: vec![0.8, 0.2] };
+        assert_eq!(shape(&a), shape(&b));
+    }
+
+    #[test]
+    fn what_a_session_shares() {
+        let ws = |id: Option<u64>, home: Option<&str>, layout: Option<Spec>| WorkspaceSpec { id, home: home.map(str::to_string), layout, ..Default::default() };
+        assert!(ws(Some(1), None, Some(pane(None, 1))).shareable());
+        assert!(ws(Some(1), None, Some(pane(Some("skyfall"), 1))).shareable(), "mixing machines, or all another's");
+        assert!(!ws(None, None, Some(pane(None, 1))).shareable(), "a jot before sharing: no id");
+        assert!(!ws(Some(1), Some("skyfall"), Some(pane(None, 1))).shareable(), "another machine is its home");
+        assert!(!ws(Some(1), None, None).shareable(), "nothing in it");
+    }
+
+    #[test]
+    fn its_terminals_with_their_machines() {
+        let l = Spec::Across { v: vec![pane(None, 1), Spec::Down { h: vec![pane(Some("sky"), 2), pane(None, 3)], sizes: vec![] }], sizes: vec![] };
+        assert_eq!(panes_in_order(&l), vec![(None, 1), (Some("sky".into()), 2), (None, 3)]);
+    }
+
+    #[test]
+    fn an_older_jot_reads_a_shared_workspace() {
+        // The fields sharing added are skipped by a jot that does not know
+        // them, and default when missing.
+        let old = "name = \"w\"\n[layout]\ncmd = \"\"\nid = 3\n";
+        let w: WorkspaceSpec = toml::from_str(old).unwrap();
+        assert_eq!((w.id, w.rev, w.home), (None, None, None));
+    }
+}

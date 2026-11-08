@@ -224,6 +224,24 @@ impl App {
                 }
                 None => "jot: no pane by that name\n".into(),
             },
+            // `jot click M:T`: what a click on terminal T of machine M's row in
+            // the sidebar does (taken into the pane you are in, or gone to),
+            // for tests to do it as a hand does, where it is drawn aside.
+            Some("click") => {
+                let at = args.get(1).and_then(|a| a.split_once(':')).and_then(|(m, t)| Some((m.parse::<usize>().ok()?, t.parse::<u64>().ok()?)));
+                match at {
+                    Some((k, sid)) => {
+                        let shown = self.views(crate::mux::app_id(k, sid)).into_iter().find(|v| self.ws().root.contains(*v)).or_else(|| self.views(crate::mux::app_id(k, sid)).first().copied());
+                        let hit = match shown {
+                            Some(id) => sidebar::SideHit::Pane(id),
+                            None => sidebar::SideHit::Free(k, sid),
+                        };
+                        self.side_row_click(hit);
+                        String::new()
+                    }
+                    None => "jot: click needs a terminal, as machine:number (jot list -v)\n".into(),
+                }
+            }
             Some("notify") => {
                 self.toast("jot", &args[1..].join(" "), None, None);
                 String::new()

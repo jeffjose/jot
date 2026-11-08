@@ -1,0 +1,391 @@
+//! A session (`jot serve`) and windows sharing its workspaces, the windows
+//! played here: each a connection speaking the session's protocol, as a
+//! window does, saying its workspaces and hearing what the session says
+//! back. Each test has a session of its own, in a folder of its own.
+
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
+use std::time::{Duration, Instant};
+
+const PROTO: u32 = 7;
+const CAN_SHARE: u32 = 1;
+
+// What a window says (ToServer) and hears (ToClient), by their tags.
+const HELLO: u8 = 0;
+const SPAWN: u8 = 1;
+const LAYOUT: u8 = 5;
+const WELCOME: u8 = 0;
+const SPAWNED: u8 = 2;
+const WORKSPACES: u8 = 15;
+
+/// A session of its own: `jot serve`, its socket and state in a folder
+/// that goes with it.
+struct Session {
+    dir: PathBuf,
+    serve: Child,
+}
+
+impl Session {
+    fn start() -> Session {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Short: a socket's path has room for little more than 100 bytes.
+        let dir = std::env::temp_dir().join(format!("jot-t{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("state")).unwrap();
+        let serve = Command::new(env!("CARGO_BIN_EXE_jot")).arg("serve").arg(dir.join("jot-sock")).envs(env(&dir)).spawn().expect("jot serve");
+        let s = Session { dir, serve };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while UnixStream::connect(s.socket()).is_err() {
+            assert!(Instant::now() < deadline, "the session did not start");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        s
+    }
+
+    fn socket(&self) -> PathBuf {
+        self.dir.join("jot-sock")
+    }
+
+    /// A window, `name` for as long as it is open, sharing workspaces or
+    /// not (an older jot's).
+    fn window(&self, name: u64, sharing: bool) -> Window {
+        Window::hello(&self.socket(), name, false, if sharing { CAN_SHARE } else { 0 })
+    }
+
+    /// The `jot` command (status, restart) run at this session.
+    fn jot(&self, args: &[&str]) -> String {
+        let out = Command::new(env!("CARGO_BIN_EXE_jot")).args(args).envs(env(&self.dir)).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = self.serve.kill();
+        let _ = self.serve.wait();
+        // `jot restart` swaps the server in the same process; one that ended
+        // up elsewhere ends with its last pane, which ends with its shell.
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// What a session and the jot commands run at it are given: the session's
+/// socket in `dir` (XDG_RUNTIME_DIR/jot-UID/session.sock, for the commands),
+/// its state in `dir`, a plain shell for its panes.
+fn env(dir: &Path) -> Vec<(&'static str, PathBuf)> {
+    let uid = unsafe { libc_getuid() };
+    let run = dir.join("run");
+    let _ = std::fs::create_dir_all(run.join(format!("jot-{uid}")));
+    // The commands find the session by XDG_RUNTIME_DIR: the socket put
+    // where they look.
+    let link = run.join(format!("jot-{uid}")).join("session.sock");
+    if !link.exists() {
+        let _ = std::os::unix::fs::symlink(dir.join("jot-sock"), &link);
+    }
+    vec![("XDG_RUNTIME_DIR", run), ("XDG_STATE_HOME", dir.join("state")), ("SHELL", PathBuf::from("/bin/sh"))]
+}
+
+extern "C" {
+    #[link_name = "getuid"]
+    fn libc_getuid() -> u32;
+}
+
+/// A window, played: a connection that has said hello.
+struct Window {
+    s: UnixStream,
+    /// What it said hello with, to say it again on reaching the session again.
+    name: u64,
+    /// What the session said when it came: the layout it gave, and the
+    /// terminals it gave with it.
+    layout: String,
+    given: Vec<u64>,
+}
+
+impl Window {
+    fn hello(socket: &Path, name: u64, again: bool, caps: u32) -> Window {
+        let mut s = UnixStream::connect(socket).unwrap();
+        let mut o = vec![HELLO];
+        o.extend(PROTO.to_le_bytes());
+        o.extend(name.to_le_bytes());
+        o.push(again as u8);
+        o.extend(0u32.to_le_bytes());
+        put_str(&mut o, "jot test · test");
+        o.extend(caps.to_le_bytes());
+        send(&mut s, &o);
+        let mut w = Window { s, name, layout: String::new(), given: Vec::new() };
+        let f = w.expect(WELCOME, Duration::from_secs(5)).expect("welcome");
+        let mut i = In(&f[1..]);
+        w.layout = i.str();
+        w.given = held(&mut i);
+        w
+    }
+
+    /// A terminal started in the session: its name there.
+    fn spawn(&mut self) -> u64 {
+        let mut o = vec![SPAWN];
+        put_str(&mut o, "");
+        put_str(&mut o, "/tmp");
+        o.extend(80u16.to_le_bytes());
+        o.extend(24u16.to_le_bytes());
+        o.extend(0u32.to_le_bytes());
+        o.extend(0u32.to_le_bytes());
+        send(&mut self.s, &o);
+        let f = self.expect(SPAWNED, Duration::from_secs(5)).expect("spawned");
+        In(&f[1..]).u64()
+    }
+
+    /// Its workspaces, said: `workspaces` as a session file has them.
+    fn says(&mut self, workspaces: &str) {
+        let mut o = vec![LAYOUT];
+        put_str(&mut o, &format!("current = 0\n{workspaces}"));
+        send(&mut self.s, &o);
+    }
+
+    /// The shared workspaces the session tells it next (each as written),
+    /// and the terminals given with them; None if it says none in `wait`.
+    fn hears_workspaces(&mut self, wait: Duration) -> Option<(Vec<String>, Vec<u64>)> {
+        let f = self.expect(WORKSPACES, wait)?;
+        let mut i = In(&f[1..]);
+        let n = i.u32();
+        let specs = (0..n).map(|_| i.str()).collect();
+        Some((specs, held(&mut i)))
+    }
+
+    /// The last list it is told in `wait`: what it shows once the session
+    /// is done telling.
+    fn settles(&mut self, wait: Duration) -> Option<Vec<String>> {
+        let mut last = None;
+        while let Some((specs, _)) = self.hears_workspaces(wait) {
+            last = Some(specs);
+        }
+        last
+    }
+
+    /// Frames read until one with `tag`, others passed by; None in `wait`.
+    fn expect(&mut self, tag: u8, wait: Duration) -> Option<Vec<u8>> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let left = deadline.checked_duration_since(Instant::now())?;
+            self.s.set_read_timeout(Some(left.max(Duration::from_millis(1)))).unwrap();
+            let mut len = [0u8; 4];
+            if self.s.read_exact(&mut len).is_err() {
+                return None;
+            }
+            let mut f = vec![0u8; u32::from_le_bytes(len) as usize];
+            self.s.set_read_timeout(None).unwrap();
+            self.s.read_exact(&mut f).unwrap();
+            if f.first() == Some(&tag) {
+                return Some(f);
+            }
+        }
+    }
+}
+
+fn send(s: &mut UnixStream, body: &[u8]) {
+    let mut f = (body.len() as u32).to_le_bytes().to_vec();
+    f.extend_from_slice(body);
+    s.write_all(&f).unwrap();
+}
+
+fn put_str(o: &mut Vec<u8>, v: &str) {
+    o.extend((v.len() as u32).to_le_bytes());
+    o.extend(v.as_bytes());
+}
+
+struct In<'a>(&'a [u8]);
+
+impl In<'_> {
+    fn take(&mut self, n: usize) -> &[u8] {
+        let (a, b) = self.0.split_at(n);
+        self.0 = b;
+        a
+    }
+    fn u8(&mut self) -> u8 {
+        self.take(1)[0]
+    }
+    fn u32(&mut self) -> u32 {
+        u32::from_le_bytes(self.take(4).try_into().unwrap())
+    }
+    fn u64(&mut self) -> u64 {
+        u64::from_le_bytes(self.take(8).try_into().unwrap())
+    }
+    fn bytes(&mut self) -> Vec<u8> {
+        let n = self.u32() as usize;
+        self.take(n).to_vec()
+    }
+    fn str(&mut self) -> String {
+        String::from_utf8_lossy(&self.bytes()).into_owned()
+    }
+}
+
+/// Terminals given (Held), by their names; what else comes with each, read
+/// past.
+fn held(i: &mut In) -> Vec<u64> {
+    let n = i.u32();
+    (0..n)
+        .map(|_| {
+            let pane = i.u64();
+            i.u32();
+            i.str();
+            i.bytes();
+            if i.u8() != 0 {
+                i.str();
+                i.u64();
+                i.u8();
+                i.u8();
+            }
+            let items = i.u32();
+            for _ in 0..items {
+                i.str();
+            }
+            i.u8();
+            let after = i.u32();
+            for _ in 0..after {
+                i.u64();
+                i.str();
+            }
+            i.u8();
+            pane
+        })
+        .collect()
+}
+
+/// A workspace as a session file has it, its layout given as TOML.
+fn ws(name: &str, id: u64, rev: u64, layout: &str) -> String {
+    format!("[[workspace]]\nname = \"{name}\"\nid = {id}\nrev = {rev}\n[workspace.layout]\n{layout}\n")
+}
+
+fn one(pane: u64) -> String {
+    format!("cmd = \"\"\nid = {pane}")
+}
+
+fn side_by_side(panes: &[(Option<&str>, u64)]) -> String {
+    let each: Vec<String> = panes.iter().map(|(host, id)| match host {
+        Some(h) => format!("{{ cmd = \"\", id = {id}, host = \"{h}\" }}"),
+        None => format!("{{ cmd = \"\", id = {id} }}"),
+    }).collect();
+    format!("v = [{}]", each.join(", "))
+}
+
+fn named(specs: &[String], name: &str) -> Option<String> {
+    specs.iter().find(|s| s.contains(&format!("name = \"{name}\""))).cloned()
+}
+
+const A_WHILE: Duration = Duration::from_millis(600);
+
+#[test]
+fn a_new_window_has_every_shared_workspace_and_its_terminals() {
+    let s = Session::start();
+    let mut a = s.window(1, true);
+    let t = a.spawn();
+    a.says(&ws("w1", 10, 0, &one(t)));
+    assert!(a.settles(A_WHILE).is_some_and(|l| named(&l, "w1").is_some()));
+    let b = s.window(2, true);
+    assert!(b.layout.contains("name = \"w1\""), "its layout: {}", b.layout);
+    assert!(b.given.contains(&t), "the terminal in it, given: {:?}", b.given);
+}
+
+#[test]
+fn a_workspace_made_in_one_window_comes_to_the_other() {
+    let s = Session::start();
+    let mut a = s.window(1, true);
+    let t1 = a.spawn();
+    a.says(&ws("w1", 10, 0, &one(t1)));
+    let mut b = s.window(2, true);
+    b.settles(A_WHILE);
+    let t2 = a.spawn();
+    a.says(&(ws("w1", 10, 1, &one(t1)) + &ws("w2", 20, 0, &one(t2))));
+    let (specs, given) = b.hears_workspaces(Duration::from_secs(2)).expect("told");
+    assert!(named(&specs, "w2").is_some(), "{specs:?}");
+    assert!(given.contains(&t2), "with its terminal: {given:?}");
+}
+
+#[test]
+fn a_split_in_one_window_comes_to_the_other() {
+    let s = Session::start();
+    let mut a = s.window(1, true);
+    let t1 = a.spawn();
+    a.says(&ws("w1", 10, 0, &one(t1)));
+    let mut b = s.window(2, true);
+    b.settles(A_WHILE);
+    let t2 = a.spawn();
+    a.says(&ws("w1", 10, 1, &side_by_side(&[(None, t1), (None, t2)])));
+    let specs = b.settles(A_WHILE).expect("told");
+    let w1 = named(&specs, "w1").unwrap();
+    assert!(w1.contains(&format!("id = {t2}")), "{w1}");
+}
+
+/// The bug: a remote terminal brought into a split made the workspace mix
+/// machines, and the session took it for closed: every window lost it.
+#[test]
+fn a_workspace_mixing_machines_stays_and_comes_to_the_other_window() {
+    let s = Session::start();
+    let mut a = s.window(1, true);
+    let t1 = a.spawn();
+    let t2 = a.spawn();
+    a.says(&ws("w1", 10, 0, &side_by_side(&[(None, t1), (None, t2)])));
+    let mut b = s.window(2, true);
+    b.settles(A_WHILE);
+    a.says(&ws("w1", 10, 1, &side_by_side(&[(None, t1), (Some("skyfall"), 7)])));
+    let specs = b.settles(A_WHILE).expect("told");
+    let w1 = named(&specs, "w1").expect("not closed");
+    assert!(w1.contains("host = \"skyfall\""), "{w1}");
+    assert!(a.settles(A_WHILE).is_some_and(|l| named(&l, "w1").is_some()), "nor for the window that made it");
+}
+
+#[test]
+fn closed_in_one_window_is_gone_from_the_other() {
+    let s = Session::start();
+    let mut a = s.window(1, true);
+    let t1 = a.spawn();
+    let t2 = a.spawn();
+    a.says(&(ws("w1", 10, 0, &one(t1)) + &ws("w2", 20, 0, &one(t2))));
+    let mut b = s.window(2, true);
+    b.settles(A_WHILE);
+    a.says(&ws("w1", 10, 1, &one(t1)));
+    let specs = b.settles(A_WHILE).expect("told");
+    assert!(named(&specs, "w2").is_none(), "{specs:?}");
+    assert!(named(&specs, "w1").is_some());
+}
+
+#[test]
+fn a_window_from_before_sharing_is_not_told() {
+    let s = Session::start();
+    let mut old = s.window(1, false);
+    let mut a = s.window(2, true);
+    let t = a.spawn();
+    a.says(&ws("w1", 10, 0, &one(t)));
+    assert!(a.settles(A_WHILE).is_some());
+    assert!(old.hears_workspaces(A_WHILE).is_none(), "it would not know the message");
+}
+
+#[test]
+fn shared_workspaces_go_over_jot_restart() {
+    let s = Session::start();
+    let mut a = s.window(1, true);
+    let t = a.spawn();
+    a.says(&ws("w1", 10, 0, &one(t)));
+    a.settles(A_WHILE);
+    let out = s.jot(&["restart"]);
+    assert!(out.contains("now"), "{out}");
+    // Reached again, as a window does after a restart.
+    let mut again = Window::hello(&s.socket(), a.name, true, CAN_SHARE);
+    let specs = again.settles(A_WHILE).expect("told again");
+    assert!(named(&specs, "w1").is_some(), "{specs:?}");
+}
+
+#[test]
+fn status_shows_the_session_s_shared_workspaces() {
+    let s = Session::start();
+    let mut a = s.window(1, true);
+    let t = a.spawn();
+    a.says(&ws("w1", 10, 0, &side_by_side(&[(None, t), (Some("skyfall"), 7)])));
+    a.settles(A_WHILE);
+    let out = s.jot(&["status", "-v"]);
+    assert!(out.contains("-- shared workspaces"), "{out}");
+    assert!(out.contains("w1"), "{out}");
+    assert!(out.contains("pskyfall:7"), "its layout, the remote terminal in it: {out}");
+}

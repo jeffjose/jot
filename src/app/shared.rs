@@ -60,19 +60,7 @@ impl App {
                     // before it done with. Another's: what was said before is
                     // past.
                     let shape = spec.shared_shape();
-                    let ours = match self.sent.get_mut(&id) {
-                        Some(said) => match said.iter().position(|s| *s == shape) {
-                            Some(i) => {
-                                said.drain(..=i);
-                                true
-                            }
-                            None => {
-                                said.clear();
-                                false
-                            }
-                        },
-                        None => false,
-                    };
+                    let ours = self.sent.get_mut(&id).is_some_and(|said| told_back(said, &shape));
                     let mine = self.ws_spec(wi, k).shared_shape();
                     crate::debuglog::log(format!("shared: {} rev {} -> {rev}: {}", spec.name, self.workspaces[wi].rev, if ours { "told back, this window's own" } else if mine == shape { "the same here" } else { "changed in another window, made again" }));
                     if !ours && mine != shape {
@@ -460,5 +448,66 @@ impl App {
             0 => Some(hostname()),
             _ => self.machines.get(m).and_then(|x| x.host.clone()),
         }
+    }
+}
+
+/// Whether `shape`, told back by the session, is one this window said (in
+/// `said`, oldest first): then it and those said before it are done with.
+/// Not one it said: another window's change, and what was said before is
+/// past (all of it done with).
+fn told_back(said: &mut Vec<String>, shape: &str) -> bool {
+    match said.iter().position(|s| s == shape) {
+        Some(i) => {
+            said.drain(..=i);
+            true
+        }
+        None => {
+            said.clear();
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::told_back;
+
+    fn said(shapes: &[&str]) -> Vec<String> {
+        shapes.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn its_own_change_told_back_is_not_another_s() {
+        let mut s = said(&["a(p1,p2)"]);
+        assert!(told_back(&mut s, "a(p1,p2)"));
+        assert!(s.is_empty());
+    }
+
+    /// Two splits in a row: the first told back while the window shows the
+    /// second, which it must not undo.
+    #[test]
+    fn an_earlier_change_told_back_after_a_later_one_is_its_own() {
+        let mut s = said(&["a(p1,p2)", "a(p1,p2,p3)"]);
+        assert!(told_back(&mut s, "a(p1,p2)"));
+        assert_eq!(s, said(&["a(p1,p2,p3)"]));
+        assert!(told_back(&mut s, "a(p1,p2,p3)"));
+    }
+
+    /// The bug a pane closed in another window made: the window had said
+    /// the one-pane shape before (as it took the workspace in), and took
+    /// the other's change back to it for its own.
+    #[test]
+    fn a_shape_said_long_ago_is_not_mistaken_for_its_own() {
+        let mut s = said(&["p2", "a(p2,p3)"]);
+        assert!(told_back(&mut s, "a(p2,p3)"));
+        // Another window closes p3: "p2" again, which this one said once.
+        assert!(!told_back(&mut s, "p2"));
+    }
+
+    #[test]
+    fn another_window_s_change_clears_what_was_said() {
+        let mut s = said(&["a(p1,p2)"]);
+        assert!(!told_back(&mut s, "d(p1,p2)"));
+        assert!(s.is_empty());
     }
 }

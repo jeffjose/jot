@@ -710,6 +710,13 @@ impl Server {
     /// machine restarts, each window as it was. The quake window's go with
     /// the first window's (it is placed by its settings).
     fn save(&self) {
+        if let Some(s) = self.saved() {
+            crate::persist::save_session(&s);
+        }
+    }
+
+    /// The session as saved (see save).
+    fn saved(&self) -> Option<crate::persist::Session> {
         use crate::persist::Session;
         // The shared workspaces once, from the session's list; each window's
         // layout less them, what it showed of them by its id.
@@ -752,7 +759,7 @@ impl Server {
         let open = self.layouts.iter().map(|(c, l)| (self.names.get(c).copied().unwrap_or(0), l));
         let all: Vec<(u64, Session)> = open.chain(self.left.iter().map(|(w, l)| (*w, l))).filter_map(|(w, l)| own(l).map(|s| (w, s))).collect();
         if all.is_empty() && self.shared.is_empty() {
-            return;
+            return None;
         }
         // Every window's together (all an older jot reads): the first's, the
         // others' workspaces and pop-outs after.
@@ -777,7 +784,7 @@ impl Server {
             }
             s.windows = std::iter::once(first).chain(groups.into_iter().map(|(_, s)| s)).collect();
         }
-        crate::persist::save_session(&s);
+        Some(s)
     }
 
     fn info(&self) -> ToClient {
@@ -1412,5 +1419,241 @@ impl Server {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The session's part in sharing workspaces among windows: what it
+    //! takes from a window's layout into the list it shares, and what it
+    //! saves. Windows here are connection numbers with nothing on the other
+    //! end: what the session would tell them goes nowhere.
+    use super::*;
+    use crate::persist::{Session, Spec, WorkspaceSpec};
+
+    fn server() -> Server {
+        Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new() }
+    }
+
+    /// A window that shares workspaces, connected as `c`.
+    fn window(s: &mut Server, c: u64) {
+        s.windows.push(c);
+        s.sharing.push(c);
+        s.names.insert(c, 100 + c);
+    }
+
+    fn pane(id: u64) -> Spec {
+        Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(id), host: None }
+    }
+
+    fn remote(host: &str, id: u64) -> Spec {
+        Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(id), host: Some(host.into()) }
+    }
+
+    fn across(kids: Vec<Spec>, sizes: Vec<f32>) -> Spec {
+        Spec::Across { v: kids, sizes }
+    }
+
+    fn ws(name: &str, id: u64, rev: u64, layout: Spec) -> WorkspaceSpec {
+        WorkspaceSpec { name: name.into(), id: Some(id), rev: Some(rev), layout: Some(layout), ..Default::default() }
+    }
+
+    /// Window `c` says its workspaces (its layout), as it does after a
+    /// change.
+    fn says(s: &mut Server, c: u64, workspaces: Vec<WorkspaceSpec>) {
+        let text = toml::to_string(&Session { workspaces, ..Default::default() }).unwrap();
+        s.take_shared(c, &text);
+        s.layouts.insert(c, text);
+    }
+
+    fn rev(s: &Server, id: u64) -> Option<u64> {
+        s.shared.iter().find(|w| w.id == Some(id)).and_then(|w| w.rev)
+    }
+
+    fn shape(s: &Server, id: u64) -> String {
+        s.shared.iter().find(|w| w.id == Some(id)).and_then(|w| w.layout.as_ref()).map(crate::persist::shape).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_window_s_new_workspace_is_shared() {
+        let mut s = server();
+        window(&mut s, 1);
+        says(&mut s, 1, vec![ws("w1", 10, 0, pane(1))]);
+        assert_eq!(s.shared.len(), 1);
+        assert_eq!(rev(&s, 10), Some(1));
+    }
+
+    #[test]
+    fn a_split_is_a_change() {
+        let mut s = server();
+        window(&mut s, 1);
+        says(&mut s, 1, vec![ws("w1", 10, 0, pane(1))]);
+        says(&mut s, 1, vec![ws("w1", 10, 1, across(vec![pane(1), pane(2)], vec![0.5, 0.5]))]);
+        assert_eq!(rev(&s, 10), Some(2));
+        assert_eq!(shape(&s, 10), "a(p1,p2)");
+    }
+
+    #[test]
+    fn sizes_and_folders_are_each_window_s_own() {
+        let mut s = server();
+        window(&mut s, 1);
+        says(&mut s, 1, vec![ws("w1", 10, 0, across(vec![pane(1), pane(2)], vec![0.5, 0.5]))]);
+        let mut moved = ws("w1", 10, 1, across(vec![pane(1), pane(2)], vec![0.7, 0.3]));
+        moved.cwd = Some("/tmp".into());
+        says(&mut s, 1, vec![moved]);
+        assert_eq!(rev(&s, 10), Some(1), "only sizes changed: no new rev");
+    }
+
+    #[test]
+    fn a_rename_or_color_is_a_change() {
+        let mut s = server();
+        window(&mut s, 1);
+        says(&mut s, 1, vec![ws("w1", 10, 0, pane(1))]);
+        says(&mut s, 1, vec![ws("renamed", 10, 1, pane(1))]);
+        assert_eq!(rev(&s, 10), Some(2));
+        let mut colored = ws("renamed", 10, 2, pane(1));
+        colored.accent = Some("teal".into());
+        says(&mut s, 1, vec![colored]);
+        assert_eq!(rev(&s, 10), Some(3));
+    }
+
+    #[test]
+    fn another_window_s_stale_change_is_not_taken() {
+        let mut s = server();
+        window(&mut s, 1);
+        window(&mut s, 2);
+        says(&mut s, 1, vec![ws("w1", 10, 0, pane(1))]);
+        says(&mut s, 2, vec![ws("w1", 10, 1, pane(1))]);
+        says(&mut s, 1, vec![ws("w1", 10, 1, across(vec![pane(1), pane(2)], vec![]))]);
+        // Window 2 had not seen the split yet: what it says is its echo.
+        says(&mut s, 2, vec![ws("w1", 10, 1, pane(1))]);
+        assert_eq!(shape(&s, 10), "a(p1,p2)");
+        assert_eq!(rev(&s, 10), Some(2));
+    }
+
+    #[test]
+    fn a_window_s_changes_one_after_another_are_all_taken() {
+        let mut s = server();
+        window(&mut s, 1);
+        says(&mut s, 1, vec![ws("w1", 10, 0, pane(1))]);
+        says(&mut s, 1, vec![ws("w1", 10, 1, across(vec![pane(1), pane(2)], vec![]))]);
+        // Split again before it heard back about the first: still rev 1.
+        says(&mut s, 1, vec![ws("w1", 10, 1, across(vec![pane(1), pane(2), pane(3)], vec![]))]);
+        assert_eq!(shape(&s, 10), "a(p1,p2,p3)");
+        assert_eq!(rev(&s, 10), Some(3));
+    }
+
+    #[test]
+    fn closed_in_one_window_is_closed_for_all() {
+        let mut s = server();
+        window(&mut s, 1);
+        says(&mut s, 1, vec![ws("w1", 10, 0, pane(1)), ws("w2", 20, 0, pane(2))]);
+        says(&mut s, 1, vec![ws("w1", 10, 1, pane(1))]);
+        assert!(rev(&s, 20).is_none());
+        assert_eq!(s.shared.len(), 1);
+    }
+
+    #[test]
+    fn a_closed_workspace_said_again_by_a_window_that_had_it_stays_closed() {
+        let mut s = server();
+        window(&mut s, 1);
+        window(&mut s, 2);
+        says(&mut s, 1, vec![ws("w1", 10, 0, pane(1)), ws("w2", 20, 0, pane(2))]);
+        says(&mut s, 2, vec![ws("w1", 10, 1, pane(1)), ws("w2", 20, 1, pane(2))]);
+        says(&mut s, 1, vec![ws("w1", 10, 1, pane(1))]);
+        // Window 2 says it once more before it hears w2 was closed.
+        says(&mut s, 2, vec![ws("w1", 10, 1, pane(1)), ws("w2", 20, 1, pane(2))]);
+        assert!(rev(&s, 20).is_none(), "its echo, not a new one");
+    }
+
+    #[test]
+    fn a_window_that_has_not_heard_of_a_new_workspace_does_not_close_it() {
+        let mut s = server();
+        window(&mut s, 1);
+        window(&mut s, 2);
+        says(&mut s, 2, vec![ws("w1", 10, 0, pane(1))]);
+        says(&mut s, 1, vec![ws("w1", 10, 1, pane(1)), ws("w2", 20, 0, pane(2))]);
+        // Window 2 says its workspaces before it hears of w2.
+        says(&mut s, 2, vec![ws("w1", 10, 1, pane(1))]);
+        assert_eq!(rev(&s, 20), Some(1));
+    }
+
+    #[test]
+    fn a_new_workspace_goes_after_the_one_before_it() {
+        let mut s = server();
+        window(&mut s, 1);
+        says(&mut s, 1, vec![ws("w1", 10, 0, pane(1)), ws("w3", 30, 0, pane(3))]);
+        says(&mut s, 1, vec![ws("w1", 10, 1, pane(1)), ws("w2", 20, 0, pane(2)), ws("w3", 30, 1, pane(3))]);
+        let order: Vec<u64> = s.shared.iter().filter_map(|w| w.id).collect();
+        assert_eq!(order, vec![10, 20, 30]);
+    }
+
+    /// The bug a remote terminal clicked into a local split made: the
+    /// workspace, mixing machines, was taken for closed.
+    #[test]
+    fn a_workspace_mixing_machines_is_shared_not_closed() {
+        let mut s = server();
+        window(&mut s, 1);
+        says(&mut s, 1, vec![ws("w1", 10, 0, across(vec![pane(1), pane(2)], vec![]))]);
+        says(&mut s, 1, vec![ws("w1", 10, 1, across(vec![pane(1), remote("skyfall", 2)], vec![]))]);
+        assert_eq!(rev(&s, 10), Some(2), "kept, and changed");
+        assert_eq!(shape(&s, 10), "a(p1,pskyfall:2)");
+    }
+
+    #[test]
+    fn a_workspace_only_of_another_machine_s_terminals_is_still_this_one_s() {
+        let mut s = server();
+        window(&mut s, 1);
+        says(&mut s, 1, vec![ws("w1", 10, 0, remote("skyfall", 7))]);
+        assert_eq!(rev(&s, 10), Some(1));
+    }
+
+    #[test]
+    fn a_workspace_another_machine_is_home_to_is_not_shared_here() {
+        let mut s = server();
+        window(&mut s, 1);
+        let mut theirs = ws("w1", 10, 0, remote("skyfall", 7));
+        theirs.home = Some("skyfall".into());
+        says(&mut s, 1, vec![theirs]);
+        assert!(s.shared.is_empty());
+    }
+
+    #[test]
+    fn a_window_that_does_not_share_changes_nothing() {
+        let mut s = server();
+        window(&mut s, 1);
+        s.windows.push(2);
+        says(&mut s, 1, vec![ws("w1", 10, 0, pane(1))]);
+        // What the handler does with a layout from a window that does not
+        // share: kept as its own, not taken in.
+        let text = toml::to_string(&Session { workspaces: vec![ws("old", 30, 0, pane(3))], ..Default::default() }).unwrap();
+        if s.sharing.contains(&2) {
+            s.take_shared(2, &text);
+        }
+        s.layouts.insert(2, text);
+        assert_eq!(s.shared.len(), 1);
+    }
+
+    #[test]
+    fn saved_once_with_each_window_showing_its_own() {
+        let mut s = server();
+        window(&mut s, 1);
+        window(&mut s, 2);
+        let both = |current: usize| {
+            let text = toml::to_string(&Session { current, workspaces: vec![ws("w1", 10, 1, pane(1)), ws("w2", 20, 1, pane(2))], window: Some(crate::persist::WindowState { x: 0, y: 0, w: 800, h: 600, maximized: false, font_size: 14.0 }), ..Default::default() }).unwrap();
+            text
+        };
+        says(&mut s, 1, vec![ws("w1", 10, 0, pane(1)), ws("w2", 20, 0, pane(2))]);
+        s.layouts.insert(1, both(0));
+        s.layouts.insert(2, both(1));
+        s.seen.insert(2, vec![10, 20]);
+        let saved = s.saved().expect("something to save");
+        let ids: Vec<u64> = saved.workspaces.iter().filter_map(|w| w.id).collect();
+        assert_eq!(ids, vec![10, 20], "each shared workspace once");
+        assert_eq!(saved.windows.len(), 2);
+        assert_eq!(saved.windows[0].workspaces.len(), 2, "the first window brings them back");
+        assert!(saved.windows[1].workspaces.is_empty(), "the others get them from the session");
+        let shows: Vec<Option<u64>> = saved.windows.iter().map(|w| w.current_id).collect();
+        assert!(shows.contains(&Some(10)) && shows.contains(&Some(20)), "each the one it showed: {shows:?}");
     }
 }
