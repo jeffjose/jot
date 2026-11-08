@@ -302,7 +302,13 @@ impl App {
         if at != self.side_lit || heading != self.side_heading {
             self.side_lit = at;
             self.side_heading = heading;
-            self.full = true;
+            // Only the sidebar drawn again; when it is tucked away its
+            // button floats over a pane, and the window is.
+            if self.sidebar_open {
+                self.side_dirty = true;
+            } else {
+                self.full = true;
+            }
             self.redraw();
         }
         if !inside {
