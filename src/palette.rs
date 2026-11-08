@@ -13,6 +13,8 @@ pub enum Action {
     /// Split, the new pane before: left, or up.
     SplitBefore(Dir),
     Close,
+    /// The pane closed and its program ended.
+    EndPane,
     /// The sidebar shown, or tucked away.
     Sidebar,
     /// A workspace on another machine: its session reached by ssh.
@@ -234,6 +236,7 @@ pub fn commands() -> Vec<Item> {
         c("Split up", "Alt Shift S", Action::SplitBefore(Dir::Down)),
         c("New pane", "Ctrl T", Action::NewPane),
         c("Close pane", "Ctrl W", Action::Close),
+        c("End pane (its program too)", "", Action::EndPane),
         c("Move pane to new window", "Alt Shift O", Action::PopOut),
         c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
         c("Focus pane / show all", "Alt Shift F", Action::Zoom),

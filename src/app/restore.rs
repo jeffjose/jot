@@ -59,6 +59,9 @@ impl App {
         self.workspaces.clear();
         self.roam = None;
         self.roam_shown = false;
+        for p in self.panes.values_mut() {
+            p.pty.end = true;
+        }
         self.panes.clear();
         self.session = Some(offer.session);
         self.start();

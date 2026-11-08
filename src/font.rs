@@ -81,6 +81,10 @@ pub struct Fonts {
     pub ui: UiFont,
     pub heading: UiFont,
     pub small: UiFont,
+    /// The sidebar's: names a little over the interface's size, details a
+    /// little under, as the panes' text reads.
+    pub side: UiFont,
+    pub side_small: UiFont,
     /// The terminal's font for jot's own use, where a command's output
     /// is shown outside a terminal.
     pub mono: UiFont,
@@ -257,6 +261,8 @@ impl Fonts {
             lcd: choice.lcd,
             heading: UiFont::new(&ui, ui_px * 1.3, choice.lcd),
             small: UiFont::new(&ui, ui_px * 0.88, choice.lcd),
+            side: UiFont::new(&ui, ui_px * 1.08, choice.lcd),
+            side_small: UiFont::new(&ui, ui_px * 0.96, choice.lcd),
             ui: UiFont::new(&ui, ui_px, choice.lcd),
             mono,
         }

@@ -370,8 +370,8 @@ pub mod icons {
     pub const PLUS: char = '\u{e301}';
     pub const MONITOR: char = '\u{e302}';
     pub const SERVER: char = '\u{e303}';
-    #[allow(dead_code)]
     pub const CHEVRON_RIGHT: char = '\u{e304}';
+    pub const SETTINGS: char = '\u{e305}';
 }
 
 /// An icon's mask at `size` pixels square: its letter drawn to fill the

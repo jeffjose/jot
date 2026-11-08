@@ -217,6 +217,9 @@ pub struct Pty {
     /// Whether it reads keys one at a time, as the session last said.
     pub raw: bool,
     pub proc: Proc,
+    /// Ended when it goes from the window (End, Quit and end all); else
+    /// only no longer shown here, its program running on.
+    pub end: bool,
 }
 
 impl Pty {
@@ -265,8 +268,13 @@ impl Pty {
 }
 
 impl Drop for Pty {
-    /// Its shell hung up on, unless the window is only going.
+    /// No longer shown here, its program running on; or, when asked to
+    /// end, its shell hung up on. Nothing, when the window is only going.
     fn drop(&mut self) {
-        self.mux.close(self.pane);
+        if self.end {
+            self.mux.close(self.pane);
+        } else {
+            self.mux.release(self.pane);
+        }
     }
 }

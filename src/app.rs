@@ -113,6 +113,9 @@ struct Closed {
     near: Option<(PaneId, Dir, bool)>,
     cmd: String,
     cwd: PathBuf,
+    /// Its machine and its name in that machine's session: it runs on
+    /// there, to be brought back as it is.
+    pane: Option<(usize, u64)>,
 }
 
 pub struct Workspace {
@@ -134,6 +137,8 @@ pub struct Workspace {
     minimized: Vec<PaneId>,
     /// Panes made into empty space: room only, no shell, no focus.
     spaces: Vec<PaneId>,
+    /// Its panes listed under it in the sidebar.
+    open: bool,
 }
 
 enum Drag {
@@ -298,13 +303,17 @@ pub struct App {
     /// The sidebar: shown or tucked away, its width when shown (points),
     /// what can be clicked in it, and what the pointer is on.
     /// Workspaces asked for (Take), to be opened when their panes come.
-    taking: Vec<(usize, WorkspaceSpec)>,
+    taking: Vec<(usize, WorkspaceSpec, bool)>,
     /// When the machines were last asked what they hold.
     listed_at: Instant,
     sidebar_open: bool,
     sidebar_width: f32,
     side_hits: Vec<(Rect, sidebar::SideHit)>,
     side_lit: Option<sidebar::SideHit>,
+    /// Its button, tucked away: where it is drawn in a caption.
+    side_toggle: Option<Rect>,
+    /// The machine heading under the pointer, its + shown.
+    side_heading: Option<usize>,
     /// Panes the session had when this window took it up, until the
     /// layout takes them up.
     held: HashMap<u64, crate::mux::Held>,
@@ -492,6 +501,8 @@ impl App {
             sidebar_width: persist::load_sidebar().1,
             side_hits: Vec::new(),
             side_lit: None,
+            side_toggle: None,
+            side_heading: None,
             mux: attached.client,
             held,
             replays: Vec::new(),
@@ -569,7 +580,7 @@ impl App {
             }
         };
         let id = crate::mux::app_id(m, pane);
-        let pty = Pty { pane, machine: m, pid, mux: client.clone(), raw: false, proc: Default::default() };
+        let pty = Pty { pane, machine: m, pid, mux: client.clone(), raw: false, proc: Default::default(), end: false };
         let term = Terminal::new(cols, rows, self.config.scrollback, self.theme, reply_to(&client, pane));
         let caption = folder_name(&pty.cwd().unwrap_or(start.cwd));
         self.panes.insert(
@@ -666,13 +677,12 @@ impl App {
             }
         }
         let focus = ids.iter().copied().find(|i| !spaces.contains(i)).unwrap_or(ids[0]);
-        // Named for its folder; on another machine, for the machine.
+        // Named as written, else two words picked at random.
         let name = match (spec.name.is_empty(), &spec.host) {
             (false, _) => spec.name.clone(),
-            (true, Some(h)) => h.clone(),
-            (true, None) => folder_name(&spec.folder()),
+            (true, _) => sidebar::random_name(),
         };
-        self.workspaces.push(Workspace { name, root, focus, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces });
+        self.workspaces.push(Workspace { name, root, focus, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces, open: true });
         self.run_hook(self.workspaces.len() - 1, true);
     }
 
@@ -899,7 +909,7 @@ impl App {
         let Some(id) = self.focused() else { return };
         if self.roam != Some(id) {
             if let (Some(ws), Some(p)) = (self.workspaces.iter().find(|w| w.root.contains(id)), self.panes.get(&id)) {
-                self.closed.push(Closed { workspace: ws.name.clone(), near: ws.root.place_of(id), cmd: p.cmd.clone(), cwd: p.pty.cwd().unwrap_or_else(pty::home) });
+                self.closed.push(Closed { workspace: ws.name.clone(), near: ws.root.place_of(id), cmd: p.cmd.clone(), cwd: p.pty.cwd().unwrap_or_else(pty::home), pane: (!p.pty.end).then_some((p.pty.machine, p.pty.pane)) });
                 if self.closed.len() > 20 {
                     self.closed.remove(0);
                 }
@@ -912,6 +922,13 @@ impl App {
     /// afresh in its folder, as Ctrl Shift T brings back a tab.
     fn reopen(&mut self) {
         let Some(c) = self.closed.pop() else { return };
+        // Still running where it was: brought back as it is, beside you.
+        if let Some((k, sid)) = c.pane.filter(|(k, _)| self.machines.get(*k).is_some_and(|m| m.client.connected())) {
+            let layout = persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(sid), host: None };
+            self.taking.push((k, WorkspaceSpec { layout: Some(layout), ..Default::default() }, true));
+            self.machines[k].client.take(vec![sid]);
+            return;
+        }
         self.target = self.focused().map_or(0, |f| self.machine_of(f));
         let id = self.spawn(Start { cmd: c.cmd, cwd: c.cwd, pane: None, host: None });
         let wi = self.workspaces.iter().position(|w| w.name == c.workspace);
@@ -929,7 +946,7 @@ impl App {
             }
             // Its workspace was closed with it: it comes back as one.
             None => {
-                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new() });
+                self.workspaces.push(Workspace { name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new(), open: true });
                 self.go_to(self.workspaces.len() - 1);
             }
         }
@@ -2317,8 +2334,13 @@ impl App {
             }
             right = r.x - self.px(2.0);
         }
-        // The number and title, in what room is left.
+        // The number and title, in what room is left; the sidebar's button
+        // first, tucked away, in the pane at the top left.
         let mut x = bar.x + pad;
+        let a = self.area();
+        if !self.sidebar_open && bar.x == a.x && bar.y == a.y && n > 0 {
+            x = self.draw_side_button(bar);
+        }
         if n > 0 {
             x = self.canvas.text(&mut self.fonts.ui, &format!("{n}"), x as f32, ty, num, bar) + self.px(8.0);
         }
@@ -2986,6 +3008,9 @@ impl App {
                 ws.focus = new;
             }
             // Its own shell, here, ended.
+            if let Some(p) = self.panes.get_mut(&at) {
+                p.pty.end = true;
+            }
             self.panes.remove(&at);
         }
         self.changed();
@@ -3043,7 +3068,9 @@ impl App {
         }
         let Ok(mut spec) = toml::from_str::<WorkspaceSpec>(&l.spec) else { return };
         spec.host = (k > 0).then(|| self.machines[k].host.clone()).flatten();
-        self.taking.push((k, spec));
+        // A pane on its own comes beside the one you are in; a workspace
+        // comes as it was.
+        self.taking.push((k, spec, !l.label.is_empty()));
         self.machines[k].client.take(l.panes);
     }
 
@@ -3053,12 +3080,23 @@ impl App {
         for h in held {
             self.held.insert(crate::mux::app_id(k, h.pane), h);
         }
-        let Some(i) = self.taking.iter().position(|(m, s)| *m == k && s.layout.as_ref().is_some_and(|l| first.is_some_and(|f| persist::ids_in_order(l).contains(&f)))) else { return };
-        let (_, spec) = self.taking.remove(i);
-        let before = self.workspaces.len();
-        self.add_workspace(&spec);
-        if self.workspaces.len() > before {
-            self.go_to(before);
+        let Some(i) = self.taking.iter().position(|(m, s, _)| *m == k && s.layout.as_ref().is_some_and(|l| first.is_some_and(|f| persist::ids_in_order(l).contains(&f)))) else { return };
+        let (_, spec, here) = self.taking.remove(i);
+        if here && !self.workspaces.is_empty() {
+            // Beside the pane you are in.
+            self.target = k;
+            let new = self.spawn(Start { cmd: String::new(), cwd: pty::home(), pane: first, host: None });
+            let ws = self.ws_mut();
+            let at = ws.focus;
+            ws.zoom = None;
+            ws.root.split(at, new, Dir::Across);
+            ws.focus = new;
+        } else {
+            let before = self.workspaces.len();
+            self.add_workspace(&spec);
+            if self.workspaces.len() > before {
+                self.go_to(before);
+            }
         }
         self.replay_held();
         self.listed_at = Instant::now() - Duration::from_secs(60);

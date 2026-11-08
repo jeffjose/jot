@@ -258,10 +258,19 @@ impl App {
             Action::Split(dir) => self.split(dir),
             Action::SplitBefore(dir) => self.split_side(dir, true),
             Action::Close => self.close_pane(event_loop),
+            Action::EndPane => {
+                if let Some(p) = self.focused().and_then(|f| self.panes.get_mut(&f)) {
+                    p.pty.end = true;
+                }
+                self.close_pane(event_loop);
+            }
             Action::QuitAll => {
                 // Every pane ended, not left in the session.
                 self.save_scrollback();
                 self.popouts.clear();
+                for p in self.panes.values_mut() {
+                    p.pty.end = true;
+                }
                 self.panes.clear();
                 event_loop.exit();
             }
@@ -514,6 +523,7 @@ impl App {
                 c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom),
                 c("Minimize", "", Action::Minimize),
                 c("Make empty space", "", Action::MakeSpace),
+                c("End pane", "", Action::EndPane),
                 c("Split left", "Alt Shift V", Action::SplitBefore(Dir::Across)),
                 c("Split up", "Alt Shift S", Action::SplitBefore(Dir::Down)),
                 c("New pane", "Ctrl T", Action::NewPane),

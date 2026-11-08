@@ -34,7 +34,7 @@ PICKS = {
     "PLAY": "play", "CLOSE": "close",
     "MINUS": "minus", "CHEVRON_DOWN": "alt-arrow-down", "ARROW_RIGHT": "arrow-right",
     "SIDEBAR": "panel-left", "PLUS": "add", "MONITOR": "monitor", "SERVER": "server-minimalistic",
-    "CHEVRON_RIGHT": "alt-arrow-right",
+    "CHEVRON_RIGHT": "alt-arrow-right", "SETTINGS": "settings",
 }
 
 LINE = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'
