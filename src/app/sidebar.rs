@@ -476,12 +476,13 @@ impl App {
             // A terminal no pane shows.
             Some(SideHit::Free(k, sid)) => {
                 self.open_items_menu(vec![
-                    c("Show in this pane", "click", Action::ShowTerminal(k, sid)),
-                    c("Show in a split beside", "Ctrl click", Action::SplitTerminal(k, sid)),
+                    c("Open", "", Action::ShowTerminal(k, sid)),
+                    c("Open to the side", "Ctrl click", Action::SplitTerminal(k, sid)),
+                    c("Open in new window", "", Action::OpenInNewWindow(k, sid)),
                     None,
                     c("Rename…", "", Action::RenameTerminal(k, sid)),
                     None,
-                    c("Kill terminal", "", Action::KillFree(k, sid)),
+                    c("Kill", "", Action::KillFree(k, sid)),
                 ]);
                 true
             }
@@ -496,15 +497,16 @@ impl App {
                 self.set_focus(id);
                 let (k, sid) = crate::mux::split_id(id);
                 self.open_items_menu(vec![
-                    c("Show in a split beside", "Ctrl click", Action::SplitTerminal(k, sid)),
+                    c("Open to the side", "Ctrl click", Action::SplitTerminal(k, sid)),
+                    c("Open in new window", "", Action::OpenInNewWindow(k, sid)),
                     None,
-                    c("Rename…", "/rename", Action::RenameTerminal(k, sid)),
+                    c("Rename…", "", Action::RenameTerminal(k, sid)),
                     c(self.state_label(&Action::Zoom).unwrap_or_default(), "Alt Shift F", Action::Zoom),
                     c("Minimize", "", Action::Minimize),
-                    c("Move to new window", "Alt Shift O", Action::PopOut),
+                    c("Pop out", "Alt Shift O", Action::PopOut),
                     None,
-                    c("Close pane (it runs on)", "Alt X", Action::Close),
-                    c("Kill terminal", "", Action::EndPane),
+                    c("Close", "Alt X", Action::Close),
+                    c("Kill", "", Action::EndPane),
                 ]);
                 true
             }
@@ -520,11 +522,11 @@ impl App {
                 }
                 if free > 0 {
                     items.push(None);
-                    items.push(c(&format!("Kill {free} terminal{} no pane shows", if free == 1 { "" } else { "s" }), "", Action::KillFreeOn(k)));
+                    items.push(c(if free == 1 { "Kill hidden terminal" } else { "Kill hidden terminals" }, "", Action::KillFreeOn(k)));
                 }
                 if k > 0 && added {
                     items.push(None);
-                    items.push(c("Remove from sidebar", "", Action::RemoveMachine(k)));
+                    items.push(c("Remove", "", Action::RemoveMachine(k)));
                 }
                 self.open_items_menu(items);
                 true

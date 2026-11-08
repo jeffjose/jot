@@ -606,7 +606,10 @@ impl Client {
         s.set_read_timeout(Some(Duration::from_secs(5)))?;
         // The quake window comes back for its own panes; any other window
         // takes up those no window has.
-        s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again: crate::quake_mode(), want: Vec::new() }.encode())?;
+        // One opened to show a terminal names it, and takes it up whatever
+        // other window shows it.
+        let want: Vec<u64> = crate::show_pane().into_iter().collect();
+        s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again: crate::quake_mode() || !want.is_empty(), want }.encode())?;
         let f = read_frame(&mut s)?;
         s.set_read_timeout(None)?;
         match ToClient::decode(&f) {
@@ -919,7 +922,8 @@ impl Client {
     /// starting it if it is not running.
     pub fn open_remote(host: &str, hear: impl Fn(Heard) + Send + Sync + 'static) -> io::Result<Attached> {
         let hear: Arc<dyn Fn(Heard) + Send + Sync> = Arc::new(hear);
-        let (w, r, child, layout, panes) = reach(host, false, Vec::new())?;
+        let want: Vec<u64> = crate::show_pane().into_iter().collect();
+        let (w, r, child, layout, panes) = reach(host, !want.is_empty(), want)?;
         let (tx, rx) = channel();
         let h = hear.clone();
         std::thread::Builder::new().name("mux".into()).spawn(move || listen(Box::new(r), tx, h))?;

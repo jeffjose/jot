@@ -28,6 +28,8 @@ pub enum Action {
     /// A terminal no pane here shows: in a split beside the pane you are
     /// in; or ended.
     SplitTerminal(usize, u64),
+    /// A terminal shown in a new jot window too, as a link opened in one.
+    OpenInNewWindow(usize, u64),
     KillFree(usize, u64),
     /// A terminal renamed, by machine and its name there.
     RenameTerminal(usize, u64),
@@ -270,9 +272,9 @@ pub fn commands() -> Vec<Item> {
         c("Show another terminal here", "Alt '", Action::PickTerminal),
         c("Next terminal in this pane", "Alt .", Action::NextTerminal),
         c("Previous terminal in this pane", "Alt ,", Action::PrevTerminal),
-        c("Move pane to new window", "Alt Shift O", Action::PopOut),
+        c("Pop out pane", "Alt Shift O", Action::PopOut),
         c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
-        c("Focus pane / show all", "Alt Shift F", Action::Zoom),
+        c("Maximize pane / restore", "Alt Shift F", Action::Zoom),
         c("Minimize pane", "", Action::Minimize),
         c("Equalize pane sizes", "Alt =", Action::Equalize),
         c("Close other panes", "", Action::Only),

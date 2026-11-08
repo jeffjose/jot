@@ -32,6 +32,13 @@ pub fn debug() -> bool {
 
 static RESTORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static RESTORING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SHOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Opened to show a terminal another window shows (--show, its name in the
+/// session): taken up, with no shell of its own.
+pub fn show_pane() -> Option<u64> {
+    Some(SHOW.load(std::sync::atomic::Ordering::Relaxed)).filter(|p| *p != 0)
+}
 
 /// Opened with a window of the last session to bring back (--restore):
 /// brought back at once, not offered.
@@ -164,6 +171,11 @@ fn main() {
             "--quake-window" => QUAKE.store(true, std::sync::atomic::Ordering::Relaxed),
             "--debug" => DEBUG.store(true, std::sync::atomic::Ordering::Relaxed),
             "--restored" => RESTORED.store(true, std::sync::atomic::Ordering::Relaxed),
+            "--show" => {
+                RESTORED.store(true, std::sync::atomic::Ordering::Relaxed);
+                let pane = args.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+                SHOW.store(pane, std::sync::atomic::Ordering::Relaxed);
+            }
             "--restore" => {
                 RESTORED.store(true, std::sync::atomic::Ordering::Relaxed);
                 restore_from = args.next().map(std::path::PathBuf::from);

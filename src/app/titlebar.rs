@@ -114,7 +114,8 @@ impl App {
         }
         if over {
             if let Some(w) = &self.window {
-                w.set_cursor(if lit.is_some() { CursorIcon::Pointer } else { CursorIcon::Default });
+                // The arrow over the window's own buttons too, as every desktop has it.
+                w.set_cursor(CursorIcon::Default);
             }
         }
         over

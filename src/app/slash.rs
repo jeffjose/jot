@@ -102,9 +102,9 @@ impl App {
             Command::new("split-down", "Split down", Does::Act(Action::Split(Dir::Down))),
             Command::new("min", "Minimize this pane to a row", Does::Act(Action::Minimize)),
             if self.ws().zoom.is_some() {
-                Command::new("unfocus", "Unfocus pane: show all", Does::Act(Action::Zoom))
+                Command::new("unfocus", "Restore: every pane shown", Does::Act(Action::Zoom))
             } else {
-                Command::new("focus", "Focus pane: this one alone", Does::Act(Action::Zoom))
+                Command::new("focus", "Maximize: this pane alone", Does::Act(Action::Zoom))
             },
             if self.ws().broadcast {
                 Command::new("multi", "Stop multi", Does::Act(Action::Broadcast))

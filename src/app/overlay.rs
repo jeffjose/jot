@@ -277,6 +277,7 @@ impl App {
                     self.take_terminal(k, sid, terminals::Place::Split(at, Dir::Across, false));
                 }
             }
+            Action::OpenInNewWindow(k, sid) => self.open_in_new_window(k, sid),
             Action::KillFree(k, sid) => self.kill_free(k, sid),
             Action::RenameTerminal(k, sid) => self.rename_terminal_prompt(k, sid),
             Action::NewTerminalOn(k) => self.new_terminal_on(k),
@@ -566,7 +567,7 @@ impl App {
                 c("Split up", "Alt Shift S", Action::SplitBefore(Dir::Down)),
                 c("New pane", "Ctrl T", Action::NewPane),
                 c("Reopen closed pane", "Ctrl Shift T", Action::Reopen),
-                c("Move to new window", "Alt Shift O", Action::PopOut),
+                c("Pop out", "Alt Shift O", Action::PopOut),
                 c("Command line", "Alt ;", Action::CommandLine),
                 c(self.state_label(&Action::Broadcast).unwrap_or_default(), "Alt Shift M", Action::Broadcast),
                 None,
@@ -839,8 +840,8 @@ impl App {
         Some(match action {
             Action::Broadcast if self.ws().broadcast => "Stop multi",
             Action::Broadcast => "Start multi",
-            Action::Zoom if self.ws().zoom.is_some() => "Unfocus pane",
-            Action::Zoom => "Focus pane",
+            Action::Zoom if self.ws().zoom.is_some() => "Restore",
+            Action::Zoom => "Maximize",
             Action::StatusLine if self.config.status_line => "Hide status line",
             Action::StatusLine => "Show status line",
             _ => return None,

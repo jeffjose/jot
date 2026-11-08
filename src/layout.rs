@@ -204,8 +204,6 @@ impl Node {
         false
     }
 
-    /// Moves the line at `gap` of the split at `path` so that the share
-    /// before it is `fraction` of the two it lies between.
     /// Swaps two panes' places.
     pub fn swap(&mut self, a: PaneId, b: PaneId) {
         match self {
@@ -216,6 +214,18 @@ impl Node {
         }
     }
 
+    /// Swaps what lies either side of the line at `gap` of the split at
+    /// `path` (a pane, or a split of its own, whole), the line where it was.
+    pub fn swap_at(&mut self, path: &[usize], gap: usize) {
+        match (self, path.split_first()) {
+            (Node::Split { children, .. }, Some((&i, rest))) => children[i].swap_at(rest, gap),
+            (Node::Split { children, .. }, None) if gap + 1 < children.len() => children.swap(gap, gap + 1),
+            _ => {}
+        }
+    }
+
+    /// Moves the line at `gap` of the split at `path` so that the share
+    /// before it is `fraction` of the two it lies between.
     pub fn drag(&mut self, path: &[usize], gap: usize, fraction: f32) {
         match (self, path.split_first()) {
             (Node::Split { children, .. }, Some((&i, rest))) => children[i].drag(rest, gap, fraction),

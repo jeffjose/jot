@@ -65,7 +65,9 @@ time, and the reader always knows what it means.
   time.
 - **Menus**: words only, keys dim at the right, `›` for a submenu, `✓` for
   what is in use, hairlines between groups. Right click gives one wherever
-  something can be acted on (a bar, a pin, a tag).
+  something can be acted on (a bar, a pin, a tag). Verbs as Chrome and
+  VS Code word them (Open, Open to the side, Open in new window, Rename…,
+  Close, Kill), never an explanation ("it runs on") in the menu.
 - **Buttons**: one filled (accent) button a screen; the rest a quiet lift.
 - **Choices**: every option visible in one segmented switch, up to about
   five (a "recommended" mark on the option it means, not beside the label);

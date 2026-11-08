@@ -143,7 +143,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Ctrl T", "New pane to the right"),
     ("Ctrl W  Alt X", "Close pane"),
     ("Ctrl Shift T", "Reopen closed pane"),
-    ("Alt Shift F", "Focus pane / show all"),
+    ("Alt Shift F", "Maximize pane / restore"),
     ("Alt Arrows", "Resize pane"),
     ("Alt =", "Equalize pane sizes"),
     ("Alt 1–9", "Go to a workspace"),

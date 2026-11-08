@@ -54,16 +54,19 @@ impl App {
     /// a workspace no window shows.
     pub(super) fn free_terminals(&self) -> Vec<Free> {
         let mut out = Vec::new();
+        // A workspace another window shows is listed whole: those of its
+        // terminals a pane here shows too are not free.
+        let here: std::collections::HashSet<(usize, u64)> = self.panes.keys().map(|id| crate::mux::split_id(*id)).collect();
         for (k, m) in self.machines.iter().enumerate() {
             for l in &m.listing {
                 if !l.label.is_empty() {
-                    if let Some(&sid) = l.panes.first() {
+                    if let Some(&sid) = l.panes.first().filter(|s| !here.contains(&(k, **s))) {
                         out.push(Free { k, sid, label: term_name(&l.label, None), running: l.running, elsewhere: l.elsewhere });
                     }
                     continue;
                 }
                 let spec = toml::from_str::<WorkspaceSpec>(&l.spec).ok();
-                for &sid in &l.panes {
+                for &sid in l.panes.iter().filter(|s| !here.contains(&(k, **s))) {
                     let label = spec.as_ref().and_then(|s| s.layout.as_ref()).and_then(|lay| label_in(lay, sid)).unwrap_or_else(|| "shell".into());
                     out.push(Free { k, sid, label, running: false, elsewhere: l.elsewhere });
                 }
@@ -389,4 +392,24 @@ impl App {
 pub(super) fn pane_running(p: &Pane) -> Option<String> {
     let marked = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|r| r.2.trim().to_string()).filter(|s| !s.is_empty());
     marked.or_else(|| p.pty.busy().then(|| p.pty.foreground()).flatten())
+}
+
+impl App {
+    /// Terminal `sid` of machine `k` shown in a new jot window as well, as a
+    /// link opened in a new one: the window starts taking it up (--show),
+    /// on that machine's session (jot ssh, for another machine's).
+    pub(super) fn open_in_new_window(&mut self, k: usize, sid: u64) {
+        let Some(m) = self.machines.get(k) else { return };
+        let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("jot"));
+        let sid = sid.to_string();
+        let mut args: Vec<&std::ffi::OsStr> = Vec::new();
+        let host = m.client.host.clone();
+        if let Some(h) = &host {
+            args.push("ssh".as_ref());
+            args.push(h.as_ref());
+        }
+        args.push("--show".as_ref());
+        args.push(sid.as_ref());
+        super::open_detached(&exe, &args);
+    }
 }

@@ -296,6 +296,9 @@ pub struct App {
     /// Commands run now from a bar, as they end: pane, output, status.
     ran: Arc<std::sync::Mutex<Vec<(PaneId, String, i32)>>>,
     last_click: Option<(Instant, (u16, u16), u8)>,
+    /// The last press on a divider, for a second one on it to swap the two
+    /// sides: when, and which (its split's path and gap).
+    divider_click: Option<(Instant, Vec<usize>, usize)>,
     clipboard: Option<arboard::Clipboard>,
     /// Workspace tabs on the status line, for clicks.
     tabs: Vec<(Rect, usize)>,
@@ -479,6 +482,9 @@ impl App {
         // else as the last window was left; and the other windows that quit
         // with workspaces of their own opened again, each taking up the next.
         let start_window = if crate::quake_mode() { None } else { session.as_ref().and_then(|s| s.window).or_else(persist::load_window) };
+        // One opened to show a terminal, as Chrome opens a new window: a
+        // little down and to the right of the last, not on top of it.
+        let start_window = if crate::show_pane().is_some() { start_window.map(|s| persist::WindowState { x: s.x + 40, y: s.y + 40, maximized: false, ..s }) } else { start_window };
         let more = session.as_ref().map_or(0, |s| s.more);
         if more > 0 && taking_up && host.is_none() && !crate::quake_mode() && !crate::restored() {
             open_more_windows(more);
@@ -555,6 +561,7 @@ impl App {
             pin_lit: None,
             ran: Default::default(),
             last_click: None,
+            divider_click: None,
             clipboard: None,
             tabs: Vec::new(),
             palette: None,
@@ -1821,6 +1828,14 @@ impl App {
         // into gets the press (its program, its caption, its text).
         if button == MouseButton::Left && !self.roam_shown {
             if let Some(d) = self.divider_at(x, y).cloned() {
+                // Twice on the same line: what is either side of it swapped.
+                let again = self.divider_click.take().is_some_and(|(at, path, gap)| at.elapsed() < Duration::from_millis(400) && path == d.path && gap == d.gap);
+                if again {
+                    self.ws_mut().root.swap_at(&d.path, d.gap);
+                    self.changed();
+                    return;
+                }
+                self.divider_click = Some((Instant::now(), d.path.clone(), d.gap));
                 self.drag = Some(Drag::Divider(d));
                 return;
             }
