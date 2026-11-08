@@ -316,6 +316,11 @@ pub struct App {
     tabs: Vec<(Rect, usize)>,
     palette: Option<crate::palette::Palette>,
     menu: Option<overlay::Menu>,
+    /// The menu's lit row changed, nothing else: its rows drawn again,
+    /// not the window.
+    menu_relit: bool,
+    /// What the open submenu covers, kept to be put back when it goes.
+    pub(super) menu_under: Option<(Rect, Vec<u32>)>,
     settings: Option<settings::Settings>,
     find: Option<find::Find>,
     /// The link lit under the pointer, with Ctrl held.
@@ -637,6 +642,8 @@ impl App {
             tabs: Vec::new(),
             palette: None,
             menu: None,
+            menu_relit: false,
+            menu_under: None,
             settings: None,
             find: None,
             link: None,
@@ -2624,13 +2631,19 @@ impl App {
         }
         if full {
             self.draw_palette();
-            self.draw_menu();
+            self.draw_menu(true);
             self.draw_settings();
             self.draw_toasts();
             self.draw_offer();
             self.draw_slash();
             self.draw_bar_list();
             self.draw_tooltip();
+        } else if self.menu_relit {
+            self.draw_menu(false);
+        }
+        self.menu_relit = false;
+        if self.menu.is_none() {
+            self.menu_under = None;
         }
         let drawn = t0.elapsed();
         self.present();

@@ -644,10 +644,17 @@ impl App {
         Some((main, sub))
     }
 
-    fn draw_menu_box(&mut self, b: MenuBox, items: &[Option<Item>], hover: Option<usize>) {
+    fn draw_menu_box(&mut self, b: MenuBox, items: &[Option<Item>], hover: Option<usize>, whole: bool) {
         let c = self.cur_theme.chrome();
         let MenuBox { rect: r, pad, row_h, sep_h } = b;
-        self.canvas.panel(r, pad, c.panel, c.edge);
+        if whole {
+            self.canvas.panel(r, pad, c.panel, c.edge);
+        } else {
+            // Only its rows again (a row lit, another not): the inside
+            // filled afresh, its edge and shadow as they were, drawing
+            // them again would darken the shadow.
+            self.canvas.fill(Rect { x: r.x + pad / 2, y: r.y + pad / 2, w: r.w - pad, h: r.h - pad }, c.panel);
+        }
         let ui = &mut self.fonts.ui;
         for (i, top) in b.tops(items).into_iter().enumerate() {
             let Some(item) = &items[i] else {
@@ -668,17 +675,41 @@ impl App {
         }
     }
 
-    pub(super) fn draw_menu(&mut self) {
+    /// The menu, and its open submenu: drawn `whole` in a full frame, or
+    /// only their rows when the row lit is all that changed, which is all
+    /// that goes to the screen then (not the window under it, again).
+    pub(super) fn draw_menu(&mut self, whole: bool) {
         let Some((main, sub)) = self.menu_boxes() else { return };
         let Some(m) = self.menu.as_ref() else { return };
         let (items, open) = (m.items.clone(), m.open);
         // The row a submenu hangs from stays lit while it is open.
         let hover = open.map(|(row, _)| row).or(m.hover);
-        self.draw_menu_box(main, &items, hover);
-        if let Some((b, kids)) = sub {
-            self.draw_menu_box(b, &kids, open.and_then(|(_, h)| h));
+        // What was under the submenu put back (it may be gone, or another
+        // open), unless the frame is drawn whole anyway.
+        let under = self.menu_under.take();
+        if let (false, Some(u)) = (whole, &under) {
+            self.canvas.restore(u);
+            self.damage.push(u.0);
         }
-        self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
+        self.draw_menu_box(main, &items, hover, whole);
+        if !whole {
+            self.damage.push(main.rect);
+        }
+        // The submenu drawn whole, its shadow too, over what is kept to
+        // put back when it goes: opening or closing one is its own patch,
+        // not the window drawn again.
+        if let Some((b, kids)) = sub {
+            let s = (self.scale * 24.0).round().max(24.0) as i32;
+            let area = Rect { x: b.rect.x - s, y: b.rect.y - s, w: b.rect.w + 2 * s, h: b.rect.h + 2 * s };
+            self.menu_under = Some(self.canvas.save(area));
+            self.draw_menu_box(b, &kids, open.and_then(|(_, h)| h), true);
+            if !whole {
+                self.damage.push(area);
+            }
+        }
+        if whole {
+            self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
+        }
     }
 
     /// What is under the pointer in the menu: a row of the submenu, or
@@ -762,9 +793,11 @@ impl App {
                 _ => (None, m.open.map(|(p, _)| (p, None))),
             };
             if m.hover != hover || m.open != open {
+                // Only the menu drawn again: its rows, and a submenu come or
+                // gone as a patch of its own (see draw_menu).
+                self.menu_relit = true;
                 m.hover = hover;
                 m.open = open;
-                self.full = true;
                 self.redraw();
             }
             return true;

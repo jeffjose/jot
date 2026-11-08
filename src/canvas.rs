@@ -76,6 +76,29 @@ impl Canvas {
         }
     }
 
+    /// What `r` holds now, kept to be put back with `restore`.
+    pub fn save(&self, r: Rect) -> (Rect, Vec<u32>) {
+        let (x0, y0, x1, y1) = (r.x.max(0), r.y.max(0), (r.x + r.w).min(self.width), (r.y + r.h).min(self.height));
+        let r = Rect { x: x0, y: y0, w: (x1 - x0).max(0), h: (y1 - y0).max(0) };
+        let mut px = Vec::with_capacity((r.w * r.h) as usize);
+        for y in y0..y1 {
+            let row = (y * self.width) as usize;
+            px.extend_from_slice(&self.pixels[row + x0 as usize..row + x1 as usize]);
+        }
+        (r, px)
+    }
+
+    /// What `save` kept, put back where it was.
+    pub fn restore(&mut self, (r, px): &(Rect, Vec<u32>)) {
+        if r.x + r.w > self.width || r.y + r.h > self.height || px.len() != (r.w * r.h) as usize {
+            return;
+        }
+        for y in 0..r.h {
+            let row = ((r.y + y) * self.width + r.x) as usize;
+            self.pixels[row..row + r.w as usize].copy_from_slice(&px[(y * r.w) as usize..((y + 1) * r.w) as usize]);
+        }
+    }
+
     /// `r` filled but for the holes in it (which are filled by what is
     /// drawn there): at 4K the whole canvas is 33 MB written for nothing
     /// where panes paint their own.
