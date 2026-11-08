@@ -154,6 +154,12 @@ fn main() {
     let event_loop = EventLoop::<()>::with_user_event().build().expect("no display to open a window on");
     let mut app = app::App::new(event_loop.create_proxy(), config, if host.is_some() { None } else { session }, host);
     event_loop.run_app(&mut app).expect("event loop");
+    // The window closed, what it keeps saved: the process ends now, nothing
+    // torn down first. Freeing the GPU, the window and every pane's terminal
+    // took a beat or two, for nothing: the panes run on in the session,
+    // which takes the closed connection as the window gone.
+    crate::debuglog::log("quit: event loop done");
+    std::process::exit(0);
 }
 
 /// `jot setup`: jot in the desktop's list of programs, with its icon,

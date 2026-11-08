@@ -139,8 +139,11 @@ impl App {
             Some(TitleHit::Minimize) => w.set_minimized(true),
             Some(TitleHit::Maximize) => w.set_maximized(!w.is_maximized()),
             Some(TitleHit::Close) => {
+                let t = Instant::now();
+                crate::debuglog::log("quit: asked");
                 self.save_scrollback();
                 self.save();
+                crate::debuglog::log(format!("quit: saved in {:?}", t.elapsed()));
                 event_loop.exit();
             }
             None => {
