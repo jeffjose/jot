@@ -51,9 +51,21 @@ fn label_in(spec: &persist::Spec, id: u64) -> Option<String> {
 impl App {
     /// The terminals no pane here shows, machine by machine, as their
     /// sessions last said: each on its own, whether it was left alone or in
-    /// a workspace no window shows.
+    /// a workspace no window shows. Each once: a session lists workspaces
+    /// whole, and a terminal shown in two (in one window or in two) is in
+    /// both; shown elsewhere if either is, and named by what it runs now
+    /// sooner than by a saved layout.
     pub(super) fn free_terminals(&self) -> Vec<Free> {
-        let mut out = Vec::new();
+        let mut out: Vec<Free> = Vec::new();
+        let mut add = |f: Free, live: bool| match out.iter_mut().find(|o| (o.k, o.sid) == (f.k, f.sid)) {
+            Some(o) => {
+                o.elsewhere |= f.elsewhere;
+                if live {
+                    (o.label, o.running) = (f.label, f.running);
+                }
+            }
+            None => out.push(f),
+        };
         // A workspace another window shows is listed whole: those of its
         // terminals a pane here shows too are not free.
         let here: std::collections::HashSet<(usize, u64)> = self.panes.keys().map(|id| crate::mux::split_id(*id)).collect();
@@ -61,14 +73,14 @@ impl App {
             for l in &m.listing {
                 if !l.label.is_empty() {
                     if let Some(&sid) = l.panes.first().filter(|s| !here.contains(&(k, **s))) {
-                        out.push(Free { k, sid, label: term_name(&l.label, None), running: l.running, elsewhere: l.elsewhere });
+                        add(Free { k, sid, label: term_name(&l.label, None), running: l.running, elsewhere: l.elsewhere }, true);
                     }
                     continue;
                 }
                 let spec = toml::from_str::<WorkspaceSpec>(&l.spec).ok();
                 for &sid in l.panes.iter().filter(|s| !here.contains(&(k, **s))) {
                     let label = spec.as_ref().and_then(|s| s.layout.as_ref()).and_then(|lay| label_in(lay, sid)).unwrap_or_else(|| "shell".into());
-                    out.push(Free { k, sid, label, running: false, elsewhere: l.elsewhere });
+                    add(Free { k, sid, label, running: false, elsewhere: l.elsewhere }, false);
                 }
             }
         }
