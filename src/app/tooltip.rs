@@ -35,6 +35,9 @@ impl App {
         if let Some(r) = self.foot_button.filter(|r| r.contains(x, y)) {
             return Some((r, "Another machine's workspaces".to_string()));
         }
+        if let Some(r) = self.foot_plus.filter(|r| r.contains(x, y)) {
+            return Some((r, "New workspace  ·  Ctrl N".to_string()));
+        }
         if let Some((r, d)) = self.foot_dots.iter().find(|(r, _)| r.contains(x, y)) {
             return Some((*r, self.foot_dot_words(*d)));
         }

@@ -326,6 +326,20 @@ impl App {
             self.foot_dots.push((Rect { x, y: bar.y, w: step, h }, d));
             x += step;
         }
+        // After them a +: a new workspace, as Ctrl N (not on the quake
+        // window's bar, which has one).
+        self.foot_plus = None;
+        if !crate::quake_mode() && x + step <= right {
+            let box_ = Rect { x: x + 1, y: bar.y + self.px(3.0), w: step - 2, h: h - self.px(6.0) };
+            if hot == FootHot::Plus {
+                let lift = if self.cur_theme.dark { 0xFFFFFF } else { 0x000000 };
+                self.canvas.round_fill(box_, self.px(5.0), lift, 22);
+            }
+            let ih = self.px(10.0);
+            let at = Rect { x: x + (step - ih) / 2, y: bar.y + 1 + (h - 1 - ih) / 2, w: ih, h: ih };
+            self.canvas.icon_in(icons::PLUS, at, ih, if hot == FootHot::Plus { c.text } else { c.dim });
+            self.foot_plus = Some(Rect { x, y: bar.y, w: step, h });
+        }
         self.damage.push(bar);
     }
 
@@ -383,6 +397,11 @@ impl App {
             self.machine_menu();
             return true;
         }
+        // The + after the dots: a new workspace, as Ctrl N.
+        if self.foot_plus.is_some_and(|r| r.contains(x, y)) {
+            self.new_workspace();
+            return true;
+        }
         // Its name, double-clicked: renamed there.
         if self.foot_name.is_some_and(|r| r.contains(x, y)) && !self.workspaces.is_empty() {
             let id = self.ws().id;
@@ -405,6 +424,8 @@ impl App {
             FootHot::Machine
         } else if let Some(i) = self.foot_dots.iter().position(|(r, _)| r.contains(x, y)) {
             FootHot::Dot(i)
+        } else if self.foot_plus.is_some_and(|r| r.contains(x, y)) {
+            FootHot::Plus
         } else if self.foot_name.is_some_and(|r| r.contains(x, y)) {
             FootHot::Name
         } else {
@@ -416,7 +437,7 @@ impl App {
         }
         if on {
             if let Some(w) = &self.window {
-                w.set_cursor(if matches!(hot, FootHot::Machine | FootHot::Dot(_)) { CursorIcon::Pointer } else { CursorIcon::Default });
+                w.set_cursor(if matches!(hot, FootHot::Machine | FootHot::Dot(_) | FootHot::Plus) { CursorIcon::Pointer } else { CursorIcon::Default });
             }
         }
         on
@@ -466,4 +487,6 @@ pub(super) enum FootHot {
     Name,
     /// A workspace's dot, by its place.
     Dot(usize),
+    /// The + after them: a new workspace.
+    Plus,
 }

@@ -436,6 +436,8 @@ pub struct App {
     foot_button: Option<Rect>,
     /// The workspace's name on the bar, for a double click on it.
     foot_name: Option<Rect>,
+    /// The + after the bar's dots: a new workspace.
+    foot_plus: Option<Rect>,
     /// The pointer over it.
     foot_lit: foot::FootHot,
     /// The workspace you were in last on each machine, to go back to.
@@ -700,6 +702,7 @@ impl App {
             foot_dots: Vec::new(),
             foot_button: None,
             foot_name: None,
+            foot_plus: None,
             foot_lit: foot::FootHot::None,
             foot_last: HashMap::new(),
             dbg_at: Instant::now(),
