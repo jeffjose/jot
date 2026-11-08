@@ -375,6 +375,9 @@ pub mod icons {
     pub const SETTINGS: char = '\u{e305}';
     pub const LAYERS: char = '\u{e306}';
     pub const CHEVRON_UP: char = '\u{e308}';
+    /// The window's maximize and restore, in jot's own title bar.
+    pub const WIN_MAX: char = '\u{e309}';
+    pub const WIN_RESTORE: char = '\u{e30a}';
 }
 
 /// An icon's mask at `size` pixels square: its letter drawn to fill the

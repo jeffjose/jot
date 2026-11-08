@@ -36,6 +36,7 @@ PICKS = {
     "SIDEBAR": "panel-left", "PLUS": "add", "MONITOR": "monitor", "SERVER": "server-minimalistic",
     "CHEVRON_RIGHT": "alt-arrow-right", "SETTINGS": "settings",
     "LAYERS": "layers-minimalistic", "CHEVRON_UP": "alt-arrow-up",
+    "WIN_MAX": "stop", "WIN_RESTORE": "copy",
 }
 
 LINE = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'

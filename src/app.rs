@@ -34,6 +34,7 @@ mod commands;
 mod copymode;
 mod editor;
 mod edges;
+mod titlebar;
 mod info;
 mod dnd;
 mod find;
@@ -312,6 +313,8 @@ pub struct App {
     focused_window: bool,
     /// The long-command editors, each over its pane.
     editors: Vec<editor::Editor>,
+    /// jot's own title bar, in place of the desktop's.
+    title: titlebar::TitleBar,
     /// Where the right-click menu was opened.
     menu_at: (i32, i32),
     /// What was run from the palette lately, the latest first.
@@ -535,6 +538,7 @@ impl App {
             focused_popout: None,
             focused_window: true,
             editors: Vec::new(),
+            title: Default::default(),
             menu_at: (0, 0),
             recent: Vec::new(),
             closed: Vec::new(),
@@ -870,8 +874,8 @@ impl App {
         let side = self.sidebar_w().min(self.canvas.width / 2);
         // The quake window's bar along its open edge.
         let bar = self.quake_bar_h();
-        let top = if self.quake_bar_on_top() { bar } else { 0 };
-        Rect { x: side, y: top, w: self.canvas.width - side, h: self.canvas.height - self.bottom_h() - bar }
+        let top = (if self.quake_bar_on_top() { bar } else { 0 }) + self.title_h();
+        Rect { x: side, y: top, w: self.canvas.width - side, h: self.canvas.height - self.bottom_h() - bar - self.title_h() }
     }
 
     /// Lays out every workspace, so panes not shown are the right size
@@ -1678,6 +1682,9 @@ impl App {
             if self.edge_press() {
                 return;
             }
+            if self.title_press(event_loop) {
+                return;
+            }
             if self.sidebar_edge_at(x) {
                 self.drag = Some(Drag::Sidebar);
                 return;
@@ -1855,7 +1862,7 @@ impl App {
                 }
             }
             None => {
-                if self.quake_bar_hover(x, y) || self.mini_hover(x, y) || self.pin_hover(x, y) || self.editor_drag(x, y) || self.edge_hover(x, y) || self.editor_run_hover(x, y) || self.editor_hover(x, y) || self.bar_field_drag(x, y) || self.bar_field_hover(x, y) || self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
+                if self.quake_bar_hover(x, y) || self.mini_hover(x, y) || self.pin_hover(x, y) || self.editor_drag(x, y) || self.edge_hover(x, y) || self.title_hover(x, y) || self.editor_run_hover(x, y) || self.editor_hover(x, y) || self.bar_field_drag(x, y) || self.bar_field_hover(x, y) || self.bar_hover(x, y) || self.multi_hover(x, y) || self.handle_hover(x, y) {
                     return;
                 }
                 self.update_link();
@@ -2280,6 +2287,7 @@ impl App {
         if full {
             self.draw_sidebar();
         }
+        self.draw_titlebar(full);
         self.quake_bar_frame(full);
         if full {
             self.draw_minimized();
@@ -2888,7 +2896,7 @@ impl ApplicationHandler<()> for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = if crate::quake_mode() { quake::attributes() } else { window_attributes("jot", LogicalSize::new(1400.0, 900.0)) };
+        let attrs = if crate::quake_mode() { quake::attributes() } else { window_attributes("jot", LogicalSize::new(1400.0, 900.0)).with_decorations(self.config.title_bar.eq_ignore_ascii_case("system")) };
         let window = Rc::new(event_loop.create_window(attrs).expect("failed to create window"));
         let context = Context::new(window.clone()).expect("failed to connect to display");
         self.surface = Some(Surface::new(&context, window.clone()).expect("failed to create surface"));
@@ -2961,7 +2969,10 @@ impl ApplicationHandler<()> for App {
             }
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } => self.key(event, event_loop),
             WindowEvent::CursorMoved { position, .. } => self.mouse_move(position.x as i32, position.y as i32),
-            WindowEvent::CursorLeft { .. } => self.float_leave(),
+            WindowEvent::CursorLeft { .. } => {
+                self.title_leave();
+                self.float_leave();
+            }
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => self.mouse_press(button, event_loop),
             WindowEvent::MouseInput { state: ElementState::Released, .. } => self.mouse_release(),
             WindowEvent::MouseWheel { delta, .. } => {

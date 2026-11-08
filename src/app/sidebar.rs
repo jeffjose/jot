@@ -132,9 +132,11 @@ impl App {
         let c = self.cur_theme.chrome();
         let w = self.sidebar_w();
         let h = self.canvas.height - self.bottom_h() - if self.quake_bar_on_top() { 0 } else { self.quake_bar_h() };
-        let area = Rect { x: 0, y: 0, w, h };
+        // Under jot's title bar, when it has one.
+        let y0 = self.title_h();
+        let area = Rect { x: 0, y: y0, w, h: h - y0 };
         self.canvas.fill(area, c.side);
-        self.canvas.fill(Rect { x: w - 1, y: 0, w: 1, h }, c.edge);
+        self.canvas.fill(Rect { x: w - 1, y: y0, w: 1, h: h - y0 }, c.edge);
         let scale = self.scale;
         let px = |v: f32| (v * scale).round() as i32;
         let (nh, dh) = (self.fonts.side.height, self.fonts.side_small.height);
@@ -143,7 +145,7 @@ impl App {
         // The quiet steps: a row under the pointer, the workspace you are
         // in, and the pane you are in.
         let (hover, focus_fill) = (mix(c.side, c.text, 5), mix(c.side, c.text, 11));
-        let clip = Rect { x: 0, y: 0, w: w - 1, h };
+        let clip = Rect { x: 0, y: y0, w: w - 1, h: h - y0 };
         let pad = px(8.0);
         let inner_w = w - 2 * pad;
         let ih = px(14.0);
@@ -159,7 +161,7 @@ impl App {
             app.side_hits.push((r, hit));
         };
         // The top: the button, Machines, and + to add one.
-        let top = px(6.0);
+        let top = y0 + px(6.0);
         button(self, Rect { x: pad - px(2.0), y: top, w: b, h: b }, SideHit::Toggle, icons::SIDEBAR, true);
         self.canvas.text(&mut self.fonts.side_small, "Machines", (pad - px(2.0) + b + px(8.0)) as f32, top + (b - dh) / 2, c.faint, clip);
         button(self, Rect { x: w - pad - b, y: top, w: b, h: b }, SideHit::AddMachine, icons::PLUS, true);

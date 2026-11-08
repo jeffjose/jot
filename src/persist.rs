@@ -193,6 +193,10 @@ pub struct Config {
     /// of the pane you are in, and its machine.
     #[serde(default = "yes")]
     pub project_bar: bool,
+    /// The window's title bar: "jot" (jot's own, in its interface font) or
+    /// "system" (the desktop's).
+    #[serde(default = "default_title_bar")]
+    pub title_bar: String,
     /// The long-command editor's colors: "Terminal" (the theme's own) or
     /// one of the schemes Settings offers.
     #[serde(default = "default_editor_colors")]
@@ -334,6 +338,10 @@ pub fn default_subpixel() -> String {
     "auto".into()
 }
 
+pub fn default_title_bar() -> String {
+    "jot".into()
+}
+
 pub fn default_editor_colors() -> String {
     "Terminal".into()
 }
@@ -348,7 +356,7 @@ fn default_projects() -> Vec<String> {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), restore: default_restore(), status_line: false, project_bar: true, editor_colors: default_editor_colors(), captions: true, quake_height: default_quake_height(), quake_width: default_quake_width(), quake_position: default_quake_position(), quake_align: default_quake_align(), quake_monitor: default_quake_monitor(), quake_all_workspaces: true, quake_hide_on_blur: false, ligatures: true, command_bars: false, bold_text: true, subpixel: default_subpixel(), workspace_colors: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), slash: Default::default(), workspaces: Vec::new() }
+        Config { font_size: default_font_size(), scrollback: default_scrollback(), triggers: Vec::new(), renderer: default_renderer(), restore: default_restore(), status_line: false, project_bar: true, title_bar: default_title_bar(), editor_colors: default_editor_colors(), captions: true, quake_height: default_quake_height(), quake_width: default_quake_width(), quake_position: default_quake_position(), quake_align: default_quake_align(), quake_monitor: default_quake_monitor(), quake_all_workspaces: true, quake_hide_on_blur: false, ligatures: true, command_bars: false, bold_text: true, subpixel: default_subpixel(), workspace_colors: true, theme: default_theme(), accent: default_accent(), font_family: default_font_family(), ui_font_family: default_ui_font_family(), ui_font_size: default_ui_font_size(), line_height: default_line_height(), min_contrast: default_min_contrast(), projects: default_projects(), slash: Default::default(), workspaces: Vec::new() }
     }
 }
 
