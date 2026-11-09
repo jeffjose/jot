@@ -93,6 +93,10 @@ pub enum ToServer {
     /// opened again as the jot at `exe`, each as it was. Said by the jot
     /// command, not a window; the session tells the windows (ToClient::Reopen).
     Reopen { exe: String },
+    /// A terminal named, by a window on another machine (CAN_PROJECT): kept
+    /// as this machine's windows keep the names given in them, and told to
+    /// every window. Empty: its name taken back.
+    Name { pane: u64, name: String },
 }
 
 /// A pane the session has, as it says on attaching.
@@ -160,6 +164,10 @@ pub enum ToClient {
     /// workspaces, terminals and place kept): `jot restart --all`, told to
     /// a window that can (CAN_REOPEN).
     Reopen { exe: String },
+    /// Each terminal's project and name as this machine has them (a
+    /// Told, encoded; see app/projects.rs), to a window that shows them
+    /// (CAN_PROJECT): every one at first, then those that changed.
+    Projects { list: Vec<(u64, String)> },
 }
 
 // The wire: a frame is its length (u32), then a tag, then the fields.
@@ -317,6 +325,7 @@ impl ToServer {
             ToServer::Release { pane } => o.u8(13).u64(*pane),
             ToServer::Restart { exe } => o.u8(14).str(exe),
             ToServer::Reopen { exe } => o.u8(16).str(exe),
+            ToServer::Name { pane, name } => o.u8(17).u64(*pane).str(name),
             ToServer::Renumber { numbers } => {
                 o.u8(15).u32(numbers.len() as u32);
                 for (pane, n) in numbers {
@@ -359,6 +368,7 @@ impl ToServer {
             13 => ToServer::Release { pane: i.u64()? },
             14 => ToServer::Restart { exe: i.str()? },
             16 => ToServer::Reopen { exe: i.str()? },
+            17 => ToServer::Name { pane: i.u64()?, name: i.str()? },
             15 => {
                 let n = i.u32()?;
                 ToServer::Renumber { numbers: (0..n).map(|_| Ok((i.u64()?, i.u32()?))).collect::<io::Result<Vec<_>>>()? }
@@ -464,6 +474,12 @@ impl ToClient {
             ToClient::Reopen { exe } => {
                 o.u8(17).str(exe);
             }
+            ToClient::Projects { list } => {
+                o.u8(18).u32(list.len() as u32);
+                for (pane, t) in list {
+                    o.u64(*pane).str(t);
+                }
+            }
         }
         frame(o)
     }
@@ -525,6 +541,10 @@ impl ToClient {
                 ToClient::Numbers { numbers: (0..n).map(|_| Ok((i.u64()?, i.u32()?))).collect::<io::Result<Vec<_>>>()? }
             }
             17 => ToClient::Reopen { exe: i.str()? },
+            18 => {
+                let n = i.u32()?;
+                ToClient::Projects { list: (0..n).map(|_| Ok((i.u64()?, i.str()?))).collect::<io::Result<Vec<_>>>()? }
+            }
             t => return Err(bad(t)),
         })
     }
@@ -624,6 +644,8 @@ pub enum Heard {
     Numbers(Vec<(u64, u32)>),
     /// To close and open again as the jot at the path (see ToClient::Reopen).
     Reopen(String),
+    /// Its terminals' projects and names (see ToClient::Projects).
+    Projects(Vec<(u64, String)>),
     /// The size its program writes for now.
     Size(u64, u16, u16),
     /// The server is being swapped for a newer one: the connection about
@@ -780,6 +802,12 @@ impl Client {
     }
 
     /// Terminals numbered as the window says (see ToServer::Renumber).
+    /// A terminal of its session named (empty: its name taken back), there
+    /// (see ToServer::Name).
+    pub fn name(&self, pane: u64, name: &str) {
+        self.send(ToServer::Name { pane, name: name.to_string() });
+    }
+
     pub fn renumber(&self, numbers: Vec<(u64, u32)>) {
         self.send(ToServer::Renumber { numbers });
     }
@@ -843,6 +871,7 @@ fn listen(mut r: Box<dyn Read + Send>, spawned: Sender<(u64, i32)>, hear: Arc<dy
             Ok(ToClient::Size { pane, cols, rows }) => hear(Heard::Size(pane, cols, rows)),
             Ok(ToClient::Restarting) => hear(Heard::Restarting),
             Ok(ToClient::Reopen { exe }) => hear(Heard::Reopen(exe)),
+            Ok(ToClient::Projects { list }) => hear(Heard::Projects(list)),
             Ok(ToClient::Spawned { pane, pid }) => {
                 let _ = spawned.send((pane, pid));
             }
@@ -1389,13 +1418,18 @@ pub const CAN_NUMBER: u32 = 2;
 /// (ToClient::Reopen, `jot restart --all`).
 pub const CAN_REOPEN: u32 = 4;
 
+/// A window that shows another machine's terminals in that machine's
+/// projects, with the names given there (ToClient::Projects), and names one
+/// there (ToServer::Name).
+pub const CAN_PROJECT: u32 = 8;
+
 /// What this window can do, said in its hello: a regular window shares
 /// workspaces (the quake window has its own, and does not); every window
 /// takes its terminals' numbers from their sessions.
 fn caps() -> u32 {
     if crate::quake_mode() {
-        CAN_NUMBER
+        CAN_NUMBER | CAN_PROJECT
     } else {
-        CAN_SHARE | CAN_NUMBER | CAN_REOPEN
+        CAN_SHARE | CAN_NUMBER | CAN_REOPEN | CAN_PROJECT
     }
 }

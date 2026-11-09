@@ -45,6 +45,7 @@ mod foot;
 mod minimize;
 mod pin;
 mod projects;
+pub(crate) use projects::told_for;
 mod mouse;
 mod popout;
 mod restore;
@@ -2427,6 +2428,7 @@ impl App {
                 Output::Size(..) => "heard size",
                 Output::Restarting(..) => "heard restarting",
                 Output::Reopen(..) => "heard reopen",
+                Output::Projects(..) => "heard projects",
                 Output::Gone(..) => "heard gone",
             });
             match out {
@@ -2526,6 +2528,14 @@ impl App {
                 // `jot restart --all`: this window closed and opened again as
                 // the jot installed now, as it was.
                 Output::Reopen(exe) => self.reopen_as(&exe),
+                // Another machine's terminals in its projects, with their names
+                // there (each machine keeps its own).
+                Output::Projects(k, list) => {
+                    if projects::take_told(k, list) {
+                        self.full = true;
+                        self.side_dirty = true;
+                    }
+                }
                 Output::Gone(k) if self.machines.get(k).is_some_and(|m| m.restarting) => {
                     crate::debuglog::log(format!("machine {k}: its server is restarting, reaching it again"));
                     self.machines[k].restarting = false;
@@ -3986,6 +3996,7 @@ fn hearer(k: usize, tx: std::sync::mpsc::Sender<Output>, proxy: EventLoopProxy<(
             Heard::Size(p, cols, rows) => Output::Size(id(p), cols, rows),
             Heard::Restarting => Output::Restarting(k),
             Heard::Reopen(exe) => Output::Reopen(exe),
+            Heard::Projects(list) => Output::Projects(k, list),
             Heard::Gone => Output::Gone(k),
         };
         if let Ok(tx) = tx.lock() {

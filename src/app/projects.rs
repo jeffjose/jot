@@ -330,6 +330,10 @@ impl App {
     /// (on this machine); else the one its folder is in (found_project).
     pub(super) fn project_of(&self, id: PaneId) -> Option<Project> {
         let p = self.panes.get(&id)?;
+        // Another machine's: as its session told (its own projects).
+        if let Some(t) = remote_told(p, id) {
+            return t.project;
+        }
         if p.pty.machine == 0 {
             let (_, sid) = crate::mux::split_id(id);
             if let Some(set) = with_by_hand(|b| b.panes.get(&sid).cloned()) {
@@ -346,6 +350,9 @@ impl App {
     /// (~/src/jot there is jot, as ~/scripts/jot is here).
     pub(super) fn found_project(&self, id: PaneId) -> Option<Project> {
         let p = self.panes.get(&id)?;
+        if let Some(t) = remote_told(p, id) {
+            return t.project;
+        }
         let cwd = p.pty.cwd()?;
         if let Some(name) = project_by_folder(&cwd) {
             return Some(project_look(&name));
@@ -366,8 +373,15 @@ impl App {
             return t;
         }
         let project = self.project_of(id);
-        let plook = project.as_ref().map(|p| look_of(&p.name)).unwrap_or_default();
-        let own = self.panes.get(&id).filter(|p| p.pty.machine == 0).map(|_| pane_look(crate::mux::split_id(id).1)).unwrap_or_default();
+        let told = self.panes.get(&id).and_then(|p| remote_told(p, id));
+        let plook = match &told {
+            Some(t) => t.look.clone(),
+            None => project.as_ref().map(|p| look_of(&p.name)).unwrap_or_default(),
+        };
+        let own = match &told {
+            Some(t) => t.own.clone(),
+            None => self.panes.get(&id).filter(|p| p.pty.machine == 0).map(|_| pane_look(crate::mux::split_id(id).1)).unwrap_or_default(),
+        };
         let base = own.theme.or(plook.theme).map(|n| crate::theme::Theme::by_name(&n)).unwrap_or(ws);
         match (project, plook.tint) {
             (Some(p), Some(t)) if t > 0 => tinted(base, p.color, (t as u32 * 64 / 100).min(64)),
@@ -379,7 +393,10 @@ impl App {
     /// has one; and whether it differs from its project in anything.
     pub(super) fn badge_of(&self, id: PaneId) -> Option<(Project, bool)> {
         let mut p = self.project_of(id)?;
-        let own = self.panes.get(&id).filter(|p| p.pty.machine == 0).map(|_| pane_look(crate::mux::split_id(id).1)).unwrap_or_default();
+        let own = match self.panes.get(&id).and_then(|p| remote_told(p, id)) {
+            Some(t) => t.own,
+            None => self.panes.get(&id).filter(|p| p.pty.machine == 0).map(|_| pane_look(crate::mux::split_id(id).1)).unwrap_or_default(),
+        };
         p.icon = own.icon.unwrap_or(p.icon);
         p.color = own.color.unwrap_or(p.color);
         Some((p, !own.is_empty()))
@@ -731,6 +748,9 @@ pub fn remember(k: usize, sid: u64, project: Option<Project>) {
 
 /// A terminal's project as last noted, for its row while no pane shows it.
 pub fn remembered(k: usize, sid: u64) -> Option<Project> {
+    if let Some(t) = told(k, sid) {
+        return t.project;
+    }
     SEEN.with(|m| m.borrow().get(&(k, sid)).cloned().flatten())
 }
 
@@ -822,5 +842,142 @@ mod remote_tests {
         assert_eq!(named_on_path(Path::new("/home/me/src/jot/tools"), &names).as_deref(), Some("jot"));
         assert_eq!(named_on_path(Path::new("/srv/circadia"), &names).as_deref(), Some("circadia"));
         assert_eq!(named_on_path(Path::new("/tmp/elsewhere"), &names), None);
+    }
+}
+
+/// A terminal's project as its own machine has it (its git repository, its
+/// projects file), told by its session to the windows (ToClient::Projects):
+/// a window shows another machine's terminals in that machine's projects,
+/// with their marks, colors and themes, each machine keeping its own.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Told {
+    /// Its project, its mark and color as given there; None: in none.
+    pub project: Option<Project>,
+    /// What was set there for its project (its theme, tint), and for it.
+    pub look: Look,
+    pub own: Look,
+    /// The name it was given there (renamed in a window there).
+    pub name: Option<String>,
+}
+
+impl Told {
+    /// As said: tab-separated, a field empty where unset; "" for nothing.
+    pub fn encode(&self) -> String {
+        let hex = |v: Option<u32>| v.map_or(String::new(), |v| format!("{v:x}"));
+        let look = |l: &Look| format!("{}\t{}\t{}\t{}", hex(l.icon.map(|c| c as u32)), hex(l.color), l.theme.clone().unwrap_or_default(), l.tint.map_or(String::new(), |t| t.to_string()));
+        let (name, icon, color) = self.project.as_ref().map_or((String::new(), String::new(), String::new()), |p| (p.name.replace('\t', " "), hex(Some(p.icon as u32)), hex(Some(p.color))));
+        format!("{name}\t{icon}\t{color}\t{}\t{}\t{}", look(&self.look), look(&self.own), self.name.as_deref().unwrap_or("").replace(['\t', '\n'], " "))
+    }
+
+    pub fn decode(s: &str) -> Told {
+        let f: Vec<&str> = s.split('\t').collect();
+        let get = |i: usize| f.get(i).copied().unwrap_or("");
+        let hex = |i: usize| u32::from_str_radix(get(i), 16).ok();
+        let look = |i: usize| Look {
+            icon: hex(i).and_then(char::from_u32),
+            color: hex(i + 1),
+            theme: Some(get(i + 2).to_string()).filter(|t| !t.is_empty()),
+            tint: get(i + 3).parse().ok(),
+        };
+        let project = Some(get(0)).filter(|n| !n.is_empty()).map(|n| {
+            let mut p = project_named(n);
+            p.icon = hex(1).and_then(char::from_u32).unwrap_or(p.icon);
+            p.color = hex(2).unwrap_or(p.color);
+            p
+        });
+        Told { project, look: look(3), own: look(7), name: Some(get(11).to_string()).filter(|n| !n.is_empty()) }
+    }
+}
+
+thread_local! {
+    /// When the projects file was read, as its time of change: read again
+    /// once it changes (Settings › Projects in a window here).
+    static READ_AT: RefCell<Option<std::time::SystemTime>> = const { RefCell::new(None) };
+}
+
+/// Terminal `sid`'s project, in `cwd`, as this machine has it: for its
+/// session to tell. Set by hand here, else the project whose folders hold
+/// it, else the git repository it is in.
+pub fn told_for(sid: u64, cwd: &Path, given: Option<&str>) -> Told {
+    let changed = std::fs::metadata(by_hand_path()).and_then(|m| m.modified()).ok();
+    if READ_AT.with(|r| r.replace(changed)) != changed {
+        BY_HAND.with(|b| *b.borrow_mut() = None);
+    }
+    let name = match with_by_hand(|b| b.panes.get(&sid).cloned()) {
+        Some(set) => set,
+        None => project_by_folder(cwd).or_else(|| repo_root(cwd).and_then(|r| Some(r.file_name()?.to_string_lossy().into_owned()))),
+    };
+    let own = pane_look(sid);
+    let given = given.map(str::to_string);
+    match name {
+        Some(n) => Told { project: Some(project_look(&n)), look: look_of(&n), own, name: given },
+        None => Told { own, name: given, ..Default::default() },
+    }
+}
+
+thread_local! {
+    /// What each machine's session told of its terminals (see Told), by
+    /// machine and the terminal's id there.
+    static TOLD: RefCell<HashMap<(usize, u64), Told>> = RefCell::new(HashMap::new());
+}
+
+/// Machine `k`'s session told these of its terminals: whether anything
+/// shown changed.
+pub fn take_told(k: usize, list: Vec<(u64, String)>) -> bool {
+    TOLD.with(|m| {
+        let mut m = m.borrow_mut();
+        let mut changed = false;
+        for (sid, text) in list {
+            let t = Told::decode(&text);
+            if m.get(&(k, sid)) != Some(&t) {
+                m.insert((k, sid), t);
+                changed = true;
+            }
+        }
+        changed
+    })
+}
+
+/// What machine `k`'s session told of terminal `sid`, if it did (only
+/// another machine's are asked for: this machine's are known here).
+pub fn told(k: usize, sid: u64) -> Option<Told> {
+    (k != 0).then(|| TOLD.with(|m| m.borrow().get(&(k, sid)).cloned())).flatten()
+}
+
+/// Whether machine `k`'s session tells its terminals' projects and names
+/// (a jot that knows ToServer::Name too).
+pub fn tells(k: usize) -> bool {
+    TOLD.with(|m| m.borrow().keys().any(|(m, _)| *m == k))
+}
+
+/// A pane's terminal on another machine, as its session told it (none
+/// from an older one, or not yet: then it is found here as before).
+fn remote_told(p: &Pane, id: PaneId) -> Option<Told> {
+    if p.pty.machine == 0 {
+        return None;
+    }
+    let (k, sid) = crate::mux::split_id(id);
+    told(k, sid)
+}
+
+#[cfg(test)]
+mod told_tests {
+    use super::*;
+
+    #[test]
+    fn told_goes_and_comes_back_whole() {
+        let mut p = project_named("calendula");
+        p.icon = '\u{e010}';
+        p.color = 0x12A594;
+        let t = Told {
+            project: Some(p),
+            look: Look { icon: None, color: Some(0x12A594), theme: Some("Nord".into()), tint: Some(30) },
+            own: Look { icon: Some('\u{e011}'), color: None, theme: None, tint: None },
+            name: Some("builds".into()),
+        };
+        assert_eq!(Told::decode(&t.encode()), t);
+        assert_eq!(Told::decode(&Told::default().encode()), Told::default());
+        // From an older session, before names: none.
+        assert_eq!(Told::decode("jot\te010\t3e63dd").name, None);
     }
 }

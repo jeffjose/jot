@@ -314,12 +314,30 @@ impl App {
     /// The name given to a terminal, if one was: read from the file every
     /// window shares, so a name given in one holds in all of them.
     pub(super) fn given_name(&self, k: usize, sid: u64) -> Option<String> {
+        // Another machine's, as its session told: the name given there.
+        if let Some(n) = super::projects::told(k, sid).and_then(|t| t.name) {
+            return Some(n);
+        }
         let host = self.machines.get(k).and_then(|m| m.host.clone()).unwrap_or_default();
         self.term_names.iter().find(|(h, s, _)| *h == host && *s == sid).map(|(_, _, n)| n.clone())
     }
 
     /// A terminal given a name; an empty one takes its name back.
     pub(super) fn name_terminal(&mut self, k: usize, sid: u64, name: &str) {
+        // Another machine's, named on it (its session keeps it, and tells
+        // every window), where its session knows how.
+        if k != 0 && super::projects::tells(k) {
+            if let Some(m) = self.machines.get(k) {
+                m.client.name(sid, name.trim());
+            }
+            // One given here before, let go: the one there holds.
+            let host = self.machines.get(k).and_then(|m| m.host.clone()).unwrap_or_default();
+            self.term_names = persist::load_term_names();
+            self.term_names.retain(|(h, s, _)| !(*h == host && *s == sid));
+            persist::save_term_names(&self.term_names);
+            self.full = true;
+            return self.redraw();
+        }
         let host = self.machines.get(k).and_then(|m| m.host.clone()).unwrap_or_default();
         self.term_names = persist::load_term_names();
         self.term_names.retain(|(h, s, _)| !(*h == host && *s == sid));

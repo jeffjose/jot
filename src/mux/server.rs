@@ -330,6 +330,12 @@ struct Server {
     /// The windows that close and open again when told (CAN_REOPEN,
     /// `jot restart --all`).
     reopening: Vec<u64>,
+    /// The windows told each terminal's project and name (CAN_PROJECT),
+    /// what each was told of each (encoded), and whether to tell them at
+    /// once (a terminal named), not at the next second.
+    projecting: Vec<u64>,
+    told_projects: HashMap<u64, HashMap<u64, String>>,
+    projects_due: bool,
 }
 
 impl Server {
@@ -511,6 +517,8 @@ impl Server {
             self.sharing.retain(|w| *w != old);
             self.numbering.retain(|w| *w != old);
             self.reopening.retain(|w| *w != old);
+            self.projecting.retain(|w| *w != old);
+            self.told_projects.remove(&old);
             self.seen.remove(&old);
             self.windows.retain(|w| *w != old);
             if let Some(l) = self.layouts.remove(&old) {
@@ -898,7 +906,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
             return;
         }
         None => match UnixListener::bind(path) {
-            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new() }, l),
+            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new(), projecting: Vec::new(), told_projects: HashMap::new(), projects_due: true }, l),
             Err(e) => {
                 eprintln!("jot serve: {}: {e}", path.display());
                 return;
@@ -926,6 +934,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
     }
     let mut next_conn = 0u64;
     let started = Instant::now();
+    let mut ticks: u64 = 0;
     while let Ok(ev) = rx.recv() {
         match ev {
             Ev::Conn(stream) => {
@@ -1001,6 +1010,10 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 }
                 if caps & super::CAN_REOPEN != 0 && !s.reopening.contains(&c) {
                     s.reopening.push(c);
+                }
+                if caps & super::CAN_PROJECT != 0 && !s.projecting.contains(&c) {
+                    s.projecting.push(c);
+                    s.projects_due = true;
                 }
                 if caps & super::CAN_SHARE != 0 && !s.sharing.contains(&c) {
                     s.sharing.push(c);
@@ -1099,6 +1112,18 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     s.renumber(&numbers);
                     s.tell_numbers(None);
                 }
+                // A terminal named by a window on another machine: kept as a
+                // window here keeps the names given in it (this machine's
+                // names file), every window told.
+                ToServer::Name { pane, name } => {
+                    let mut names = crate::persist::load_term_names();
+                    names.retain(|(h, sid, _)| !(h.is_empty() && *sid == pane));
+                    if !name.trim().is_empty() {
+                        names.push((String::new(), pane, name.trim().to_string()));
+                    }
+                    crate::persist::save_term_names(&names);
+                    s.projects_due = true;
+                }
                 ToServer::Hello { .. } | ToServer::Peek | ToServer::Restart { .. } | ToServer::Reopen { .. } => {}
             },
             Ev::Said(..) => {}
@@ -1126,6 +1151,8 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     s.sharing.retain(|w| *w != c);
                     s.numbering.retain(|w| *w != c);
                     s.reopening.retain(|w| *w != c);
+                    s.projecting.retain(|w| *w != c);
+                    s.told_projects.remove(&c);
                     s.seen.remove(&c);
                     if let Some(l) = s.layouts.remove(&c).filter(|_| any) {
                         s.left.push((name, l));
@@ -1172,6 +1199,13 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     for m in [mode, proc, lines].into_iter().flatten() {
                         s.tell(id, m);
                     }
+                }
+                // Each terminal's project and name, as this machine has them,
+                // to the windows that show them: once a second, what changed.
+                ticks += 1;
+                if s.projects_due || ticks % 10 == 0 {
+                    s.projects_due = false;
+                    s.tell_projects();
                 }
                 // Started but never taken up: nothing to keep it.
                 if s.windows.is_empty() && s.panes.is_empty() && started.elapsed() > Duration::from_secs(30) {
@@ -1333,6 +1367,8 @@ impl Server {
         self.sharing.clear();
         self.numbering.clear();
         self.reopening.clear();
+        self.projecting.clear();
+        self.told_projects.clear();
         self.seen.clear();
         for p in self.panes.values_mut() {
             p.viewers.clear();
@@ -1440,7 +1476,7 @@ fn resume(file: &Path, tx: &Sender<Ev>) -> io::Result<(Server, i32)> {
         }
     }
     keep_on_exec(listener, false);
-    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane, desktop: None, abouts: HashMap::new(), shared, sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new() }, listener))
+    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane, desktop: None, abouts: HashMap::new(), shared, sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new(), projecting: Vec::new(), told_projects: HashMap::new(), projects_due: true }, listener))
 }
 
 /// The session's names of the panes a window's layout has (its workspaces'
@@ -1508,7 +1544,7 @@ mod tests {
     use crate::persist::{Session, Spec, WorkspaceSpec};
 
     fn server() -> Server {
-        Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new() }
+        Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new(), projecting: Vec::new(), told_projects: HashMap::new(), projects_due: true }
     }
 
     /// A window that shares workspaces, connected as `c`.
@@ -1757,6 +1793,35 @@ impl Server {
             }
         }
     }
+    /// Each terminal's project and name as this machine has them (its git
+    /// repositories, its projects and names files), told to each window
+    /// that shows them: what it has not been told yet, or told otherwise.
+    fn tell_projects(&mut self) {
+        if self.projecting.is_empty() {
+            return;
+        }
+        let names = crate::persist::load_term_names();
+        let now: Vec<(u64, String)> = self
+            .panes
+            .iter()
+            .map(|(id, p)| {
+                let cwd = p.proc.as_ref().map(|pr| pr.cwd.clone()).unwrap_or_else(|| p.pty.proc().cwd);
+                let given = names.iter().find(|(h, sid, _)| h.is_empty() && sid == id).map(|(_, _, n)| n.as_str());
+                (*id, crate::app::told_for(*id, Path::new(&cwd), given).encode())
+            })
+            .collect();
+        for c in self.projecting.clone() {
+            let told = self.told_projects.entry(c).or_default();
+            let list: Vec<(u64, String)> = now.iter().filter(|(id, t)| told.get(id) != Some(t)).cloned().collect();
+            told.retain(|id, _| self.panes.contains_key(id));
+            if list.is_empty() {
+                continue;
+            }
+            told.extend(list.iter().cloned());
+            self.send(c, ToClient::Projects { list });
+        }
+    }
+
 
     /// Every terminal's number told to window `to`, or to every window
     /// that takes them (None).

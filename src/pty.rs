@@ -49,6 +49,8 @@ pub enum Output {
     Restarting(usize),
     /// To close and open again as the jot at the path (`jot restart --all`).
     Reopen(String),
+    /// A machine's terminals' projects and names, as its session tells them.
+    Projects(usize, Vec<(u64, String)>),
     /// The connection to a machine's session ended.
     Gone(usize),
 }

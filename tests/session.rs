@@ -555,3 +555,81 @@ fn a_window_reopened_takes_back_its_own_workspaces_and_terminals() {
     }
     assert!(b.layout.contains("w2"), "b's own workspaces: {}", b.layout);
 }
+
+const CAN_PROJECT: u32 = 8;
+const NAME: u8 = 17;
+const PROJECTS: u8 = 18;
+
+impl Window {
+    /// A terminal started in `cwd`: its name there.
+    fn spawn_in(&mut self, cwd: &Path) -> u64 {
+        let mut o = vec![SPAWN];
+        put_str(&mut o, "");
+        put_str(&mut o, &cwd.display().to_string());
+        o.extend(80u16.to_le_bytes());
+        o.extend(24u16.to_le_bytes());
+        o.extend(0u32.to_le_bytes());
+        o.extend(0u32.to_le_bytes());
+        send(&mut self.s, &o);
+        let f = self.expect(SPAWNED, Duration::from_secs(5)).expect("spawned");
+        In(&f[1..]).u64()
+    }
+
+    /// What the session tells of `pane` (its project and name, as Told
+    /// encodes them), the first time it does in `wait`; None if it does not.
+    fn told_of(&mut self, pane: u64, wait: Duration) -> Option<String> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let f = self.expect(PROJECTS, deadline.checked_duration_since(Instant::now())?)?;
+            let mut i = In(&f[1..]);
+            let n = i.u32();
+            for _ in 0..n {
+                let (p, t) = (i.u64(), i.str());
+                if p == pane {
+                    return Some(t);
+                }
+            }
+        }
+    }
+
+    fn names(&mut self, pane: u64, name: &str) {
+        let mut o = vec![NAME];
+        o.extend(pane.to_le_bytes());
+        put_str(&mut o, name);
+        send(&mut self.s, &o);
+    }
+}
+
+#[test]
+fn a_terminal_s_project_is_told_as_its_machine_has_it() {
+    let s = Session::start();
+    let repo = s.dir.join("calendula");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    let mut a = Window::hello(&s.socket(), 1, false, CAN_SHARE | CAN_PROJECT);
+    let t = a.spawn_in(&repo.join("src"));
+    let told = a.told_of(t, Duration::from_secs(3)).expect("told");
+    assert_eq!(told.split('\t').next(), Some("calendula"), "{told:?}");
+}
+
+#[test]
+fn a_terminal_named_from_another_machine_is_kept_and_told() {
+    let s = Session::start();
+    let mut a = Window::hello(&s.socket(), 1, false, CAN_SHARE | CAN_PROJECT);
+    let t = a.spawn();
+    a.told_of(t, Duration::from_secs(3)).expect("told at first");
+    a.names(t, "builds");
+    let told = a.told_of(t, Duration::from_secs(3)).expect("told again");
+    assert_eq!(told.split('\t').nth(11), Some("builds"), "{told:?}");
+    // Kept as this machine's windows keep names.
+    let file = std::fs::read_to_string(s.dir.join("state/jot/names")).unwrap_or_default();
+    assert!(file.contains(&format!("\t{t}\tbuilds")), "{file:?}");
+}
+
+#[test]
+fn a_window_from_before_projects_is_not_told() {
+    let s = Session::start();
+    let mut old = Window::hello(&s.socket(), 1, false, CAN_SHARE);
+    let t = old.spawn();
+    assert!(old.told_of(t, Duration::from_millis(1500)).is_none(), "it would not know the message");
+}
