@@ -86,22 +86,6 @@ impl App {
         out
     }
 
-    /// A dot's project: its workspace's (see ws_project); for one its
-    /// session holds that no window shows, the one most of its saved
-    /// folders are in, on this machine.
-    pub(super) fn dot_project(&self, d: FootDot) -> Option<super::projects::Project> {
-        match d {
-            FootDot::Here(wi) => self.ws_project(wi),
-            FootDot::There(k, i) if k == 0 => {
-                let spec = toml::from_str::<WorkspaceSpec>(&self.machines.get(k)?.listing.get(i)?.spec).ok()?;
-                let mut cwds = Vec::new();
-                cwds_in(spec.layout.as_ref()?, &mut cwds);
-                super::projects::main_project(cwds.iter().filter_map(|c| super::projects::project_in(&persist::expand(c))))
-            }
-            FootDot::There(..) => None,
-        }
-    }
-
     /// A dot gone to: a workspace of this window shown, one held on a
     /// machine opened here.
     pub(super) fn go_dot(&mut self, d: FootDot) {
@@ -251,8 +235,10 @@ impl App {
         let accent = self.cur_accent;
         let clock = if self.config.status_line { String::new() } else { self.clock.clone() };
         let dots: Vec<(FootDot, u32)> = set.iter().map(|(d, _, c)| (*d, *c)).collect();
-        // Each workspace's mark: its project's.
-        let marks: Vec<Option<char>> = dots.iter().map(|(d, _)| self.dot_project(*d).map(|p| p.icon)).collect();
+        // Each workspace's own mark, from its name (not its project's: several
+        // in one repository are each their own).
+        let names: Vec<&str> = set.iter().map(|(_, n, _)| n.as_str()).collect();
+        let marks: Vec<Option<char>> = super::projects::workspace_marks(&names).into_iter().map(Some).collect();
         let hot = self.foot_lit;
         let lit = hot == FootHot::Machine;
         let said = format!("{name}\0{folder}\0{machine}\0{accent}\0{dots:?}{marks:?}\0{}\0{clock}\0{}\0{}\0{hot:?}", self.current, self.canvas.width, self.cur_theme.bg);

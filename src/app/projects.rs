@@ -117,34 +117,7 @@ pub fn remembered(k: usize, sid: u64) -> Option<Project> {
     SEEN.with(|m| m.borrow().get(&(k, sid)).cloned().flatten())
 }
 
-/// The project a folder is in, if any.
-pub fn project_in(dir: &Path) -> Option<Project> {
-    let root = repo_root(dir)?;
-    Some(project_named(&root.file_name()?.to_string_lossy()))
-}
-
-/// The project most of these are in (the first, on a tie).
-pub fn main_project(all: impl Iterator<Item = Project>) -> Option<Project> {
-    let mut counts: Vec<(Project, usize)> = Vec::new();
-    for p in all {
-        match counts.iter_mut().find(|(q, _)| q.name == p.name) {
-            Some((_, n)) => *n += 1,
-            None => counts.push((p, 1)),
-        }
-    }
-    let most = counts.iter().map(|(_, n)| *n).max()?;
-    counts.into_iter().find(|(_, n)| *n == most).map(|(p, _)| p)
-}
-
 impl App {
-    /// A workspace's project: the one most of its panes are in.
-    pub(super) fn ws_project(&self, wi: usize) -> Option<Project> {
-        let ws = self.workspaces.get(wi)?;
-        let mut ids = Vec::new();
-        ws.root.panes(&mut ids);
-        main_project(ids.into_iter().filter_map(|id| self.project_of(id)))
-    }
-
     /// A workspace as a tile: a rounded square of its color, faint, with
     /// its project's mark on it in duotone (the back faint, the front in
     /// the color); a dot of the color for a workspace in no project.
@@ -168,5 +141,46 @@ impl App {
                 self.canvas.disc(r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0, d / 2.0, ink);
             }
         }
+    }
+}
+
+/// Each workspace's own mark, from its name, as its color is (see
+/// theme::workspace_accents): the same name the same mark on every run,
+/// and no two of a machine's workspaces the same while there are marks
+/// left. A workspace is not its project: several in one repository each
+/// have their own.
+pub fn workspace_marks(names: &[&str]) -> Vec<char> {
+    let marks = crate::canvas::icons::PROJECT;
+    let mut used: Vec<char> = Vec::new();
+    names
+        .iter()
+        .map(|name| {
+            let start = (stable_hash(name) % marks.len() as u64) as usize;
+            let pick = (0..marks.len()).map(|k| marks[(start + k) % marks.len()]).find(|m| !used.contains(m)).unwrap_or(marks[start]);
+            used.push(pick);
+            pick
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod workspace_marks_tests {
+    use super::workspace_marks;
+
+    // Reported: eight workspaces opened in one repository all wore its mark.
+    #[test]
+    fn workspaces_in_one_repository_each_have_their_own_mark() {
+        let names = ["wild-orchid", "slow-ember", "bright-heron", "calm-summit", "rustic-moth", "gentle-beacon", "lucky-falcon", "misty-heron"];
+        let marks = workspace_marks(&names);
+        let mut seen = marks.clone();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), names.len(), "{marks:?}");
+    }
+
+    #[test]
+    fn a_workspace_keeps_its_mark() {
+        assert_eq!(workspace_marks(&["wild-orchid", "slow-ember"]), workspace_marks(&["wild-orchid", "slow-ember"]));
+        assert_eq!(workspace_marks(&["wild-orchid"])[0], workspace_marks(&["wild-orchid", "slow-ember"])[0]);
     }
 }

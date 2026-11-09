@@ -2550,19 +2550,7 @@ impl App {
     /// choosing it.
     pub(super) fn ws_accents(&self) -> Vec<(u32, bool)> {
         let named: Vec<(&str, Option<&str>)> = self.workspaces.iter().map(|w| (w.name.as_str(), w.accent.as_deref())).collect();
-        let mut out = crate::theme::workspace_accents(&named, self.accent, self.config.workspace_colors);
-        // One whose color was not chosen wears its project's, so that its
-        // tile, its square and its panes' badges are one color.
-        if self.config.workspace_colors {
-            for (wi, a) in out.iter_mut().enumerate() {
-                if self.workspaces[wi].accent.is_none() {
-                    if let Some(p) = self.ws_project(wi) {
-                        *a = (p.color, true);
-                    }
-                }
-            }
-        }
-        out
+        crate::theme::workspace_accents(&named, self.accent, self.config.workspace_colors)
     }
 
     pub(super) fn retint(&mut self) {
