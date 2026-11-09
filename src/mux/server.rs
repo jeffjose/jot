@@ -260,7 +260,14 @@ impl Pane {
     /// The size viewer `c` gives it, made its own if it is not already.
     /// Whether that changed it: every window showing it is then told, so
     /// each draws it at the one size its program writes for.
-    fn size_for(&mut self, c: u64) -> bool {
+    /// A window on another machine (in `afar`) gives it no size while a
+    /// window on this one does: what is done there (its font made larger,
+    /// its panes split) does not reshape a terminal here under its own
+    /// window. Alone, it does.
+    fn size_for(&mut self, c: u64, afar: &[u64]) -> bool {
+        if afar.contains(&c) && self.sizes.keys().any(|v| *v != c && !afar.contains(v)) {
+            return false;
+        }
         let Some(s) = self.sizes.get(&c).copied().filter(|s| *s != self.size) else { return false };
         crate::debuglog::log(format!("session: pane {}: {}x{} -> {}x{}, window {c}'s", self.pty.pid, self.size.0, self.size.1, s.0, s.1));
         self.pty.resize(s.0, s.1, s.2);
@@ -271,14 +278,16 @@ impl Pane {
 
     /// Window `c` no longer shows it: if its size was the one, another
     /// showing it gives the size. Whether that changed it.
-    fn drop_viewer(&mut self, c: u64) -> bool {
+    fn drop_viewer(&mut self, c: u64, afar: &[u64]) -> bool {
         self.viewers.retain(|v| *v != c);
         self.sizes.remove(&c);
         if self.sizes.values().any(|s| *s == self.size) {
             return false;
         }
-        match self.viewers.last().copied() {
-            Some(other) => self.size_for(other),
+        // A window here first, then one from afar.
+        let here = self.viewers.iter().rev().find(|v| !afar.contains(v) && self.sizes.contains_key(v)).copied();
+        match here.or(self.viewers.last().copied()) {
+            Some(other) => self.size_for(other, afar),
             None => false,
         }
     }
@@ -336,6 +345,10 @@ struct Server {
     projecting: Vec<u64>,
     told_projects: HashMap<u64, HashMap<u64, String>>,
     projects_due: bool,
+    /// The windows on another machine, reached through ssh (Hello's
+    /// FROM_AFAR): a terminal of this one's is sized by a window here while
+    /// one shows it, not by them (their fonts and splits are their own).
+    afar: Vec<u64>,
 }
 
 impl Server {
@@ -906,7 +919,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
             return;
         }
         None => match UnixListener::bind(path) {
-            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new(), projecting: Vec::new(), told_projects: HashMap::new(), projects_due: true }, l),
+            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new(), projecting: Vec::new(), told_projects: HashMap::new(), projects_due: true, afar: Vec::new() }, l),
             Err(e) => {
                 eprintln!("jot serve: {}: {e}", path.display());
                 return;
@@ -1011,6 +1024,9 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 if caps & super::CAN_REOPEN != 0 && !s.reopening.contains(&c) {
                     s.reopening.push(c);
                 }
+                if caps & super::FROM_AFAR != 0 && !s.afar.contains(&c) {
+                    s.afar.push(c);
+                }
                 if caps & super::CAN_PROJECT != 0 && !s.projecting.contains(&c) {
                     s.projecting.push(c);
                     s.projects_due = true;
@@ -1034,7 +1050,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 // Typed into from a window: the size that window gives it, first.
                 ToServer::Input { pane, bytes } => {
                     if let Some(p) = s.panes.get_mut(&pane) {
-                        let resized = p.size_for(c);
+                        let resized = p.size_for(c, &s.afar);
                         let _ = p.keys.send(bytes);
                         if resized {
                             let m = p.size_msg(pane);
@@ -1045,9 +1061,14 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 ToServer::Resize { pane, cols, rows, px } => {
                     if let Some(p) = s.panes.get_mut(&pane) {
                         p.sizes.insert(c, (cols, rows, px));
-                        if p.size_for(c) {
+                        if p.size_for(c, &s.afar) {
                             let m = p.size_msg(pane);
                             s.tell(pane, m);
+                        } else if p.size != (cols, rows, px) {
+                            // Not its to give (a window here gives it): told
+                            // the size it is, to draw it at that.
+                            let m = p.size_msg(pane);
+                            s.send(c, m);
                         }
                     }
                 }
@@ -1100,7 +1121,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     let name = s.names.get(&c).copied();
                     if let Some(p) = s.panes.get_mut(&pane) {
                         p.windows.retain(|w| Some(*w) != name);
-                        if p.drop_viewer(c) {
+                        if p.drop_viewer(c, &s.afar) {
                             let m = p.size_msg(pane);
                             s.tell(pane, m);
                         }
@@ -1136,7 +1157,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     let mut any = false;
                     let mut resized = Vec::new();
                     for (id, p) in s.panes.iter_mut().filter(|(_, p)| p.viewers.contains(&c)) {
-                        if p.drop_viewer(c) {
+                        if p.drop_viewer(c, &s.afar) {
                             resized.push(p.size_msg(*id));
                         }
                         any = true;
@@ -1152,6 +1173,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     s.numbering.retain(|w| *w != c);
                     s.reopening.retain(|w| *w != c);
                     s.projecting.retain(|w| *w != c);
+                    s.afar.retain(|w| *w != c);
                     s.told_projects.remove(&c);
                     s.seen.remove(&c);
                     if let Some(l) = s.layouts.remove(&c).filter(|_| any) {
@@ -1476,7 +1498,7 @@ fn resume(file: &Path, tx: &Sender<Ev>) -> io::Result<(Server, i32)> {
         }
     }
     keep_on_exec(listener, false);
-    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane, desktop: None, abouts: HashMap::new(), shared, sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new(), projecting: Vec::new(), told_projects: HashMap::new(), projects_due: true }, listener))
+    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane, desktop: None, abouts: HashMap::new(), shared, sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new(), projecting: Vec::new(), told_projects: HashMap::new(), projects_due: true, afar: Vec::new() }, listener))
 }
 
 /// The session's names of the panes a window's layout has (its workspaces'
@@ -1544,7 +1566,7 @@ mod tests {
     use crate::persist::{Session, Spec, WorkspaceSpec};
 
     fn server() -> Server {
-        Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new(), projecting: Vec::new(), told_projects: HashMap::new(), projects_due: true }
+        Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new(), projecting: Vec::new(), told_projects: HashMap::new(), projects_due: true, afar: Vec::new() }
     }
 
     /// A window that shares workspaces, connected as `c`.

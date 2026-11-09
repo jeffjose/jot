@@ -1233,8 +1233,18 @@ impl App {
         };
         let sized: Vec<(PaneId, Rect, Rect, u16, u16)> = fit.iter().map(|&(id, rect, content, ..)| { let (c, r) = size_of(id); (id, rect, content, c, r) }).collect();
         let telling = self.size_settle.is_none();
+        // Only what is on screen is resized: a terminal in a workspace not
+        // shown here keeps its size (another window may be showing it, on
+        // this machine or the one it runs on) until it is shown here.
+        let roam_on = if self.roam_shown { self.roam } else { None };
+        let on_screen: Vec<PaneId> = shown.iter().take(here).map(|(id, _)| *id).chain(roam_on).collect();
         for (id, rect, content, cols, rows) in sized {
             let Some(p) = self.panes.get_mut(&id) else { continue };
+            if !on_screen.contains(&id) {
+                p.rect = rect;
+                p.content = content;
+                continue;
+            }
             // Only a change of rows or columns is told to the program: a
             // shell such as tcsh draws its prompt again on each telling.
             // The session makes this window's size the pane's, and says so

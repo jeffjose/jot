@@ -633,3 +633,72 @@ fn a_window_from_before_projects_is_not_told() {
     let t = old.spawn();
     assert!(old.told_of(t, Duration::from_millis(1500)).is_none(), "it would not know the message");
 }
+
+// What a window on another machine says in its hello (FROM_AFAR), and the
+// resize and size messages.
+const FROM_AFAR: u32 = 16;
+const RESIZE: u8 = 3;
+const SIZE: u8 = 13;
+
+impl Window {
+    /// Its pane resized: `cols` by `rows`.
+    fn resizes(&mut self, pane: u64, cols: u16, rows: u16) {
+        let mut o = vec![RESIZE];
+        o.extend(pane.to_le_bytes());
+        o.extend(cols.to_le_bytes());
+        o.extend(rows.to_le_bytes());
+        o.extend(0u32.to_le_bytes());
+        o.extend(0u32.to_le_bytes());
+        send(&mut self.s, &o);
+    }
+
+    /// The size the session tells it a pane is, next, in `wait`.
+    fn told_size(&mut self, pane: u64, wait: Duration) -> Option<(u16, u16)> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let left = deadline.checked_duration_since(Instant::now())?;
+            let f = self.expect(SIZE, left)?;
+            let mut i = In(&f[1..]);
+            if i.u64() == pane {
+                let cols = u16::from_le_bytes(i.take(2).try_into().unwrap());
+                let rows = u16::from_le_bytes(i.take(2).try_into().unwrap());
+                return Some((cols, rows));
+            }
+        }
+    }
+}
+
+/// Reported: a terminal's font made larger in a window on another machine
+/// (or its panes split there) resized the terminal under its own machine's
+/// window. A window here gives it its size while one shows it; the one
+/// from afar is told that size, to draw it at.
+#[test]
+fn a_window_from_afar_does_not_resize_a_terminal_a_window_here_shows() {
+    let s = Session::start();
+    let mut here = s.window(1, true);
+    let t = here.spawn();
+    here.says(&ws("w1", 10, 0, &one(t)));
+    here.settles(A_WHILE);
+    here.resizes(t, 100, 30);
+    assert_eq!(here.told_size(t, Duration::from_secs(2)), Some((100, 30)), "its own size, told");
+    let mut afar = Window::hello(&s.socket(), 2, false, CAN_SHARE | FROM_AFAR);
+    afar.settles(A_WHILE);
+    afar.resizes(t, 60, 14);
+    assert_eq!(afar.told_size(t, Duration::from_secs(2)), Some((100, 30)), "told the size the window here gives");
+    assert_eq!(here.told_size(t, Duration::from_millis(800)), None, "the window here is not told another size");
+    // The window here still gives it its size.
+    here.resizes(t, 90, 28);
+    assert_eq!(afar.told_size(t, Duration::from_secs(2)), Some((90, 28)));
+}
+
+/// Alone (no window here shows it), a window from afar sizes it.
+#[test]
+fn a_window_from_afar_alone_sizes_the_terminal() {
+    let s = Session::start();
+    let mut afar = Window::hello(&s.socket(), 2, false, CAN_SHARE | FROM_AFAR);
+    let t = afar.spawn();
+    afar.says(&ws("w1", 10, 0, &one(t)));
+    afar.settles(A_WHILE);
+    afar.resizes(t, 60, 14);
+    assert_eq!(afar.told_size(t, Duration::from_secs(2)), Some((60, 14)));
+}

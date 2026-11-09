@@ -1121,7 +1121,7 @@ fn reach(host: &str, again: bool, want: Vec<u64>) -> io::Result<Reached> {
         let s = said.lock().map(|s| s.trim().to_string()).unwrap_or_default();
         io::Error::new(e.kind(), if s.is_empty() { format!("{host}: {e}") } else { format!("{host}: {s}") })
     };
-    let hello = w.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again, want, about: about(), caps: caps() }.encode()).and_then(|_| read_frame(&mut r));
+    let hello = w.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again, want, about: about(), caps: caps() | FROM_AFAR }.encode()).and_then(|_| read_frame(&mut r));
     let f = match hello {
         Ok(f) => f,
         Err(e) => {
@@ -1422,6 +1422,12 @@ pub const CAN_REOPEN: u32 = 4;
 /// projects, with the names given there (ToClient::Projects), and names one
 /// there (ToServer::Name).
 pub const CAN_PROJECT: u32 = 8;
+
+/// A window on another machine, reached through ssh: the session sizes
+/// its terminals by its own windows while one shows them, not by this one
+/// (its font and its splits are its own). A session from before this has
+/// no use for it, and a window says it whatever the session.
+pub const FROM_AFAR: u32 = 16;
 
 /// What this window can do, said in its hello: a regular window shares
 /// workspaces (the quake window has its own, and does not); every window
