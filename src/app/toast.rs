@@ -213,12 +213,18 @@ impl App {
     /// in part. A frame drawn whole draws under them anyway.
     pub(super) fn floats_off(&mut self, full: bool) {
         let under = std::mem::take(&mut self.floats_under);
+        let carried = std::mem::take(&mut self.carry_under);
         if full {
             return;
         }
         for u in under.iter().rev() {
             self.canvas.restore(u);
             self.damage.push(u.0);
+        }
+        // A pane carried (drawn before the others float): put back quietly,
+        // drawn again over it in the same place (see draw_carry).
+        for u in carried.iter().rev() {
+            self.canvas.restore(u);
         }
     }
 

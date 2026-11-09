@@ -344,6 +344,11 @@ pub struct App {
     link: Option<links::Link>,
     /// A picture of the pane being dragged, carried under the pointer.
     ghost: Option<(Vec<u32>, i32, i32)>,
+    /// What the parts of a pane carried cover, put back at the start of the
+    /// next frame without sending it to the screen again (see draw_carry),
+    /// and where those parts were last drawn.
+    carry_under: Vec<(Rect, Vec<u32>)>,
+    carry_drawn: Vec<Rect>,
     /// A button held down in a pane whose program has the mouse.
     mouse_held: Option<(PaneId, sys::GhosttyMouseButton)>,
     copy_mode: Option<copymode::CopyMode>,
@@ -674,6 +679,8 @@ impl App {
             find: None,
             link: None,
             ghost: None,
+            carry_under: Vec::new(),
+            carry_drawn: Vec::new(),
             mouse_held: None,
             copy_mode: None,
             scrollback_at: Instant::now(),
@@ -2691,8 +2698,10 @@ impl App {
             self.draw_status();
         }
         self.draw_foot(full);
+        // A pane carried floats (see floats_off): drawn every frame, over
+        // what changed under it, the window not drawn whole for each move.
+        self.draw_carry();
         if full {
-            self.draw_carry();
             self.draw_side_carry();
         }
         self.draw_editors(full, &drawn);
@@ -2722,9 +2731,11 @@ impl App {
         self.draw_toasts();
         self.draw_tooltip();
         let drawn = t0.elapsed();
+        // How much is sent to the screen (each rect damaged, overlaps counted twice).
+        let sent: i64 = self.damage.iter().map(|d| d.w.max(0) as i64 * d.h.max(0) as i64).sum();
         self.present();
         if crate::debug() {
-            eprintln!("frame: drawn {:.2} ms, shown {:.2} ms", drawn.as_secs_f64() * 1000.0, (t0.elapsed() - drawn).as_secs_f64() * 1000.0);
+            eprintln!("frame: drawn {:.2} ms, shown {:.2} ms, sent {} kpx", drawn.as_secs_f64() * 1000.0, (t0.elapsed() - drawn).as_secs_f64() * 1000.0, sent / 1000);
         }
     }
 
