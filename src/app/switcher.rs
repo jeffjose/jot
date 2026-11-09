@@ -4,7 +4,7 @@
 //! shows: its mark on its color, its name and folder, how many panes it
 //! has, and at the right its Alt key; under the pointer a pencil (rename it)
 //! and a cog (its settings) in that same place, so nothing moves. The one
-//! you are in outlined in its color; New workspace at the end. Alt 1-9
+//! you are in a neutral step lighter; New workspace at the end. Alt 1-9
 //! still go straight there.
 
 use super::foot::FootDot;
@@ -127,11 +127,12 @@ impl App {
         for (i, row) in rows.iter().enumerate() {
             let cell = Rect { x: r.x + pad, y, w: r.w - 2 * pad, h: row_h };
             let lit = hover == Some(i);
+            // The one you are in: a neutral step lighter (C1 on the canvas),
+            // its color left to its mark; under the pointer, a step more.
             if row.here {
-                self.canvas.round_fill(cell, px(7.0), mix(c.panel, row.color, 56), 255);
-                self.canvas.ring(cell, px(7.0), 1, mix(c.panel, row.color, 150));
+                self.canvas.round_fill(cell, px(7.0), mix(c.panel, c.text, if lit { 34 } else { 26 }), 255);
             } else if lit {
-                self.canvas.round_fill(cell, px(7.0), mix(c.panel, c.text, 16), 255);
+                self.canvas.round_fill(cell, px(7.0), mix(c.panel, c.text, 14), 255);
             }
             // Its mark, dark on its color.
             let t = px(30.0);
