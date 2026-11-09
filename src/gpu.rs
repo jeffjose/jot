@@ -82,7 +82,14 @@ impl Gpu {
         if let Some(f) = caps.formats.iter().find(|f| !f.is_srgb()) {
             config.format = *f;
         }
-        config.present_mode = wgpu::PresentMode::AutoVsync;
+        // A frame on the screen at the next refresh, not queued behind
+        // others: Mailbox where the card has it (the newest frame shown, no
+        // tearing, and drawing never waits on the screen), else vsync with
+        // one frame in hand. Vsync's default two had a row lit under the
+        // pointer reach the screen two refreshes late, and a frame drawn
+        // while two waited held up the window until the screen took one.
+        config.present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) { wgpu::PresentMode::Mailbox } else { wgpu::PresentMode::AutoVsync };
+        config.desired_maximum_frame_latency = 1;
         surface.configure(&device, &config);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("present"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -112,7 +119,7 @@ impl Gpu {
             cache: None,
         });
         let (texture, bind) = Self::frame(&device, &layout, config.width, config.height);
-        let name = format!("{} ({:?})", info.name, info.backend);
+        let name = format!("{} ({:?}, {:?})", info.name, info.backend, config.present_mode);
         Some(Gpu { surface, device, queue, config, pipeline, layout, texture, bind, name })
     }
 
