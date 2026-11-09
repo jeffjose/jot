@@ -227,6 +227,9 @@ pub struct App {
     roam_shown: bool,
     roam_cwd: Option<PathBuf>,
     dividers: Vec<Divider>,
+    /// The divider under the pointer or dragged: its line in the accent,
+    /// to show it can be grabbed.
+    divider_lit: Option<Rect>,
     /// Everything to be drawn again: the layout changed.
     full: bool,
     /// The size the window was last given, taken up when the next frame
@@ -622,6 +625,7 @@ impl App {
             roam_shown: false,
             roam_cwd: None,
             dividers: Vec::new(),
+            divider_lit: None,
             full: true,
             resized: None,
             gpu_settle: None,
@@ -2126,9 +2130,50 @@ impl App {
         }
     }
 
+    /// The divider to light: the one dragged, else the one in reach of the
+    /// pointer (when nothing floats over the panes).
+    fn divider_to_light(&self, x: i32, y: i32) -> Option<Rect> {
+        match &self.drag {
+            Some(Drag::Divider(d)) => self.dividers.iter().find(|e| e.path == d.path && e.gap == d.gap).map(|e| e.rect),
+            Some(_) => None,
+            None if self.roam_shown || self.menu.is_some() || self.palette.is_some() || self.settings.is_some() => None,
+            None => self.divider_at(x, y).map(|d| d.rect),
+        }
+    }
+
+    /// A divider lit or no longer: the line itself, 1 px, in the accent,
+    /// or the ground again; nothing else drawn.
+    fn light_divider(&mut self, lit: Option<Rect>) {
+        if lit == self.divider_lit {
+            return;
+        }
+        if let Some(old) = self.divider_lit.take() {
+            self.canvas.fill(old, self.cur_theme.divider());
+            self.damage.push(old);
+        }
+        self.divider_lit = lit;
+        self.redraw();
+    }
+
+    fn draw_divider_lit(&mut self) {
+        // The layout moved under it (the line dragged, a pane split): the
+        // line where it is now, or none if it is gone.
+        if let Some(Drag::Divider(d)) = &self.drag {
+            self.divider_lit = self.dividers.iter().find(|e| e.path == d.path && e.gap == d.gap).map(|e| e.rect);
+        } else if self.divider_lit.is_some_and(|r| !self.dividers.iter().any(|d| d.rect == r)) {
+            self.divider_lit = None;
+        }
+        if let Some(r) = self.divider_lit {
+            self.canvas.fill(r, self.cur_accent);
+            self.damage.push(r);
+        }
+    }
+
     fn mouse_move(&mut self, x: i32, y: i32) {
         self.pointer = (x, y);
         self.float_track(x, y);
+        let lit = self.divider_to_light(x, y);
+        self.light_divider(lit);
         let on_foot = self.foot_hover();
         if self.offer_hover(x, y) || self.find_hover(x, y) || self.settings_hover(x, y) || self.overlay_hover(x, y) {
             if let Some(w) = &self.window {
@@ -2686,6 +2731,7 @@ impl App {
             self.draw_sidebar();
         }
         self.side_dirty = false;
+        self.draw_divider_lit();
         self.draw_titlebar(full);
         self.quake_bar_frame(full || self.quake_dirty);
         self.quake_dirty = false;
@@ -3455,6 +3501,7 @@ impl ApplicationHandler<()> for App {
             WindowEvent::CursorMoved { position, .. } => self.mouse_move(position.x as i32, position.y as i32),
             WindowEvent::CursorLeft { .. } => {
                 self.title_leave();
+                self.light_divider(None);
                 self.float_leave();
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => self.mouse_press(button, event_loop),
