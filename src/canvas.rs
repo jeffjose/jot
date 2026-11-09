@@ -504,6 +504,8 @@ pub mod icons {
     pub const CHECK: char = '\u{e30b}';
     pub const INFO: char = '\u{e30c}';
     pub const DANGER: char = '\u{e30d}';
+    /// Rename: on a pane's caption, beside its name.
+    pub const PENCIL: char = '\u{e30e}';
     /// Projects' marks, one picked by the project's name (see app::projects).
     pub const PROJECT: [char; 16] = ['\u{e310}', '\u{e311}', '\u{e312}', '\u{e313}', '\u{e314}', '\u{e315}', '\u{e316}', '\u{e317}', '\u{e318}', '\u{e319}', '\u{e31a}', '\u{e31b}', '\u{e31c}', '\u{e31d}', '\u{e31e}', '\u{e31f}'];
     /// Workspaces' marks on the foot bar, one picked by the workspace's

@@ -405,7 +405,7 @@ impl App {
                 let status = if running.is_some() { 1 } else if failed { 2 } else { 0 };
                 let label = self.terminal_label(*id);
                 let cmd = running.filter(|r| r.split_whitespace().next() != Some(label.as_str()) || r.contains(' '));
-                let project = self.project_of(*id);
+                let project = self.badge_of(*id).map(|(p, _)| p);
                 super::projects::remember(k, sid, project.clone());
                 out.push(SideTerm { k, sid, pane: Some(*id), label, cmd, status, here, project });
             }

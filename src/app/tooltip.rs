@@ -21,6 +21,8 @@ impl App {
                 watch::Tag::Close => "Close pane  ·  Alt X  ·  it runs on".to_string(),
                 // The badge says its name; a click says the rest.
                 watch::Tag::Project => return None,
+                watch::Tag::Rename => "Rename".to_string(),
+                watch::Tag::PaneCog => "This pane".to_string(),
                 watch::Tag::Focus if zoomed => "Show all panes  ·  Alt Shift F".to_string(),
                 watch::Tag::Focus => "This pane alone  ·  Alt Shift F".to_string(),
                 watch::Tag::Minimize => "Minimize to a row  ·  it runs on".to_string(),

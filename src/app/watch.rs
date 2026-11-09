@@ -240,6 +240,9 @@ pub enum Tag {
     Close,
     /// Its project's badge: the projects, to put the pane in another.
     Project,
+    /// Beside its name, under the pointer: rename it; its own settings.
+    Rename,
+    PaneCog,
 }
 
 impl App {

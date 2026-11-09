@@ -6,6 +6,7 @@
 
 use super::*;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// A terminal's project.
@@ -67,6 +68,13 @@ pub fn without_project<'a>(name: &'a str, project: &str) -> &'a str {
     }
 }
 
+/// The marks' names, in the order of canvas::icons::PROJECT.
+pub const MARK_NAMES: [&str; 16] = ["Pen", "Moon", "Server", "Code", "Play", "Gallery", "Leaf", "Bolt", "Book", "Globe", "Box", "Star", "Heart", "Cup", "Rocket", "Palette"];
+
+/// The colors a project or a pane can be given: the eight it may get from
+/// its name.
+pub const COLORS: [(u32, &str); 8] = [(0x3E63DD, "Indigo"), (0x00A2C7, "Cyan"), (0x12A594, "Teal"), (0x46A758, "Grass"), (0xFFC53D, "Amber"), (0xF76B15, "Orange"), (0xD6409F, "Pink"), (0x8E4EC6, "Purple")];
+
 /// A project as Settings › Projects shows it.
 pub struct ProjectRow {
     pub project: Project,
@@ -76,20 +84,91 @@ pub struct ProjectRow {
     pub by_hand: Vec<(u64, String)>,
 }
 
+/// A look given by hand, to a project or to one pane: each part unset
+/// keeps what it would be (a project's from its name, a pane's its
+/// project's). A pane's tint is not used.
+#[derive(Default, Debug, PartialEq, Clone)]
+pub struct Look {
+    pub icon: Option<char>,
+    pub color: Option<u32>,
+    /// A theme's name.
+    pub theme: Option<String>,
+    /// Its panes' background washed toward its color, 0 to 100.
+    pub tint: Option<u8>,
+}
+
+impl Look {
+    pub fn is_empty(&self) -> bool {
+        *self == Look::default()
+    }
+
+    fn set(&mut self, key: &str, value: &str) {
+        match key {
+            "icon" => self.icon = u32::from_str_radix(value, 16).ok().and_then(char::from_u32),
+            "color" => self.color = u32::from_str_radix(value, 16).ok(),
+            "theme" => self.theme = Some(value.to_string()),
+            "tint" => self.tint = value.parse().ok(),
+            _ => {}
+        }
+    }
+
+    fn lines(&self, kind: &str, who: &str) -> String {
+        let mut out = String::new();
+        if let Some(i) = self.icon {
+            out += &format!("{kind}\t{who}\ticon\t{:x}\n", i as u32);
+        }
+        if let Some(c) = self.color {
+            out += &format!("{kind}\t{who}\tcolor\t{c:06X}\n");
+        }
+        if let Some(t) = &self.theme {
+            out += &format!("{kind}\t{who}\ttheme\t{t}\n");
+        }
+        if let Some(t) = self.tint {
+            out += &format!("{kind}\t{who}\ttint\t{t}\n");
+        }
+        out
+    }
+}
+
 /// Projects set by hand: the terminals put in one (or in none) whatever
-/// their folder, and the projects made that no folder is. Kept in the
-/// state folder's `jot/projects`, a line each: `pane SID NAME` (`-` for
-/// none), `project NAME`. This machine's terminals only, for now.
+/// their folder, the projects made that no folder is, each project's look
+/// and folders, and each pane's own look. Kept in the state folder's
+/// `jot/projects`, a line each: `pane SID NAME` (`-` for none), `project
+/// NAME`; then, split by tabs, `look NAME KEY VALUE`, `folder NAME PATH`,
+/// `panelook SID KEY VALUE`. This machine's terminals only, for now.
 #[derive(Default, Debug, PartialEq)]
 pub struct ByHand {
     pub panes: HashMap<u64, Option<String>>,
     pub made: Vec<String>,
+    pub looks: BTreeMap<String, Look>,
+    /// Each project's folders, as written (~/scripts/jot).
+    pub folders: BTreeMap<String, Vec<String>>,
+    pub pane_looks: HashMap<u64, Look>,
 }
 
 impl ByHand {
     pub fn parse(text: &str) -> ByHand {
         let mut b = ByHand::default();
         for line in text.lines() {
+            if line.contains('\t') {
+                let w: Vec<&str> = line.split('\t').collect();
+                match w.as_slice() {
+                    ["look", name, key, value] => b.looks.entry(name.to_string()).or_default().set(key, value),
+                    ["folder", name, path] => {
+                        let f = b.folders.entry(name.to_string()).or_default();
+                        if !f.iter().any(|p| p == path) {
+                            f.push(path.to_string());
+                        }
+                    }
+                    ["panelook", sid, key, value] => {
+                        if let Ok(sid) = sid.parse() {
+                            b.pane_looks.entry(sid).or_default().set(key, value);
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             let mut w = line.splitn(3, ' ');
             match (w.next(), w.next(), w.next()) {
                 (Some("pane"), Some(sid), Some(name)) => {
@@ -116,8 +195,79 @@ impl ByHand {
         for sid in sids {
             out += &format!("pane {sid} {}\n", self.panes[sid].as_deref().unwrap_or("-"));
         }
+        for (name, look) in &self.looks {
+            out += &look.lines("look", name);
+        }
+        for (name, folders) in &self.folders {
+            for f in folders {
+                out += &format!("folder\t{name}\t{f}\n");
+            }
+        }
+        let mut sids: Vec<&u64> = self.pane_looks.keys().collect();
+        sids.sort();
+        for sid in sids {
+            out += &self.pane_looks[sid].lines("panelook", &sid.to_string());
+        }
         out
     }
+}
+
+/// A project's look: its mark and color from its name, unless given.
+pub fn project_look(name: &str) -> Project {
+    let mut p = project_named(name);
+    with_by_hand(|b| {
+        if let Some(l) = b.looks.get(name) {
+            p.icon = l.icon.unwrap_or(p.icon);
+            p.color = l.color.unwrap_or(p.color);
+        }
+    });
+    p
+}
+
+/// What is set for a project (its look, folders), and for a pane.
+pub fn look_of(name: &str) -> Look {
+    with_by_hand(|b| b.looks.get(name).cloned().unwrap_or_default())
+}
+
+pub fn folders_of(name: &str) -> Vec<String> {
+    with_by_hand(|b| b.folders.get(name).cloned().unwrap_or_default())
+}
+
+pub fn pane_look(sid: u64) -> Look {
+    with_by_hand(|b| b.pane_looks.get(&sid).cloned().unwrap_or_default())
+}
+
+/// A change to what is set by hand, written at once.
+pub fn change(f: impl FnOnce(&mut ByHand)) {
+    with_by_hand(f);
+    save_by_hand();
+}
+
+/// The project whose folders hold `dir` (the deepest, when several do).
+fn project_by_folder(dir: &Path) -> Option<String> {
+    with_by_hand(|b| {
+        b.folders
+            .iter()
+            .flat_map(|(name, fs)| fs.iter().map(move |f| (name, persist::expand(f))))
+            .filter(|(_, f)| dir.starts_with(f))
+            .max_by_key(|(_, f)| f.components().count())
+            .map(|(n, _)| n.clone())
+    })
+}
+
+/// A theme washed toward a color (a project's tint), `share` of 255; one
+/// made for each, kept for the run.
+pub fn tinted(base: &'static crate::theme::Theme, color: u32, share: u32) -> &'static crate::theme::Theme {
+    thread_local! {
+        static MADE: RefCell<HashMap<(usize, u32, u32), &'static crate::theme::Theme>> = RefCell::new(HashMap::new());
+    }
+    MADE.with(|m| {
+        *m.borrow_mut().entry((base as *const _ as usize, color, share)).or_insert_with(|| {
+            let mut t = *base;
+            t.bg = crate::canvas::mix(base.bg, color, share);
+            Box::leak(Box::new(t))
+        })
+    })
 }
 
 fn by_hand_path() -> PathBuf {
@@ -128,17 +278,37 @@ thread_local! {
     static BY_HAND: RefCell<Option<ByHand>> = const { RefCell::new(None) };
 }
 
+/// This machine's session, as when its server started (its socket made):
+/// a terminal's id is its own only within one, the next numbering them
+/// from 1 again. 0 when it cannot be told.
+fn session_stamp() -> u64 {
+    std::fs::metadata(crate::mux::socket()).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs())
+}
+
+/// The file's text read for this session: what was set on terminals of
+/// another session (its ids now another terminal's, or none's) let go.
+fn read_for_session(text: &str, now: u64) -> ByHand {
+    let mut b = ByHand::parse(text);
+    let then = text.lines().find_map(|l| l.strip_prefix("session\t")).and_then(|s| s.parse::<u64>().ok());
+    if now != 0 && then.is_some_and(|t| t != now) {
+        b.panes.clear();
+        b.pane_looks.clear();
+    }
+    b
+}
+
 /// What is set by hand, read once.
 fn with_by_hand<R>(f: impl FnOnce(&mut ByHand) -> R) -> R {
     BY_HAND.with(|b| {
         let mut b = b.borrow_mut();
-        let b = b.get_or_insert_with(|| ByHand::parse(&std::fs::read_to_string(by_hand_path()).unwrap_or_default()));
+        let b = b.get_or_insert_with(|| read_for_session(&std::fs::read_to_string(by_hand_path()).unwrap_or_default(), session_stamp()));
         f(b)
     })
 }
 
 fn save_by_hand() {
-    let text = with_by_hand(|b| b.text());
+    let now = session_stamp();
+    let text = format!("{}{}", if now != 0 { format!("session\t{now}\n") } else { String::new() }, with_by_hand(|b| b.text()));
     let path = by_hand_path();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -147,27 +317,81 @@ fn save_by_hand() {
 }
 
 impl App {
-    /// The project a pane's terminal is in: the one it was put in by hand;
-    /// else, on this machine, the repository its folder is in; on another,
-    /// none for now (its files are not here to look in).
+    /// The project a pane's terminal is in: the one it was put in by hand
+    /// (on this machine); else the one its folder is in (found_project).
     pub(super) fn project_of(&self, id: PaneId) -> Option<Project> {
         let p = self.panes.get(&id)?;
-        if p.pty.machine != 0 {
-            return None;
-        }
-        let (_, sid) = crate::mux::split_id(id);
-        if let Some(set) = with_by_hand(|b| b.panes.get(&sid).cloned()) {
-            return set.map(|n| project_named(&n));
+        if p.pty.machine == 0 {
+            let (_, sid) = crate::mux::split_id(id);
+            if let Some(set) = with_by_hand(|b| b.panes.get(&sid).cloned()) {
+                return set.map(|n| project_look(&n));
+            }
         }
         self.found_project(id)
     }
 
-    /// A pane's project as its folder says, nothing set by hand counted.
-    fn found_project(&self, id: PaneId) -> Option<Project> {
+    /// A pane's project as its folder says, nothing set by hand counted:
+    /// a project whose folders hold it (Settings › Projects); on this
+    /// machine, the git repository it is in; on another, whose files are
+    /// not here to look in, a folder of a project's name on its way down
+    /// (~/src/jot there is jot, as ~/scripts/jot is here).
+    pub(super) fn found_project(&self, id: PaneId) -> Option<Project> {
         let p = self.panes.get(&id)?;
-        let root = repo_root(&p.pty.cwd()?)?;
-        let name = root.file_name()?.to_string_lossy().into_owned();
-        Some(project_named(&name))
+        let cwd = p.pty.cwd()?;
+        if let Some(name) = project_by_folder(&cwd) {
+            return Some(project_look(&name));
+        }
+        if p.pty.machine == 0 {
+            let root = repo_root(&cwd)?;
+            let name = root.file_name()?.to_string_lossy().into_owned();
+            return Some(project_look(&name));
+        }
+        let names = self.local_project_names();
+        cwd.ancestors().filter_map(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).find(|n| names.contains(n)).map(|n| project_look(&n))
+    }
+
+    /// A pane's theme: its own, else its project's, else `ws` (its
+    /// workspace's); its project's tint over that.
+    pub(super) fn pane_theme(&self, id: PaneId, ws: &'static crate::theme::Theme) -> &'static crate::theme::Theme {
+        let project = self.project_of(id);
+        let plook = project.as_ref().map(|p| look_of(&p.name)).unwrap_or_default();
+        let own = self.panes.get(&id).filter(|p| p.pty.machine == 0).map(|_| pane_look(crate::mux::split_id(id).1)).unwrap_or_default();
+        let base = own.theme.or(plook.theme).map(|n| crate::theme::Theme::by_name(&n)).unwrap_or(ws);
+        match (project, plook.tint) {
+            (Some(p), Some(t)) if t > 0 => tinted(base, p.color, (t as u32 * 64 / 100).min(64)),
+            _ => base,
+        }
+    }
+
+    /// A pane's badge: its project's mark and color, or its own where it
+    /// has one; and whether it differs from its project in anything.
+    pub(super) fn badge_of(&self, id: PaneId) -> Option<(Project, bool)> {
+        let mut p = self.project_of(id)?;
+        let own = self.panes.get(&id).filter(|p| p.pty.machine == 0).map(|_| pane_look(crate::mux::split_id(id).1)).unwrap_or_default();
+        p.icon = own.icon.unwrap_or(p.icon);
+        p.color = own.color.unwrap_or(p.color);
+        Some((p, !own.is_empty()))
+    }
+
+    /// The projects this machine knows of by itself: its panes' repositories,
+    /// and those made, set or given a look by hand.
+    fn local_project_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .panes
+            .values()
+            .filter(|p| p.pty.machine == 0)
+            .filter_map(|p| repo_root(&p.pty.cwd()?))
+            .filter_map(|r| Some(r.file_name()?.to_string_lossy().into_owned()))
+            .collect();
+        with_by_hand(|b| {
+            names.extend(b.made.iter().cloned());
+            names.extend(b.panes.values().flatten().cloned());
+            names.extend(b.looks.keys().cloned());
+            names.extend(b.folders.keys().cloned());
+        });
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// Every project known here: those panes are in, made by hand, or set
@@ -179,10 +403,11 @@ impl App {
         with_by_hand(|b| {
             names.extend(b.made.iter().cloned());
             names.extend(b.panes.values().flatten().cloned());
+            names.extend(b.folders.keys().cloned());
         });
         names.sort_by_key(|n| n.to_lowercase());
         names.dedup();
-        names.iter().map(|n| project_named(n)).collect()
+        names.iter().map(|n| project_look(n)).collect()
     }
 
     /// The pane you are in put in a project by hand (None: in none). Put
@@ -293,6 +518,120 @@ impl App {
         self.redraw();
     }
 
+    /// A pane's cog (beside its name): this pane only. Its name, its icon
+    /// and color, its theme, which project it is in, and all of it its
+    /// project's again.
+    pub(super) fn open_pane_menu(&mut self, id: PaneId, at: (i32, i32)) {
+        use crate::palette::{Action, Item};
+        let c = |label: &str, hint: String, action| Some(Item { label: label.into(), hint, action });
+        let (k, sid) = crate::mux::split_id(id);
+        let here = k == 0;
+        let own = if here { pane_look(sid) } else { Look::default() };
+        let by_hand = here && with_by_hand(|b| b.panes.contains_key(&sid));
+        let project = self.project_of(id).map(|p| p.name);
+        let tick = crate::canvas::icons::CHECK.to_string();
+        let mut themes = vec![c(if project.is_some() { "As its project" } else { "As the workspace" }, if own.theme.is_none() { tick.clone() } else { String::new() }, Action::PaneTheme(None)), None];
+        themes.extend(crate::theme::THEMES.iter().map(|t| c(t.name, if own.theme.as_deref() == Some(t.name) { tick.clone() } else { String::new() }, Action::PaneTheme(Some(t.name.to_string())))));
+        let mut items = vec![c("Rename…", String::new(), Action::RenameTerminal(k, sid))];
+        if here {
+            items.extend([
+                None,
+                c("Icon…", String::new(), Action::PaneIconMenu),
+                c("Color…", String::new(), Action::PaneColorMenu),
+                c("Theme", "›".into(), Action::Submenu(0)),
+                None,
+                c("Move to project…", project.clone().unwrap_or_default(), Action::MoveToProject),
+            ]);
+            if !own.is_empty() || by_hand {
+                items.push(c("Reset to project", String::new(), Action::ResetPane));
+            }
+        }
+        self.palette = None;
+        self.menu_at = at;
+        self.menu = Some(super::overlay::Menu { items, at, hover: None, children: vec![themes], open: None, icons: Vec::new(), cogs: Vec::new() });
+        self.full = true;
+        self.redraw();
+    }
+
+    /// The marks, for the pane you are in: its project's first.
+    pub(super) fn open_pane_icon_menu(&mut self) {
+        use crate::palette::{Action, Item};
+        let Some(id) = self.focused() else { return };
+        let Some((badge, _)) = self.badge_of(id) else { return };
+        let own = pane_look(crate::mux::split_id(id).1).icon;
+        let tick = crate::canvas::icons::CHECK.to_string();
+        let base = self.project_of(id);
+        let mut items = vec![Some(Item { label: "As its project".into(), hint: if own.is_none() { tick.clone() } else { String::new() }, action: Action::PaneIcon(None) }), None];
+        let mut icons = vec![base.as_ref().map(|p| (p.icon, badge.color)), None];
+        for (glyph, name) in crate::canvas::icons::PROJECT.iter().zip(MARK_NAMES) {
+            items.push(Some(Item { label: name.into(), hint: if own == Some(*glyph) { tick.clone() } else { String::new() }, action: Action::PaneIcon(Some(*glyph)) }));
+            icons.push(Some((*glyph, badge.color)));
+        }
+        let at = self.menu_at;
+        self.menu = Some(super::overlay::Menu { items, at, hover: None, children: Vec::new(), open: None, icons, cogs: Vec::new() });
+        self.full = true;
+        self.redraw();
+    }
+
+    /// The colors, for the pane you are in: its project's first.
+    pub(super) fn open_pane_color_menu(&mut self) {
+        use crate::palette::{Action, Item};
+        let Some(id) = self.focused() else { return };
+        let Some((badge, _)) = self.badge_of(id) else { return };
+        let own = pane_look(crate::mux::split_id(id).1).color;
+        let tick = crate::canvas::icons::CHECK.to_string();
+        let base = self.project_of(id);
+        let mut items = vec![Some(Item { label: "As its project".into(), hint: if own.is_none() { tick.clone() } else { String::new() }, action: Action::PaneColor(None) }), None];
+        let mut icons = vec![base.as_ref().map(|p| (badge.icon, p.color)), None];
+        for (color, name) in COLORS {
+            items.push(Some(Item { label: name.into(), hint: if own == Some(color) { tick.clone() } else { String::new() }, action: Action::PaneColor(Some(color)) }));
+            icons.push(Some((badge.icon, color)));
+        }
+        let at = self.menu_at;
+        self.menu = Some(super::overlay::Menu { items, at, hover: None, children: Vec::new(), open: None, icons, cogs: Vec::new() });
+        self.full = true;
+        self.redraw();
+    }
+
+    /// A part of the pane you are in's own look set (or let go of).
+    pub(super) fn set_pane_look(&mut self, f: impl FnOnce(&mut Look)) {
+        let Some(id) = self.focused() else { return };
+        let (k, sid) = crate::mux::split_id(id);
+        if k != 0 {
+            return;
+        }
+        change(|b| {
+            let l = b.pane_looks.entry(sid).or_default();
+            f(l);
+            if l.is_empty() {
+                b.pane_looks.remove(&sid);
+            }
+        });
+        if let Some(p) = self.panes.get_mut(&id) {
+            p.full = true;
+        }
+        self.full = true;
+        self.side_dirty = true;
+        self.redraw();
+    }
+
+    /// The pane you are in as its project has it again: no look of its
+    /// own, in the project its folder is in.
+    pub(super) fn reset_pane(&mut self) {
+        let Some(id) = self.focused() else { return };
+        let (k, sid) = crate::mux::split_id(id);
+        if k != 0 {
+            return;
+        }
+        change(|b| {
+            b.pane_looks.remove(&sid);
+            b.panes.remove(&sid);
+        });
+        self.full = true;
+        self.side_dirty = true;
+        self.redraw();
+    }
+
     /// The box for a new project's name.
     pub(super) fn new_project_prompt(&mut self) {
         self.palette = Some(crate::palette::Palette { mode: crate::palette::Mode::NewProject, field: crate::field::TextField::default(), matches: Vec::new(), selected: 0, first: 0 });
@@ -326,6 +665,24 @@ mod tests {
         assert_eq!(back, b);
         assert_eq!(back.panes[&7].as_deref(), Some("circadia"));
         assert_eq!(back.panes[&9], None);
+    }
+
+    // A pane's look and project kept with its look and folders; a new
+    // session (its terminals numbered from 1 again) lets the panes' go,
+    // the projects' kept.
+    #[test]
+    fn looks_and_folders_are_kept_and_panes_only_within_their_session() {
+        let mut b = ByHand::default();
+        b.panes.insert(1, Some("jot".into()));
+        b.pane_looks.insert(1, Look { color: Some(0x12A594), theme: Some("Rosé Pine".into()), ..Look::default() });
+        b.looks.insert("side quest".into(), Look { icon: Some('\u{e31b}'), tint: Some(30), ..Look::default() });
+        b.folders.insert("jot".into(), vec!["~/scripts/jot".into(), "~/scripts/jot-mach".into()]);
+        let text = format!("session\t100\n{}", b.text());
+        assert_eq!(read_for_session(&text, 100), b);
+        let next = read_for_session(&text, 200);
+        assert!(next.panes.is_empty() && next.pane_looks.is_empty());
+        assert_eq!(next.looks, b.looks);
+        assert_eq!(next.folders, b.folders);
     }
 
     #[test]

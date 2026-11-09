@@ -230,6 +230,8 @@ pub struct App {
     /// The divider under the pointer or dragged: its line in the accent,
     /// to show it can be grabbed.
     divider_lit: Option<Rect>,
+    /// The pane whose caption the pointer is on: its pencil and cog shown.
+    caption_hover: Option<PaneId>,
     /// Everything to be drawn again: the layout changed.
     full: bool,
     /// The size the window was last given, taken up when the next frame
@@ -630,6 +632,7 @@ impl App {
             roam_cwd: None,
             dividers: Vec::new(),
             divider_lit: None,
+            caption_hover: None,
             full: true,
             resized: None,
             gpu_settle: None,
@@ -2028,6 +2031,16 @@ impl App {
                     watch::Tag::TeeStop => self.stop_tee(id),
                     watch::Tag::Restart => self.restart(id),
                     watch::Tag::Minimize => self.minimize(id),
+                    watch::Tag::Rename => {
+                        self.set_focus(id);
+                        let (k, sid) = crate::mux::split_id(id);
+                        self.rename_terminal_prompt(k, sid);
+                    }
+                    watch::Tag::PaneCog => {
+                        self.set_focus(id);
+                        let r = self.multi_tags.iter().find(|(_, p, k)| *p == id && *k == watch::Tag::PaneCog).map(|(r, ..)| *r).unwrap_or_default();
+                        self.open_pane_menu(id, (r.x, r.y + r.h + self.px(2.0)));
+                    }
                     watch::Tag::Project => {
                         self.set_focus(id);
                         let r = self.multi_tags.iter().find(|(_, p, k)| *p == id && *k == watch::Tag::Project).map(|(r, ..)| *r).unwrap_or_default();
@@ -2182,6 +2195,17 @@ impl App {
         self.float_track(x, y);
         let lit = self.divider_to_light(x, y);
         self.light_divider(lit);
+        // Onto a caption or off it: its pencil and cog come or go.
+        let cap = if self.menu.is_some() || self.drag.is_some() { self.caption_hover } else { self.caption_at(x, y) };
+        if cap != self.caption_hover {
+            for id in [self.caption_hover, cap].into_iter().flatten() {
+                if let Some(p) = self.panes.get_mut(&id) {
+                    p.full = true;
+                }
+            }
+            self.caption_hover = cap;
+            self.redraw();
+        }
         if self.tip_quiet_at.is_some_and(|r| !r.contains(x, y)) {
             self.tip_quiet = None;
             self.tip_quiet_at = None;
@@ -2633,7 +2657,9 @@ impl App {
             let t = ws.theme.as_deref().map(Theme::by_name).unwrap_or(self.theme);
             let mut ids = Vec::new();
             ws.root.panes(&mut ids);
-            wanted.extend(ids.into_iter().map(|id| (id, t)));
+            // Its own theme, else its project's, else its workspace's; its
+            // project's tint over that.
+            wanted.extend(ids.into_iter().map(|id| (id, self.pane_theme(id, t))));
         }
         wanted.extend(self.roam.map(|r| (r, self.theme)));
         for (id, t) in wanted {
@@ -3159,7 +3185,8 @@ impl App {
         // mark's and the wash's only: the name is near white (or near
         // black), as a tint of the color read at under 3:1.
         let mut caption = caption.to_string();
-        if let Some(pr) = self.project_of(id) {
+        if let Some((pr, own)) = self.badge_of(id) {
+            let differs = own;
             let (bh, ih, p4) = (b, self.px(14.0), self.px(4.0));
             let name_w = self.fonts.ui.width(&pr.name);
             let w = (p4 + ih + self.px(5.0) + name_w + self.px(8.0)).min((right - x) / 2).max(0);
@@ -3178,6 +3205,12 @@ impl App {
             let nx = badge.x + p4 + ih + self.px(5.0);
             self.canvas.text_fit(&mut self.fonts.ui, &pr.name, nx, ty, (badge.x + badge.w - nx).max(0), ink, badge);
             x = badge.x + badge.w + self.px(6.0);
+            // A pane with a look of its own (not its project's): a dot of
+            // its color after the badge, as Settings › Projects says.
+            if differs {
+                let d = self.px(5.0);
+                self.canvas.disc((badge.x + badge.w + self.px(1.0)) as f32 - d as f32 / 2.0, (badge.y + self.px(3.0)) as f32, d as f32 / 2.0 + 0.5, pr.color);
+            }
             // A name that is only the project's says nothing more.
             let rest = projects::without_project(&caption, &pr.name).to_string();
             if rest == pr.name {
@@ -3187,8 +3220,25 @@ impl App {
                 caption = rest;
             }
         }
-        let room = right - self.px(8.0) - x;
-        self.canvas.text_fit(&mut self.fonts.ui, &caption, x, ty, room.max(0), fg, bar);
+        // Under the pointer: a pencil to rename the pane and a cog for its
+        // own settings after its name, room kept for them.
+        let hovered = self.caption_hover == Some(id) && n > 0;
+        let tools = if hovered { 2 * b + self.px(6.0) } else { 0 };
+        let room = right - self.px(8.0) - x - tools;
+        let end = self.canvas.text_fit(&mut self.fonts.ui, &caption, x, ty, room.max(0), fg, bar);
+        if hovered {
+            let mut bx = (if caption.is_empty() { x - self.px(4.0) } else { end + self.px(4.0) }).max(bar.x);
+            for (kind, glyph) in [(watch::Tag::Rename, crate::canvas::icons::PENCIL), (watch::Tag::PaneCog, crate::canvas::icons::SETTINGS)] {
+                let r = Rect { x: bx, y: bar.y + (h - b) / 2, w: b, h: b };
+                let lit = self.multi_lit == Some((id, kind));
+                if lit {
+                    self.canvas.round_fill(r, self.px(5.0), lift, 24);
+                }
+                self.canvas.icon_in(glyph, r, icon, if lit { fg } else { dim });
+                self.multi_tags.push((r, id, kind));
+                bx += b + self.px(2.0);
+            }
+        }
         self.damage.push(bar);
     }
 

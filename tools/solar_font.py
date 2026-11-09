@@ -37,7 +37,7 @@ PICKS = {
     "CHEVRON_RIGHT": "alt-arrow-right", "SETTINGS": "settings",
     "LAYERS": "layers-minimalistic", "CHEVRON_UP": "alt-arrow-up",
     "WIN_MAX": "stop", "WIN_RESTORE": "copy",
-    "CHECK": "check", "INFO": "info-circle", "DANGER": "danger-circle",
+    "CHECK": "check", "INFO": "info-circle", "DANGER": "danger-circle", "PENCIL": "pen-2",
     # Projects' marks, in Solar's bold (its line reads badly at 14):
     # one picked by its name, as its color is.
     "PROJ_PEN": "pen-bold", "PROJ_MOON": "moon-bold", "PROJ_SERVER": "server-bold", "PROJ_CODE": "code-bold",

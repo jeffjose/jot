@@ -75,6 +75,16 @@ pub enum Action {
     /// wherever its folder is; its project's settings; a project made.
     SetProject(Option<String>),
     ProjectSettings(String),
+    /// The pane you are in: its own icon, color or theme (None: its
+    /// project's again); the menus picking them; all of it its project's
+    /// again; the projects, to move it to another.
+    PaneIcon(Option<char>),
+    PaneColor(Option<u32>),
+    PaneTheme(Option<String>),
+    PaneIconMenu,
+    PaneColorMenu,
+    ResetPane,
+    MoveToProject,
     NewProject,
     CloseWorkspace,
     Roam,

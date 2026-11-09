@@ -412,6 +412,18 @@ impl App {
             Action::SetProject(name) => self.set_project(name),
             Action::ProjectSettings(name) => self.open_project_settings(&name),
             Action::NewProject => self.new_project_prompt(),
+            Action::PaneIcon(i) => self.set_pane_look(|l| l.icon = i),
+            Action::PaneColor(c) => self.set_pane_look(|l| l.color = c),
+            Action::PaneTheme(t) => self.set_pane_look(|l| l.theme = t),
+            Action::PaneIconMenu => return self.open_pane_icon_menu(),
+            Action::PaneColorMenu => return self.open_pane_color_menu(),
+            Action::ResetPane => self.reset_pane(),
+            Action::MoveToProject => {
+                if let Some(id) = self.focused() {
+                    let at = self.menu_at;
+                    return self.open_project_menu(id, at);
+                }
+            }
             Action::Broadcast => self.toggle_broadcast(),
             Action::PopOut => self.pop_out(event_loop),
             Action::CopyOutput => self.copy_output_at(self.menu_at),
@@ -941,6 +953,10 @@ impl App {
     pub(super) fn open_tag_menu(&mut self, id: PaneId, kind: super::watch::Tag) {
         use super::watch::Tag;
         let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
+        if kind == Tag::PaneCog {
+            let r = self.multi_tags.iter().find(|(_, p, k)| *p == id && *k == Tag::PaneCog).map(|(r, ..)| *r).unwrap_or_default();
+            return self.open_pane_menu(id, (r.x, r.y + r.h + self.px(2.0)));
+        }
         if kind == Tag::Project {
             let r = self.multi_tags.iter().find(|(_, p, k)| *p == id && *k == Tag::Project).map(|(r, ..)| *r).unwrap_or_default();
             return self.open_project_menu(id, (r.x, r.y + r.h + self.px(2.0)));
@@ -967,7 +983,7 @@ impl App {
             Tag::Restart => vec![c("Restart", "Ctrl R", Action::Restart)],
             Tag::Minimize => vec![c("Minimize", "", Action::Minimize)],
             Tag::Close => vec![c("Close pane (it runs on)", "Alt X", Action::Close), c("Kill terminal", "", Action::EndPane)],
-            Tag::Project => Vec::new(),
+            Tag::Project | Tag::Rename | Tag::PaneCog => Vec::new(),
         };
         while matches!(items.last(), Some(None)) {
             items.pop();
