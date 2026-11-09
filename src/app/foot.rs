@@ -53,6 +53,14 @@ impl App {
         self.ws_machine(self.current)
     }
 
+    /// The mark of the workspace you are in, as the foot bar has it.
+    pub(super) fn cur_mark(&self) -> Option<char> {
+        let set = self.machine_set(self.foot_machine());
+        let names: Vec<&str> = set.iter().map(|(_, n, _)| n.as_str()).collect();
+        let place = set.iter().position(|(d, ..)| *d == FootDot::Here(self.current))?;
+        super::projects::workspace_marks(&names).get(place).copied()
+    }
+
     /// Machine `k`'s workspaces as the bar shows them, each with its name
     /// and color: this window's on it, in their order; then those its
     /// session holds that no window shows, colored as their own say or, as

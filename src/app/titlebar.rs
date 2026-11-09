@@ -55,13 +55,15 @@ impl App {
         let name = ws.name.clone();
         let folder = self.panes.get(&ws.focus).and_then(|p| p.pty.cwd()).map(|c| persist::shorten(&c)).unwrap_or_default();
         let accent = self.cur_accent;
-        let said = format!("{name}\0{folder}\0{accent}\0{maximized}\0{:?}\0{}", self.title.lit, self.canvas.width);
+        let mark = self.cur_mark();
+        let said = format!("{name}\0{folder}\0{accent}\0{mark:?}\0{maximized}\0{:?}\0{}", self.title.lit, self.canvas.width);
         if !full && said == self.title.said {
             return;
         }
         self.title.said = said;
         let c = self.cur_theme.chrome();
-        let px = |v: f32| (v * self.scale).round() as i32;
+        let scale = self.scale;
+        let px = move |v: f32| (v * scale).round() as i32;
         let bar = Rect { x: 0, y: 0, w: self.canvas.width, h };
         self.canvas.fill(bar, c.side);
         self.canvas.fill(Rect { x: 0, y: h - 1, w: bar.w, h: 1 }, c.edge);
@@ -99,13 +101,14 @@ impl App {
         }
         self.canvas.icon_in(icons::SIDEBAR, side, px(14.0), if side_lit { c.text } else { c.dim });
         self.title.hits.push((side, TitleHit::Sidebar));
-        // Then the workspace in its color, its name, the folder.
+        // Then the workspace's mark in its color (as the foot bar has it),
+        // its name, the folder.
         let uh = self.fonts.ui.height;
         let ty = (h - uh) / 2;
-        let mut x = side.x + side.w + px(8.0);
-        let d = px(9.0);
-        self.canvas.round_fill(Rect { x, y: (h - d) / 2, w: d, h: d }, px(3.0), accent, 255);
-        x += d + px(10.0);
+        let mut x = side.x + side.w + px(6.0);
+        let d = px(14.0);
+        self.mark_tile(Rect { x, y: (h - d) / 2, w: d, h: d }, accent, mark, false);
+        x += d + px(8.0);
         let room = Rect { x: 0, y: 0, w: (right - px(12.0)).max(0), h };
         x = self.canvas.text_fit(&mut self.fonts.ui, &name, x, ty, (room.w - x).max(0), c.text, room);
         if !folder.is_empty() {
