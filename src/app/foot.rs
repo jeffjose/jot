@@ -272,12 +272,8 @@ impl App {
         self.canvas.icon_in(icons::CHEVRON_UP, Rect { x: ix, y: button.y + (button.h - ih) / 2, w: ih, h: ih }, ih, c.dim);
         self.foot_button = Some(button);
         right = button.x - gap;
-        // The tile: a square of the workspace's color at the corner, its
-        // number in its machine's set in it (Alt and the number go there;
-        // one day the icon its settings give it). Dark or light, whichever
-        // reads better on the color, as WCAG reckons it.
         // The workspace you are in, always at the far left: its mark on a
-        // tile of its color (its project's mark; a dot when it has none).
+        // square of its color.
         let place = dots.iter().position(|(d, _)| *d == FootDot::Here(self.current)).unwrap_or(0);
         let ts = h - self.px(4.0);
         let mark = marks.get(place).copied().flatten();
@@ -304,8 +300,6 @@ impl App {
             let x = end + self.px(10.0);
             end = self.canvas.text_fit(&mut self.fonts.ui, &folder, x, ty, (clip.x + clip.w - x).max(0), c.dim, clip);
         }
-        // The machine's workspaces, a dot each in order, all one size: the
-        // one you are in ringed in its color, and nothing else.
         self.foot_dots.clear();
         // Every workspace of the machine in order, each its tile; the one
         // you are in bigger, in its place (the order never moves).

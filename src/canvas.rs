@@ -506,12 +506,9 @@ pub mod icons {
     pub const DANGER: char = '\u{e30d}';
     /// Projects' marks, one picked by the project's name (see app::projects).
     pub const PROJECT: [char; 16] = ['\u{e310}', '\u{e311}', '\u{e312}', '\u{e313}', '\u{e314}', '\u{e315}', '\u{e316}', '\u{e317}', '\u{e318}', '\u{e319}', '\u{e31a}', '\u{e31b}', '\u{e31c}', '\u{e31d}', '\u{e31e}', '\u{e31f}'];
-    /// A project's mark in duotone, as its two layers (the back drawn
-    /// faintly, the front over it); in the order of PROJECT.
-    pub fn duotone(mark: char) -> Option<(char, char)> {
-        let i = PROJECT.iter().position(|m| *m == mark)? as u32;
-        Some((char::from_u32(0xE320 + 2 * i)?, char::from_u32(0xE321 + 2 * i)?))
-    }
+    /// Workspaces' marks on the foot bar, one picked by the workspace's
+    /// name: Solar's bold, plain shapes that hold at 13 pixels.
+    pub const WORKSPACE: [char; 16] = ['\u{e320}', '\u{e321}', '\u{e322}', '\u{e323}', '\u{e324}', '\u{e325}', '\u{e326}', '\u{e327}', '\u{e328}', '\u{e329}', '\u{e32a}', '\u{e32b}', '\u{e32c}', '\u{e32d}', '\u{e32e}', '\u{e32f}'];
 }
 
 /// An icon's mask at `size` pixels square: its letter drawn to fill the

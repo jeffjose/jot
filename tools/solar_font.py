@@ -43,23 +43,12 @@ PICKS = {
     "PROJ_PLAY": "play", "PROJ_GALLERY": "gallery", "PROJ_LEAF": "leaf", "PROJ_BOLT": "bolt",
     "PROJ_BOOK": "book", "PROJ_GLOBE": "global", "PROJ_BOX": "box", "PROJ_STAR": "star",
     "PROJ_HEART": "heart", "PROJ_CUP": "cup-hot", "PROJ_ROCKET": "rocket", "PROJ_PALETTE": "palette",
-    # The same marks, duotone, in two layers each (see duotone): on tiles.
-    "DUO_PEN_BACK": "pen@back", "DUO_PEN_FRONT": "pen@front",
-    "DUO_MOON_BACK": "moon@back", "DUO_MOON_FRONT": "moon@front",
-    "DUO_SERVER_BACK": "server@back", "DUO_SERVER_FRONT": "server@front",
-    "DUO_CODE_BACK": "code@back", "DUO_CODE_FRONT": "code@front",
-    "DUO_PLAY_BACK": "play@back", "DUO_PLAY_FRONT": "play@front",
-    "DUO_GALLERY_BACK": "gallery@back", "DUO_GALLERY_FRONT": "gallery@front",
-    "DUO_LEAF_BACK": "leaf@back", "DUO_LEAF_FRONT": "leaf@front",
-    "DUO_BOLT_BACK": "bolt@back", "DUO_BOLT_FRONT": "bolt@front",
-    "DUO_BOOK_BACK": "book@back", "DUO_BOOK_FRONT": "book@front",
-    "DUO_GLOBAL_BACK": "global@back", "DUO_GLOBAL_FRONT": "global@front",
-    "DUO_BOX_BACK": "box@back", "DUO_BOX_FRONT": "box@front",
-    "DUO_STAR_BACK": "star@back", "DUO_STAR_FRONT": "star@front",
-    "DUO_HEART_BACK": "heart@back", "DUO_HEART_FRONT": "heart@front",
-    "DUO_CUP_HOT_BACK": "cup-hot@back", "DUO_CUP_HOT_FRONT": "cup-hot@front",
-    "DUO_ROCKET_BACK": "rocket@back", "DUO_ROCKET_FRONT": "rocket@front",
-    "DUO_PALETTE_BACK": "palette@back", "DUO_PALETTE_FRONT": "palette@front",
+    # Workspaces' marks on the foot bar: Solar's bold, plain shapes that
+    # hold at 13 pixels (one picked by the workspace's name).
+    "WS_STAR": "star-bold", "WS_HEART": "heart-bold", "WS_BOLT": "bolt-bold", "WS_MOON": "moon-bold",
+    "WS_LEAF": "leaf-bold", "WS_FIRE": "fire-bold", "WS_SUN": "sun-bold", "WS_CLOUD": "cloud-bold",
+    "WS_BELL": "bell-bold", "WS_FLAG": "flag-bold", "WS_CROWN": "crown-bold", "WS_ROCKET": "rocket-bold",
+    "WS_GHOST": "ghost-bold", "WS_PLANET": "planet-bold", "WS_UMBRELLA": "umbrella-bold", "WS_CUP": "cup-hot-bold",
 }
 
 LINE = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'

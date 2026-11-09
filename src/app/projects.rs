@@ -118,26 +118,23 @@ pub fn remembered(k: usize, sid: u64) -> Option<Project> {
 }
 
 impl App {
-    /// A workspace as a tile: a rounded square of its color, faint, with
-    /// its project's mark on it in duotone (the back faint, the front in
-    /// the color); a dot of the color for a workspace in no project.
+    /// A workspace's mark on the foot bar, in its color: the one you are
+    /// in (`strong`) on a rounded square of the color, faint; the rest the
+    /// mark by itself, nearly as big as `r`. A dot when it has no mark.
     pub(super) fn mark_tile(&mut self, r: Rect, color: u32, mark: Option<char>, strong: bool) {
-        let c = self.cur_theme.chrome();
-        let ground = c.side;
-        let wash = if strong { 72 } else { 46 };
-        self.canvas.round_fill(r, (r.w as f32 * 0.27).round() as i32, color, wash);
+        if strong {
+            self.canvas.round_fill(r, (r.w as f32 * 0.28).round() as i32, color, 64);
+        }
         // On a dark ground the color lifted a little, to read as well as it
         // does on a light one.
-        let ink = if self.cur_theme.dark { mix(color, 0xFFFFFF, 50) } else { mix(color, 0x000000, 30) };
-        let under = mix(ground, color, wash);
-        match mark.and_then(crate::canvas::icons::duotone) {
-            Some((back, front)) => {
-                let size = (r.w as f32 * 0.66).round() as i32;
-                self.canvas.icon_in(back, r, size, mix(under, ink, 128));
-                self.canvas.icon_in(front, r, size, ink);
+        let ink = if self.cur_theme.dark { mix(color, 0xFFFFFF, if strong { 77 } else { 64 }) } else { mix(color, 0x000000, 30) };
+        match mark {
+            Some(m) => {
+                let size = (r.w as f32 * if strong { 0.72 } else { 0.93 }).round() as i32;
+                self.canvas.icon_in(m, r, size, ink);
             }
             None => {
-                let d = (r.w as f32 * 0.36).round() as f32;
+                let d = (r.w as f32 * 0.5).round() as f32;
                 self.canvas.disc(r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0, d / 2.0, ink);
             }
         }
@@ -150,7 +147,7 @@ impl App {
 /// left. A workspace is not its project: several in one repository each
 /// have their own.
 pub fn workspace_marks(names: &[&str]) -> Vec<char> {
-    let marks = crate::canvas::icons::PROJECT;
+    let marks = crate::canvas::icons::WORKSPACE;
     let mut used: Vec<char> = Vec::new();
     names
         .iter()
