@@ -2166,15 +2166,36 @@ impl App {
         }
     }
 
-    /// A divider lit or no longer: the line itself, 1 px, in the accent,
-    /// or the ground again; nothing else drawn.
+    /// The band a lit divider is drawn as: 3 px across its 1 px line,
+    /// centered on it (a pixel into each pane), as thick as a sash is to be
+    /// seen as something to grab, no thicker.
+    fn divider_band(&self, r: Rect) -> Rect {
+        let t = self.px(3.0).max(3);
+        if r.w <= r.h {
+            Rect { x: r.x + r.w / 2 - t / 2, w: t, ..r }
+        } else {
+            Rect { y: r.y + r.h / 2 - t / 2, h: t, ..r }
+        }
+    }
+
+    /// A divider lit (its band in the accent, see draw_divider_lit) or no
+    /// longer: its line the ground again, the panes the band ran over drawn
+    /// again.
     fn light_divider(&mut self, lit: Option<Rect>) {
         if lit == self.divider_lit {
             return;
         }
         if let Some(old) = self.divider_lit.take() {
+            // The line as it was; the panes it ran over, drawn again.
             self.canvas.fill(old, self.cur_theme.divider());
             self.damage.push(old);
+            let band = self.divider_band(old);
+            for p in self.panes.values_mut() {
+                let r = p.rect;
+                if r.x < band.x + band.w && band.x < r.x + r.w && r.y < band.y + band.h && band.y < r.y + r.h {
+                    p.full = true;
+                }
+            }
         }
         self.divider_lit = lit;
         self.redraw();
@@ -2189,6 +2210,7 @@ impl App {
             self.divider_lit = None;
         }
         if let Some(r) = self.divider_lit {
+            let r = self.divider_band(r);
             self.canvas.fill(r, self.cur_accent);
             self.damage.push(r);
         }
