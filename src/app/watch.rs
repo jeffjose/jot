@@ -238,6 +238,8 @@ pub enum Tag {
     Focus,
     /// The close button: the pane closed, its terminal running on.
     Close,
+    /// Its project's badge: the projects, to put the pane in another.
+    Project,
 }
 
 impl App {

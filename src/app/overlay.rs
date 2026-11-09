@@ -16,6 +16,16 @@ pub struct Menu {
     pub children: Vec<Vec<Option<Item>>>,
     /// The submenu shown: the row it hangs from, and the row hovered in it.
     pub open: Option<(usize, Option<usize>)>,
+    /// Beside `items` (or empty): a mark in its color before a row, and a
+    /// cog after it that does its own thing (a project's settings, where
+    /// the row puts the pane in it).
+    pub icons: Vec<Option<(char, u32)>>,
+    pub cogs: Vec<Option<Action>>,
+}
+
+thread_local! {
+    /// Whether the pointer was on a menu row's cog, last it moved.
+    static COG_LIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Where a menu, or a submenu, is drawn.
@@ -233,6 +243,10 @@ impl App {
             self.name_terminal(k, sid, &p.typed());
             return self.redraw();
         }
+        if p.mode == Mode::NewProject {
+            self.new_project(&p.typed());
+            return self.redraw();
+        }
         if p.mode == Mode::Rename {
             let name = p.typed().trim().to_string();
             if !name.is_empty() {
@@ -387,6 +401,10 @@ impl App {
             Action::FontSmaller => self.set_font_size(self.font_size - 1.0),
             Action::FontReset => self.set_font_size(self.config.font_size),
             Action::Settings => self.open_settings(),
+            Action::SetProject(name) => self.set_project(name),
+            // Settings › Projects is to come: until then, the settings.
+            Action::ProjectSettings(_) => self.open_settings(),
+            Action::NewProject => self.new_project_prompt(),
             Action::Broadcast => self.toggle_broadcast(),
             Action::PopOut => self.pop_out(event_loop),
             Action::CopyOutput => self.copy_output_at(self.menu_at),
@@ -478,7 +496,7 @@ impl App {
         let pad = self.px(12.0);
         let (head, row_h) = (line + 2 * pad, line * 2);
         let fit = ((h * 3 / 4 - head) / row_h).clamp(1, 10) as usize;
-        let rows = if matches!(p.mode, Mode::Rename | Mode::RenameTerminal(..)) { 0 } else { fit.min(p.matches.len()) };
+        let rows = if matches!(p.mode, Mode::Rename | Mode::RenameTerminal(..) | Mode::NewProject) { 0 } else { fit.min(p.matches.len()) };
         let width = (self.px(14.0) * 42).min(w - 2 * self.px(16.0));
         let height = head + rows as i32 * row_h + if rows > 0 { pad / 2 } else { 0 };
         // A fifth of the way down, where it stays as matches come and go.
@@ -494,6 +512,7 @@ impl App {
         let note = match (mode, p.matches.len()) {
             (Mode::Rename | Mode::RenameTerminal(..), _) => "Enter to rename (empty: its own name again)".to_string(),
             (Mode::Machine | Mode::AddMachine, 0) => "Enter to connect".to_string(),
+            (Mode::NewProject, _) => "Enter to put this pane in it".to_string(),
             (_, 0) => "No matches".to_string(),
             (_, n) => format!("{} of {n}", p.selected + 1),
         };
@@ -600,20 +619,20 @@ impl App {
             }
         }
         self.menu_at = self.pointer;
-        self.menu = Some(Menu { items: tidy, at: self.pointer, hover: None, children, open: None });
+        self.menu = Some(Menu { items: tidy, at: self.pointer, hover: None, children, open: None, icons: Vec::new(), cogs: Vec::new() });
         self.full = true;
         self.redraw();
     }
 
     /// Where a list of items goes: at a point, kept inside the window; a
     /// submenu beside its parent, on the left when there is no room right.
-    fn menu_box(&mut self, items: &[Option<Item>], at: (i32, i32), beside: Option<Rect>) -> MenuBox {
+    fn menu_box(&mut self, items: &[Option<Item>], at: (i32, i32), beside: Option<Rect>, extra: i32) -> MenuBox {
         let ui = &mut self.fonts.ui;
         let pad = (self.scale * 8.0).round() as i32;
         let row_h = ui.height + pad;
         let sep_h = pad;
         let widest = items.iter().flatten().map(|i| ui.width(&i.label) + if i.hint.is_empty() { 0 } else { ui.width(&i.hint) + 3 * pad }).max().unwrap_or(0);
-        let w = widest + 4 * pad;
+        let w = widest + 4 * pad + extra;
         let h = items.iter().map(|i| if i.is_some() { row_h } else { sep_h }).sum::<i32>() + pad;
         let (mut x, mut y) = at;
         match beside {
@@ -640,19 +659,50 @@ impl App {
     pub(super) fn menu_boxes(&mut self) -> Option<(MenuBox, Option<(MenuBox, Vec<Option<Item>>)>)> {
         let m = self.menu.as_ref()?;
         let (items, at, open) = (m.items.clone(), m.at, m.open);
+        let extra = self.menu_extra();
+        let m = self.menu.as_ref()?;
         let sub = open.and_then(|(row, _)| match items.get(row)?.as_ref()?.action {
             Action::Submenu(k) => Some((row, m.children.get(k)?.clone())),
             _ => None,
         });
-        let main = self.menu_box(&items, at, None);
+        let main = self.menu_box(&items, at, None, extra);
         let sub = sub.map(|(row, kids)| {
             let top = main.tops(&items)[row];
-            (self.menu_box(&kids, (0, top), Some(main.rect)), kids)
+            (self.menu_box(&kids, (0, top), Some(main.rect), 0), kids)
         });
         Some((main, sub))
     }
 
-    fn draw_menu_box(&mut self, b: MenuBox, items: &[Option<Item>], hover: Option<usize>, whole: bool) {
+    /// The room a menu's marks and cogs take, beside its words.
+    fn menu_extra(&self) -> i32 {
+        let Some(m) = self.menu.as_ref() else { return 0 };
+        let row_h = self.fonts.ui.height + self.px(8.0);
+        let marks = if m.icons.iter().any(Option::is_some) { self.px(14.0) + self.px(8.0) } else { 0 };
+        let cogs = if m.cogs.iter().any(Option::is_some) { row_h + self.px(4.0) } else { 0 };
+        marks + cogs
+    }
+
+    /// A row's cog, at its right.
+    fn cog_rect(b: &MenuBox, top: i32) -> Rect {
+        let r = b.rect;
+        Rect { x: r.x + r.w - b.pad / 2 - b.row_h, y: top, w: b.row_h, h: b.row_h }
+    }
+
+    /// The menu row whose cog is under the pointer.
+    fn menu_cog_at(&mut self, x: i32, y: i32) -> Option<Action> {
+        let (main, _) = self.menu_boxes()?;
+        let m = self.menu.as_ref()?;
+        let tops = main.tops(&m.items);
+        (0..m.items.len()).find(|&i| m.cogs.get(i).is_some_and(Option::is_some) && Self::cog_rect(&main, tops[i]).contains(x, y)).and_then(|i| m.cogs[i].clone())
+    }
+
+    fn draw_menu_box(&mut self, b: MenuBox, items: &[Option<Item>], hover: Option<usize>, whole: bool, own: bool) {
+        // The menu's own marks and cogs (a submenu has none).
+        let (icons, cogs) = match self.menu.as_ref() {
+            Some(m) if own => (m.icons.clone(), m.cogs.clone()),
+            _ => (Vec::new(), Vec::new()),
+        };
+        let marks = icons.iter().any(Option::is_some);
         let c = self.cur_theme.chrome();
         let MenuBox { rect: r, pad, row_h, sep_h } = b;
         if whole {
@@ -663,6 +713,9 @@ impl App {
             // them again would darken the shadow.
             self.canvas.fill(Rect { x: r.x + pad / 2, y: r.y + pad / 2, w: r.w - pad, h: r.h - pad }, c.panel);
         }
+        let (mark, gap, cog_icon) = (self.px(14.0), self.px(8.0), self.px(13.0));
+        let dark = self.cur_theme.dark;
+        let pointer = self.pointer;
         let ui = &mut self.fonts.ui;
         for (i, top) in b.tops(items).into_iter().enumerate() {
             let Some(item) = &items[i] else {
@@ -675,10 +728,30 @@ impl App {
             }
             let (main, dim) = if picked { (on(self.cur_accent), mix(self.cur_accent, on(self.cur_accent), 200)) } else { (c.text, c.faint) };
             let ty = top + (row_h - ui.height) / 2;
-            self.canvas.text(ui, &item.label, (r.x + pad * 3 / 2) as f32, ty, main, r);
+            let mut lx = r.x + pad * 3 / 2;
+            if marks {
+                if let Some(Some((glyph, color))) = icons.get(i) {
+                    // Its color, lifted on a dark ground; on the lit row,
+                    // in the row's own ink, which the accent may clash with.
+                    let ink = if picked { main } else if dark { mix(*color, 0xFFFFFF, 77) } else { mix(*color, 0x000000, 40) };
+                    self.canvas.icon_in(*glyph, Rect { x: lx, y: top + (row_h - mark) / 2, w: mark, h: mark }, mark, ink);
+                }
+                lx += mark + gap;
+            }
+            self.canvas.text(ui, &item.label, lx as f32, ty, main, r);
+            let mut hint_right = r.x + r.w - pad * 3 / 2;
+            if let Some(Some(_)) = cogs.get(i) {
+                let cr = Self::cog_rect(&b, top);
+                let over = cr.contains(pointer.0, pointer.1);
+                if over {
+                    self.canvas.round_fill(Rect { x: cr.x + 2, y: cr.y + 2, w: cr.w - 4, h: cr.h - 4 }, pad / 2, if picked { main } else { c.text }, 40);
+                }
+                self.canvas.icon_in(crate::canvas::icons::SETTINGS, cr, cog_icon, if over { main } else { dim });
+                hint_right = cr.x - pad / 2;
+            }
             if !item.hint.is_empty() {
                 let hw = ui.width(&item.hint);
-                self.canvas.text(ui, &item.hint, (r.x + r.w - pad * 3 / 2 - hw) as f32, ty, dim, r);
+                self.canvas.text(ui, &item.hint, (hint_right - hw) as f32, ty, dim, r);
             }
         }
     }
@@ -699,7 +772,7 @@ impl App {
             self.canvas.restore(u);
             self.damage.push(u.0);
         }
-        self.draw_menu_box(main, &items, hover, whole);
+        self.draw_menu_box(main, &items, hover, whole, true);
         if !whole {
             self.damage.push(main.rect);
         }
@@ -710,7 +783,7 @@ impl App {
             let s = (self.scale * 24.0).round().max(24.0) as i32;
             let area = Rect { x: b.rect.x - s, y: b.rect.y - s, w: b.rect.w + 2 * s, h: b.rect.h + 2 * s };
             self.menu_under = Some(self.canvas.save(area));
-            self.draw_menu_box(b, &kids, open.and_then(|(_, h)| h), true);
+            self.draw_menu_box(b, &kids, open.and_then(|(_, h)| h), true, false);
             if !whole {
                 self.damage.push(area);
             }
@@ -738,6 +811,14 @@ impl App {
     pub(super) fn overlay_click(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) -> bool {
         let (x, y) = self.pointer;
         if self.menu.is_some() {
+            // A row's cog: its own thing, not the row's.
+            if let Some(action) = self.menu_cog_at(x, y) {
+                self.close_overlay();
+                if button == MouseButton::Left {
+                    self.run(action, event_loop);
+                }
+                return true;
+            }
             let hit = self.menu_hit(x, y);
             let item = match hit {
                 Some((true, Some(row))) => self.menu.as_ref().and_then(|m| {
@@ -789,6 +870,13 @@ impl App {
     pub(super) fn overlay_hover(&mut self, x: i32, y: i32) -> bool {
         if self.menu.is_some() {
             let hit = self.menu_hit(x, y);
+            // Onto a cog or off it, in the same row: that row again.
+            let on_cog = self.menu_cog_at(x, y).is_some();
+            let cog_changed = COG_LIT.with(|c| c.replace(on_cog) != on_cog);
+            if cog_changed {
+                self.menu_relit = true;
+                self.redraw();
+            }
             let Some(m) = &mut self.menu else { return true };
             let (hover, open) = match hit {
                 Some((true, h)) => (None, m.open.map(|(p, _)| (p, h))),
@@ -841,6 +929,10 @@ impl App {
     pub(super) fn open_tag_menu(&mut self, id: PaneId, kind: super::watch::Tag) {
         use super::watch::Tag;
         let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
+        if kind == Tag::Project {
+            let r = self.multi_tags.iter().find(|(_, p, k)| *p == id && *k == Tag::Project).map(|(r, ..)| *r).unwrap_or_default();
+            return self.open_project_menu(id, (r.x, r.y + r.h + self.px(2.0)));
+        }
         let mut items: Vec<Option<Item>> = match kind {
             Tag::Multi => {
                 let skipped = self.typed_into(id) == Some(false);
@@ -863,6 +955,7 @@ impl App {
             Tag::Restart => vec![c("Restart", "Ctrl R", Action::Restart)],
             Tag::Minimize => vec![c("Minimize", "", Action::Minimize)],
             Tag::Close => vec![c("Close pane (it runs on)", "Alt X", Action::Close), c("Kill terminal", "", Action::EndPane)],
+            Tag::Project => Vec::new(),
         };
         while matches!(items.last(), Some(None)) {
             items.pop();
@@ -870,7 +963,7 @@ impl App {
         self.palette = None;
 
         self.menu_at = self.pointer;
-        self.menu = Some(Menu { items, at: self.pointer, hover: None, children: Vec::new(), open: None });
+        self.menu = Some(Menu { items, at: self.pointer, hover: None, children: Vec::new(), open: None, icons: Vec::new(), cogs: Vec::new() });
         self.full = true;
         self.redraw();
     }
@@ -905,7 +998,7 @@ impl App {
         }
         self.palette = None;
         self.menu_at = self.pointer;
-        self.menu = Some(Menu { items, at: self.pointer, hover: None, children: Vec::new(), open: None });
+        self.menu = Some(Menu { items, at: self.pointer, hover: None, children: Vec::new(), open: None, icons: Vec::new(), cogs: Vec::new() });
         self.full = true;
         self.redraw();
     }

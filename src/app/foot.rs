@@ -474,7 +474,7 @@ impl App {
         ];
         self.palette = None;
         self.menu_at = self.pointer;
-        self.menu = Some(overlay::Menu { items, at: self.pointer, hover: None, children: vec![colors], open: None });
+        self.menu = Some(overlay::Menu { items, at: self.pointer, hover: None, children: vec![colors], open: None, icons: Vec::new(), cogs: Vec::new() });
         self.full = true;
         self.redraw();
         true

@@ -2009,6 +2009,11 @@ impl App {
                     watch::Tag::TeeStop => self.stop_tee(id),
                     watch::Tag::Restart => self.restart(id),
                     watch::Tag::Minimize => self.minimize(id),
+                    watch::Tag::Project => {
+                        self.set_focus(id);
+                        let r = self.multi_tags.iter().find(|(_, p, k)| *p == id && *k == watch::Tag::Project).map(|(r, ..)| *r).unwrap_or_default();
+                        self.open_project_menu(id, (r.x, r.y + r.h + self.px(2.0)));
+                    }
                     watch::Tag::Close => {
                         self.set_focus(id);
                         self.close_pane(event_loop);
@@ -3084,7 +3089,10 @@ impl App {
                 (false, true) => fg,
                 (false, false) => 0x3C3F45,
             };
-            self.canvas.round_fill(badge, self.px(5.0), pr.color, if t.dark { 56 } else { 40 });
+            // Under the pointer, a little stronger: a click opens the projects.
+            let lit = self.multi_lit == Some((id, watch::Tag::Project));
+            self.canvas.round_fill(badge, self.px(5.0), pr.color, if t.dark { 56 } else { 40 } + if lit { 36 } else { 0 });
+            self.multi_tags.push((badge, id, watch::Tag::Project));
             self.canvas.icon_in(pr.icon, Rect { x: badge.x + p4, y: badge.y + (bh - ih) / 2, w: ih, h: ih }, ih, if t.dark { mix(pr.color, white, 77) } else { mix(pr.color, black, 40) });
             let nx = badge.x + p4 + ih + self.px(5.0);
             self.canvas.text_fit(&mut self.fonts.ui, &pr.name, nx, ty, (badge.x + badge.w - nx).max(0), ink, badge);

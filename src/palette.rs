@@ -71,6 +71,11 @@ pub enum Action {
     NewWorkspace,
     Open(PathBuf),
     Rename,
+    /// The pane you are in put in a project by hand (None: in none),
+    /// wherever its folder is; its project's settings; a project made.
+    SetProject(Option<String>),
+    ProjectSettings(String),
+    NewProject,
     CloseWorkspace,
     Roam,
     Clear,
@@ -157,6 +162,8 @@ pub enum Mode {
     Machine,
     /// A machine to add to the sidebar.
     AddMachine,
+    /// A project's name, for the pane you are in.
+    NewProject,
 }
 
 pub struct Palette {
@@ -182,6 +189,7 @@ impl Palette {
             (Mode::Rename, _) | (Mode::RenameTerminal(..), _) => "Name:",
             (Mode::Machine, _) => "Machine:",
             (Mode::AddMachine, _) => "Add machine:",
+            (Mode::NewProject, _) => "Project:",
             (_, None) if !self.matches.is_empty() => "Find:",
             (_, Some('>')) => "Run:",
             (_, Some('@')) => "Workspace:",

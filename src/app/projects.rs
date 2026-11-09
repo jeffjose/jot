@@ -67,17 +67,188 @@ pub fn without_project<'a>(name: &'a str, project: &str) -> &'a str {
     }
 }
 
+/// Projects set by hand: the terminals put in one (or in none) whatever
+/// their folder, and the projects made that no folder is. Kept in the
+/// state folder's `jot/projects`, a line each: `pane SID NAME` (`-` for
+/// none), `project NAME`. This machine's terminals only, for now.
+#[derive(Default, Debug, PartialEq)]
+pub struct ByHand {
+    pub panes: HashMap<u64, Option<String>>,
+    pub made: Vec<String>,
+}
+
+impl ByHand {
+    pub fn parse(text: &str) -> ByHand {
+        let mut b = ByHand::default();
+        for line in text.lines() {
+            let mut w = line.splitn(3, ' ');
+            match (w.next(), w.next(), w.next()) {
+                (Some("pane"), Some(sid), Some(name)) => {
+                    if let Ok(sid) = sid.parse() {
+                        b.panes.insert(sid, (name != "-").then(|| name.to_string()));
+                    }
+                }
+                (Some("project"), Some(a), rest) => {
+                    let name = rest.map_or(a.to_string(), |r| format!("{a} {r}"));
+                    if !b.made.contains(&name) {
+                        b.made.push(name);
+                    }
+                }
+                _ => {}
+            }
+        }
+        b
+    }
+
+    pub fn text(&self) -> String {
+        let mut sids: Vec<&u64> = self.panes.keys().collect();
+        sids.sort();
+        let mut out: String = self.made.iter().map(|m| format!("project {m}\n")).collect();
+        for sid in sids {
+            out += &format!("pane {sid} {}\n", self.panes[sid].as_deref().unwrap_or("-"));
+        }
+        out
+    }
+}
+
+fn by_hand_path() -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME").map(PathBuf::from).unwrap_or_else(|| pty::home().join(".local/state")).join("jot/projects")
+}
+
+thread_local! {
+    static BY_HAND: RefCell<Option<ByHand>> = const { RefCell::new(None) };
+}
+
+/// What is set by hand, read once.
+fn with_by_hand<R>(f: impl FnOnce(&mut ByHand) -> R) -> R {
+    BY_HAND.with(|b| {
+        let mut b = b.borrow_mut();
+        let b = b.get_or_insert_with(|| ByHand::parse(&std::fs::read_to_string(by_hand_path()).unwrap_or_default()));
+        f(b)
+    })
+}
+
+fn save_by_hand() {
+    let text = with_by_hand(|b| b.text());
+    let path = by_hand_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, text);
+}
+
 impl App {
-    /// The project a pane's terminal is in: on this machine, from its
-    /// folder; on another, none for now (its files are not here to look in).
+    /// The project a pane's terminal is in: the one it was put in by hand;
+    /// else, on this machine, the repository its folder is in; on another,
+    /// none for now (its files are not here to look in).
     pub(super) fn project_of(&self, id: PaneId) -> Option<Project> {
         let p = self.panes.get(&id)?;
         if p.pty.machine != 0 {
             return None;
         }
+        let (_, sid) = crate::mux::split_id(id);
+        if let Some(set) = with_by_hand(|b| b.panes.get(&sid).cloned()) {
+            return set.map(|n| project_named(&n));
+        }
+        self.found_project(id)
+    }
+
+    /// A pane's project as its folder says, nothing set by hand counted.
+    fn found_project(&self, id: PaneId) -> Option<Project> {
+        let p = self.panes.get(&id)?;
         let root = repo_root(&p.pty.cwd()?)?;
         let name = root.file_name()?.to_string_lossy().into_owned();
         Some(project_named(&name))
+    }
+
+    /// Every project known here: those panes are in, made by hand, or set
+    /// on a terminal; by name.
+    pub(super) fn known_projects(&self) -> Vec<Project> {
+        // A pane's project and its folder's both: one moved out of jot
+        // leaves jot on the list.
+        let mut names: Vec<String> = self.panes.keys().flat_map(|id| [self.project_of(*id), self.found_project(*id)]).flatten().map(|p| p.name).collect();
+        with_by_hand(|b| {
+            names.extend(b.made.iter().cloned());
+            names.extend(b.panes.values().flatten().cloned());
+        });
+        names.sort_by_key(|n| n.to_lowercase());
+        names.dedup();
+        names.iter().map(|n| project_named(n)).collect()
+    }
+
+    /// The pane you are in put in a project by hand (None: in none). Put
+    /// back in the one its folder is in, it is no longer set by hand.
+    pub(super) fn set_project(&mut self, name: Option<String>) {
+        let Some(id) = self.focused() else { return };
+        if self.panes.get(&id).is_none_or(|p| p.pty.machine != 0) {
+            return;
+        }
+        let (_, sid) = crate::mux::split_id(id);
+        let found = self.found_project(id).map(|p| p.name);
+        with_by_hand(|b| {
+            if name == found {
+                b.panes.remove(&sid);
+            } else {
+                b.panes.insert(sid, name.clone());
+            }
+            if let Some(n) = &name {
+                if found.as_ref() != Some(n) && !b.made.contains(n) && !b.panes.values().flatten().any(|m| m == n) {
+                    b.made.push(n.clone());
+                }
+            }
+        });
+        save_by_hand();
+        self.full = true;
+        self.side_dirty = true;
+        self.redraw();
+    }
+
+    /// A project made, the pane you are in put in it.
+    pub(super) fn new_project(&mut self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        with_by_hand(|b| {
+            if !b.made.iter().any(|m| m == name) {
+                b.made.push(name.to_string());
+            }
+        });
+        self.set_project(Some(name.to_string()));
+    }
+
+    /// The projects, from a pane's badge: each a row (this pane put in
+    /// it) with its mark and a cog (its settings); then none, and a new one.
+    pub(super) fn open_project_menu(&mut self, id: PaneId, at: (i32, i32)) {
+        let current = self.project_of(id).map(|p| p.name);
+        let mut items = Vec::new();
+        let mut icons = Vec::new();
+        let mut cogs = Vec::new();
+        for p in self.known_projects() {
+            let here = current.as_ref() == Some(&p.name);
+            items.push(Some(crate::palette::Item { label: p.name.clone(), hint: if here { "✓".into() } else { String::new() }, action: crate::palette::Action::SetProject(Some(p.name.clone())) }));
+            icons.push(Some((p.icon, p.color)));
+            cogs.push(Some(crate::palette::Action::ProjectSettings(p.name.clone())));
+        }
+        if !items.is_empty() {
+            items.push(None);
+            icons.push(None);
+            cogs.push(None);
+        }
+        items.push(Some(crate::palette::Item { label: "No project".into(), hint: if current.is_none() { "✓".into() } else { String::new() }, action: crate::palette::Action::SetProject(None) }));
+        items.push(Some(crate::palette::Item { label: "New project…".into(), hint: String::new(), action: crate::palette::Action::NewProject }));
+        self.palette = None;
+        self.menu_at = at;
+        self.menu = Some(super::overlay::Menu { items, at, hover: None, children: Vec::new(), open: None, icons, cogs });
+        self.full = true;
+        self.redraw();
+    }
+
+    /// The box for a new project's name.
+    pub(super) fn new_project_prompt(&mut self) {
+        self.palette = Some(crate::palette::Palette { mode: crate::palette::Mode::NewProject, field: crate::field::TextField::default(), matches: Vec::new(), selected: 0, first: 0 });
+        self.full = true;
+        self.redraw();
     }
 }
 
@@ -92,6 +263,20 @@ mod tests {
         assert_eq!(without_project("jot", "jot"), "jot");
         assert_eq!(without_project("jotter", "jot"), "jotter");
         assert_eq!(without_project("circadia", "jot"), "circadia");
+    }
+
+    // Reported: a pane could not be put in another project. Set by hand,
+    // it stays there across runs (the file read back as written).
+    #[test]
+    fn projects_set_by_hand_are_kept() {
+        let mut b = ByHand::default();
+        b.panes.insert(7, Some("circadia".into()));
+        b.panes.insert(9, None);
+        b.made.push("side quest".into());
+        let back = ByHand::parse(&b.text());
+        assert_eq!(back, b);
+        assert_eq!(back.panes[&7].as_deref(), Some("circadia"));
+        assert_eq!(back.panes[&9], None);
     }
 
     #[test]
