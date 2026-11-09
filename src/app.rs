@@ -232,6 +232,9 @@ pub struct App {
     divider_lit: Option<Rect>,
     /// The pane whose caption the pointer is on: its pencil and cog shown.
     caption_hover: Option<PaneId>,
+    /// A theme hovered in a Theme submenu: shown on that pane while the
+    /// menu is up.
+    theme_preview: Option<(PaneId, &'static Theme)>,
     /// Everything to be drawn again: the layout changed.
     full: bool,
     /// The size the window was last given, taken up when the next frame
@@ -633,6 +636,7 @@ impl App {
             dividers: Vec::new(),
             divider_lit: None,
             caption_hover: None,
+            theme_preview: None,
             full: true,
             resized: None,
             gpu_settle: None,

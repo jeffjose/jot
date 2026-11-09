@@ -356,6 +356,9 @@ impl App {
     /// A pane's theme: its own, else its project's, else `ws` (its
     /// workspace's); its project's tint over that.
     pub(super) fn pane_theme(&self, id: PaneId, ws: &'static crate::theme::Theme) -> &'static crate::theme::Theme {
+        if let Some((_, t)) = self.theme_preview.filter(|(p, _)| *p == id && self.menu.is_some()) {
+            return t;
+        }
         let project = self.project_of(id);
         let plook = project.as_ref().map(|p| look_of(&p.name)).unwrap_or_default();
         let own = self.panes.get(&id).filter(|p| p.pty.machine == 0).map(|_| pane_look(crate::mux::split_id(id).1)).unwrap_or_default();
@@ -534,9 +537,7 @@ impl App {
         let own = if here { pane_look(sid) } else { Look::default() };
         let by_hand = here && with_by_hand(|b| b.panes.contains_key(&sid));
         let project = self.project_of(id).map(|p| p.name);
-        let tick = crate::canvas::icons::CHECK.to_string();
-        let mut themes = vec![c(if project.is_some() { "As its project" } else { "As the workspace" }, if own.theme.is_none() { tick.clone() } else { String::new() }, Action::PaneTheme(None)), None];
-        themes.extend(crate::theme::THEMES.iter().map(|t| c(t.name, if own.theme.as_deref() == Some(t.name) { tick.clone() } else { String::new() }, Action::PaneTheme(Some(t.name.to_string())))));
+        let themes = self.pane_theme_items(id);
         let mut items = vec![c("Rename…", String::new(), Action::RenameTerminal(k, sid))];
         if here {
             items.extend([
@@ -556,6 +557,20 @@ impl App {
         self.menu = Some(super::overlay::Menu { items, at, hover: None, children: vec![themes], open: None, icons: Vec::new(), cogs: Vec::new() });
         self.full = true;
         self.redraw();
+    }
+
+    /// A pane's themes, for a Theme submenu: its project's (or its
+    /// workspace's) first, then each; the one it has ticked. Hovered, one
+    /// is shown on the pane (see theme_preview).
+    pub(super) fn pane_theme_items(&self, id: PaneId) -> Vec<Option<crate::palette::Item>> {
+        use crate::palette::{Action, Item};
+        let (k, sid) = crate::mux::split_id(id);
+        let own = if k == 0 { pane_look(sid).theme } else { None };
+        let tick = crate::canvas::icons::CHECK.to_string();
+        let c = |label: &str, on: bool, action| Some(Item { label: label.into(), hint: if on { tick.clone() } else { String::new() }, action });
+        let mut themes = vec![c(if self.project_of(id).is_some() { "As its project" } else { "As the workspace" }, own.is_none(), Action::PaneTheme(None)), None];
+        themes.extend(crate::theme::THEMES.iter().map(|t| c(t.name, own.as_deref() == Some(t.name), Action::PaneTheme(Some(t.name.to_string())))));
+        themes
     }
 
     /// The marks, for the pane you are in: its project's first.

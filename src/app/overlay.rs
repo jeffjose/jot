@@ -579,6 +579,8 @@ impl App {
         let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
         let pane = self.focused().and_then(|f| self.panes.get(&f));
         let has_selection = pane.is_some_and(|p| p.term.selection_text().is_some());
+        // The pane's themes, hovered shown on it (Theme ›).
+        let theme_items = self.focused().map(|f| self.pane_theme_items(f)).unwrap_or_default();
         let has_command = self.command_at(self.pointer).is_some();
         // The pane under the pointer running a command: it can be restarted.
         let busy = self.pane_at(self.pointer.0, self.pointer.1).and_then(|(id, _)| self.panes.get(&id)).is_some_and(|p| p.shell.marked && !p.shell.at_prompt && p.shell.running.is_some());
@@ -602,6 +604,7 @@ impl App {
             None,
             c("Pane", "›", Action::Submenu(0)),
             c("Workspace", "›", Action::Submenu(1)),
+            if theme_items.is_empty() { None } else { c("Theme", "›", Action::Submenu(2)) },
             None,
             c("Settings", "Ctrl ,", Action::Settings),
         ]);
@@ -628,6 +631,7 @@ impl App {
                 None,
                 c("Toggle roaming terminal", "Alt `", Action::Roam),
             ],
+            theme_items,
         ];
         self.palette = None;
         // No line where the menu starts, or two in a row.
@@ -912,6 +916,21 @@ impl App {
                 // cross to it.
                 _ => (None, m.open.map(|(p, _)| (p, None))),
             };
+            // A theme hovered in a Theme submenu: shown on the pane.
+            let previewing = open.and_then(|(parent, row)| match m.items.get(parent)?.as_ref()?.action {
+                Action::Submenu(k) => match &m.children.get(k)?.get(row?)?.as_ref()?.action {
+                    Action::PaneTheme(Some(name)) => Some(crate::theme::Theme::by_name(name)),
+                    _ => None,
+                },
+                _ => None,
+            });
+            let preview = previewing.and_then(|t| self.focused().map(|f| (f, t)));
+            if preview.map(|p| (p.0, p.1 as *const _)) != self.theme_preview.map(|p| (p.0, p.1 as *const _)) {
+                self.theme_preview = preview;
+                self.full = true;
+                self.redraw();
+            }
+            let Some(m) = &mut self.menu else { return true };
             if m.hover != hover || m.open != open {
                 // Only the menu drawn again: its rows, and a submenu come or
                 // gone as a patch of its own (see draw_menu).
