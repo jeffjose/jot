@@ -226,7 +226,7 @@ impl App {
         let mut cogs = Vec::new();
         for p in self.known_projects() {
             let here = current.as_ref() == Some(&p.name);
-            items.push(Some(crate::palette::Item { label: p.name.clone(), hint: if here { "✓".into() } else { String::new() }, action: crate::palette::Action::SetProject(Some(p.name.clone())) }));
+            items.push(Some(crate::palette::Item { label: p.name.clone(), hint: if here { crate::canvas::icons::CHECK.to_string() } else { String::new() }, action: crate::palette::Action::SetProject(Some(p.name.clone())) }));
             icons.push(Some((p.icon, p.color)));
             cogs.push(Some(crate::palette::Action::ProjectSettings(p.name.clone())));
         }
@@ -235,7 +235,7 @@ impl App {
             icons.push(None);
             cogs.push(None);
         }
-        items.push(Some(crate::palette::Item { label: "No project".into(), hint: if current.is_none() { "✓".into() } else { String::new() }, action: crate::palette::Action::SetProject(None) }));
+        items.push(Some(crate::palette::Item { label: "No project".into(), hint: if current.is_none() { crate::canvas::icons::CHECK.to_string() } else { String::new() }, action: crate::palette::Action::SetProject(None) }));
         items.push(Some(crate::palette::Item { label: "New project…".into(), hint: String::new(), action: crate::palette::Action::NewProject }));
         self.palette = None;
         self.menu_at = at;

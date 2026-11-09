@@ -19,7 +19,8 @@ impl App {
             let tee = self.panes.get(id).and_then(|p| p.tee.as_ref().map(|t| t.path.display().to_string())).unwrap_or_default();
             let words = match kind {
                 watch::Tag::Close => "Close pane  ·  Alt X  ·  it runs on".to_string(),
-                watch::Tag::Project => "Its project  ·  click to put it in another".to_string(),
+                // The badge says its name; a click says the rest.
+                watch::Tag::Project => return None,
                 watch::Tag::Focus if zoomed => "Show all panes  ·  Alt Shift F".to_string(),
                 watch::Tag::Focus => "This pane alone  ·  Alt Shift F".to_string(),
                 watch::Tag::Minimize => "Minimize to a row  ·  it runs on".to_string(),

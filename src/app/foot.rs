@@ -166,7 +166,7 @@ impl App {
             .into_iter()
             .map(|k| {
                 let hint = if k == here {
-                    "✓".to_string()
+                    crate::canvas::icons::CHECK.to_string()
                 } else if k > 0 && !self.machines[k].client.connected() {
                     "offline".to_string()
                 } else if k == 0 {
@@ -457,7 +457,8 @@ impl App {
         use crate::palette::{Action, Item};
         let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
         let chosen = self.ws().accent.clone();
-        let mark = |name: Option<&str>| if chosen.as_deref().map(|c| c.to_ascii_lowercase()) == name.map(str::to_string) { "✓" } else { "" };
+        let tick = crate::canvas::icons::CHECK.to_string();
+        let mark = |name: Option<&str>| if chosen.as_deref().map(|c| c.to_ascii_lowercase()) == name.map(str::to_string) { tick.as_str() } else { "" };
         let mut colors = vec![c("Automatic", mark(None), Action::WsAccent(None)), None];
         colors.extend(crate::theme::ACCENTS.iter().map(|(n, _)| {
             let mut label = n.to_string();

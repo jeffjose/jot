@@ -301,6 +301,10 @@ pub struct App {
     replaced: Vec<(PaneId, PaneId)>,
     /// The tooltip drawn: where its button is, and what it says.
     tip_shown: Option<(Rect, String)>,
+    /// Where the pointer last pressed, and what it pressed there: no
+    /// tooltip on that until the pointer has left it.
+    tip_quiet: Option<(i32, i32)>,
+    tip_quiet_at: Option<Rect>,
     /// For each pane, the terminals it showed before the one it shows (most
     /// recent last): closing it shows the last of them again.
     under: HashMap<PaneId, Vec<(usize, u64)>>,
@@ -659,6 +663,8 @@ impl App {
             stepping: None,
             replaced: Vec::new(),
             tip_shown: None,
+            tip_quiet: None,
+            tip_quiet_at: None,
             under: HashMap::new(),
             mini_hits: Vec::new(),
             mini_lit: None,
@@ -1950,6 +1956,8 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
+        self.tip_quiet = Some(self.pointer);
+        self.tip_quiet_at = None;
         // A name being edited: a press in it moves the cursor; elsewhere it
         // keeps the name, and goes on to what it is on.
         if self.inline.is_some() {
@@ -2174,10 +2182,16 @@ impl App {
         self.float_track(x, y);
         let lit = self.divider_to_light(x, y);
         self.light_divider(lit);
+        if self.tip_quiet_at.is_some_and(|r| !r.contains(x, y)) {
+            self.tip_quiet = None;
+            self.tip_quiet_at = None;
+        }
         let on_foot = self.foot_hover();
         if self.offer_hover(x, y) || self.find_hover(x, y) || self.settings_hover(x, y) || self.overlay_hover(x, y) {
+            // A menu row's cog is a button: the hand; the rest the arrow.
+            let on_cog = self.menu.is_some() && self.menu_cog_at(x, y).is_some();
             if let Some(w) = &self.window {
-                w.set_cursor(CursorIcon::Default);
+                w.set_cursor(if on_cog { CursorIcon::Pointer } else { CursorIcon::Default });
             }
             return;
         }
@@ -2645,6 +2659,16 @@ impl App {
         // over whatever changed, so that one up does not have every frame
         // draw the whole window again.
         self.tip_shown = self.tooltip();
+        // No tooltip on what was just clicked (its menu opened and shut,
+        // say), until the pointer has left it.
+        if let (Some(q), Some((r, _))) = (self.tip_quiet, &self.tip_shown) {
+            if r.contains(q.0, q.1) {
+                self.tip_quiet_at = Some(*r);
+                self.tip_shown = None;
+            } else {
+                self.tip_quiet = None;
+            }
+        }
         let asked = std::mem::take(&mut self.full);
         // The sidebar alone drawn again would go over the palette, a menu
         // or the settings, when one is up: the window then.

@@ -28,6 +28,14 @@ thread_local! {
     static COG_LIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// A row's hint that is one of jot's icons (a tick: canvas::icons::CHECK),
+/// drawn as the icon, not as a letter of the interface font.
+fn hint_glyph(hint: &str) -> Option<char> {
+    let mut chars = hint.chars();
+    let c = chars.next()?;
+    (chars.next().is_none() && ('\u{e000}'..='\u{f8ff}').contains(&c)).then_some(c)
+}
+
 /// Where a menu, or a submenu, is drawn.
 #[derive(Clone, Copy)]
 pub struct MenuBox {
@@ -631,7 +639,9 @@ impl App {
         let pad = (self.scale * 8.0).round() as i32;
         let row_h = ui.height + pad;
         let sep_h = pad;
-        let widest = items.iter().flatten().map(|i| ui.width(&i.label) + if i.hint.is_empty() { 0 } else { ui.width(&i.hint) + 3 * pad }).max().unwrap_or(0);
+        let glyph_w = (self.scale * 13.0).round() as i32;
+        let ui = &mut self.fonts.ui;
+        let widest = items.iter().flatten().map(|i| ui.width(&i.label) + if i.hint.is_empty() { 0 } else { (if hint_glyph(&i.hint).is_some() { glyph_w } else { ui.width(&i.hint) }) + 3 * pad }).max().unwrap_or(0);
         let w = widest + 4 * pad + extra;
         let h = items.iter().map(|i| if i.is_some() { row_h } else { sep_h }).sum::<i32>() + pad;
         let (mut x, mut y) = at;
@@ -689,7 +699,7 @@ impl App {
     }
 
     /// The menu row whose cog is under the pointer.
-    fn menu_cog_at(&mut self, x: i32, y: i32) -> Option<Action> {
+    pub(super) fn menu_cog_at(&mut self, x: i32, y: i32) -> Option<Action> {
         let (main, _) = self.menu_boxes()?;
         let m = self.menu.as_ref()?;
         let tops = main.tops(&m.items);
@@ -749,7 +759,10 @@ impl App {
                 self.canvas.icon_in(crate::canvas::icons::SETTINGS, cr, cog_icon, if over { main } else { dim });
                 hint_right = cr.x - pad / 2;
             }
-            if !item.hint.is_empty() {
+            if let Some(g) = hint_glyph(&item.hint) {
+                let s = cog_icon;
+                self.canvas.icon_in(g, Rect { x: hint_right - s, y: top + (row_h - s) / 2, w: s, h: s }, s, if picked { main } else { c.text });
+            } else if !item.hint.is_empty() {
                 let hw = ui.width(&item.hint);
                 self.canvas.text(ui, &item.hint, (hint_right - hw) as f32, ty, dim, r);
             }
