@@ -307,7 +307,7 @@ pub fn commands() -> Vec<Item> {
         c("Settings", "Ctrl ,", Action::Settings),
         c("Connect to machine…", "", Action::ConnectPrompt),
         c("Show or hide the sidebar", "", Action::Sidebar),
-        c("Restart jot (after an update): every window, terminals kept", "", Action::RestartAll),
+        c("Restart all windows", "", Action::RestartAll),
         c("Quit and end all panes", "", Action::QuitAll),
         c("Go to workspace, pane or folder", "Ctrl K", Action::Palette),
     ]
