@@ -356,7 +356,7 @@ impl App {
             return Some(project_look(&name));
         }
         let names = self.local_project_names();
-        cwd.ancestors().filter_map(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).find(|n| names.contains(n)).map(|n| project_look(&n))
+        named_on_path(&cwd, &names).map(|n| project_look(&n))
     }
 
     /// A pane's theme: its own, else its project's, else `ws` (its
@@ -802,4 +802,25 @@ mod workspace_marks_tests {
 /// Whether the sidebar shows its terminals by project.
 pub fn sidebar_by_project() -> bool {
     with_by_hand(|b| b.by_project)
+}
+
+/// On another machine, the project a folder is in: the nearest folder on
+/// its way down named as a project known here (~/src/jot/tools is jot).
+pub fn named_on_path(dir: &Path, names: &[String]) -> Option<String> {
+    dir.ancestors().filter_map(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).find(|n| names.contains(n))
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::named_on_path;
+    use std::path::Path;
+
+    // A terminal on another machine, in a clone of a project known here.
+    #[test]
+    fn a_remote_folder_is_in_the_project_it_is_named_for() {
+        let names = vec!["jot".to_string(), "circadia".to_string()];
+        assert_eq!(named_on_path(Path::new("/home/me/src/jot/tools"), &names).as_deref(), Some("jot"));
+        assert_eq!(named_on_path(Path::new("/srv/circadia"), &names).as_deref(), Some("circadia"));
+        assert_eq!(named_on_path(Path::new("/tmp/elsewhere"), &names), None);
+    }
 }
