@@ -390,16 +390,25 @@ impl App {
             }
             // The quake window's: read again each time it is shown.
             Key::QuakeHeight => self.config.quake_height = persist::default_quake_height(),
-            Key::QuakeWidth => self.config.quake_width = persist::default_quake_width(),
+            Key::QuakeWidth => {
+                self.config.quake_width = persist::default_quake_width();
+                self.quake_sides_unset();
+            }
             Key::QuakePosition => self.config.quake_position = persist::default_quake_position(),
             Key::EditorColors => self.config.editor_colors = persist::default_editor_colors(),
-            Key::QuakeAlign => self.config.quake_align = persist::default_quake_align(),
+            Key::QuakeAlign => {
+                self.config.quake_align = persist::default_quake_align();
+                self.quake_sides_unset();
+            }
             Key::QuakeMonitor => self.config.quake_monitor = persist::default_quake_monitor(),
             Key::QuakeAllWorkspaces => self.config.quake_all_workspaces = true,
             Key::QuakeHideOnBlur => self.config.quake_hide_on_blur = false,
             Key::Debug => return,
         }
         persist::unset_config_value(config_key(key));
+        if matches!(key, Key::QuakeHeight | Key::QuakeWidth | Key::QuakePosition | Key::QuakeAlign | Key::QuakeMonitor | Key::QuakeAllWorkspaces | Key::QuakeHideOnBlur) {
+            self.quake_apply_settings();
+        }
     }
 
     /// A workspace's name, made a field with all of it selected.
@@ -544,6 +553,9 @@ impl App {
                 if key == Key::Ligatures || key == Key::Bold {
                     self.reload_fonts();
                 }
+                if matches!(key, Key::QuakeAllWorkspaces | Key::QuakeHideOnBlur) {
+                    self.quake_apply_settings();
+                }
                 self.relayout();
             }
             Hit::Step(Key::Size, by) => {
@@ -582,6 +594,7 @@ impl App {
                 if key == Key::QuakeWidth {
                     self.quake_sides_unset();
                 }
+                self.quake_apply_settings();
             }
             // Its choices, the arrows going round them.
             Hit::Step(key @ (Key::QuakePosition | Key::QuakeAlign | Key::QuakeMonitor | Key::EditorColors), by) => {
@@ -597,6 +610,9 @@ impl App {
                 persist::set_config_value(config_key(key), &format!("{next:?}"));
                 if key == Key::QuakeAlign {
                     self.quake_sides_unset();
+                }
+                if key != Key::EditorColors {
+                    self.quake_apply_settings();
                 }
             }
             Hit::Step(_, by) => {

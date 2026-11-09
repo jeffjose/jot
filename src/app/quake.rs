@@ -12,13 +12,15 @@ use winit::window::WindowLevel;
 
 /// The quake window: no frame, kept hidden until it is placed.
 pub(super) fn attributes() -> winit::window::WindowAttributes {
+    use winit::platform::wayland::WindowAttributesExtWayland;
     use winit::platform::x11::WindowAttributesExtX11;
     let attrs = window_attributes("jot", LogicalSize::new(1200.0, 400.0)).with_decorations(false).with_visible(false);
-    WindowAttributesExtX11::with_name(attrs, "jot-quake", "jot-quake")
+    let attrs = WindowAttributesExtX11::with_name(attrs, "jot-quake", "jot-quake");
+    WindowAttributesExtWayland::with_name(attrs, "jot-quake", "jot-quake")
 }
 
 /// How the quake window is to be, from the settings.
-pub(super) struct Shape {
+pub(crate) struct Shape {
     height: u32,
     /// Its sides' distances in from the screen's edges, in percent of its
     /// width.
@@ -59,6 +61,15 @@ impl Shape {
     pub fn narrowed(&self) -> bool {
         self.left > 0.05 || self.right > 0.05
     }
+
+    /// Its rectangle as shares of the monitor's work area (`[x, y, w, h]`).
+    pub fn rect(&self) -> [f32; 4] {
+        let w = ((100.0 - self.left - self.right) / 100.0).clamp(0.1, 1.0);
+        let h = (self.height as f32 / 100.0).clamp(0.1, 1.0);
+        let x = (self.left / 100.0).clamp(0.0, 1.0 - w);
+        let y = if self.bottom { 1.0 - h } else { 0.0 };
+        [x, y, w, h]
+    }
 }
 
 impl App {
@@ -67,6 +78,16 @@ impl App {
     /// under another window that is also kept on top, it is brought
     /// forward instead, as Tilix does, so the key never seems to do nothing.
     pub(super) fn quake_toggle(&mut self) {
+        self.quake_settings();
+        let shape = Shape::of(&self.config);
+        if let Some(shown) = wayland::toggle(&shape, self.config.quake_hide_on_blur) {
+            self.quake_shown = shown;
+            if shown {
+                self.full = true;
+                self.redraw();
+            }
+            return;
+        }
         let covered = || {
             let w = self.window.as_ref()?;
             Some(x11::X::open()?.covered(x11_id(w)?))
@@ -98,6 +119,12 @@ impl App {
         let Some(window) = self.window.clone() else { return };
         self.quake_settings();
         let shape = Shape::of(&self.config);
+        if wayland::show(&shape, self.config.quake_hide_on_blur) {
+            self.quake_shown = true;
+            self.full = true;
+            self.redraw();
+            return;
+        }
         let x = x11::X::open();
         let xid = x11_id(&window);
         let place = quake_place(&window, x.as_ref(), &shape);
@@ -127,8 +154,10 @@ impl App {
     }
 
     pub(super) fn quake_hide(&mut self) {
-        if let Some(w) = &self.window {
-            w.set_visible(false);
+        if !wayland::hide() {
+            if let Some(w) = &self.window {
+                w.set_visible(false);
+            }
         }
         self.quake_shown = false;
     }
@@ -138,6 +167,29 @@ impl App {
         if crate::quake_mode() && self.quake_shown && self.config.quake_hide_on_blur {
             self.quake_hide();
         }
+    }
+
+    /// Its settings changed in Settings while the quake window is open:
+    /// put where they say now.
+    pub(super) fn quake_apply_settings(&mut self) {
+        if !crate::quake_mode() || !self.quake_shown {
+            return;
+        }
+        let shape = Shape::of(&self.config);
+        if !wayland::place(&shape, self.config.quake_hide_on_blur) {
+            if let Some(window) = self.window.clone() {
+                let x = x11::X::open();
+                if let Some((pos, size, _)) = quake_place_area(&window, x.as_ref(), &shape) {
+                    let _ = window.request_inner_size(size);
+                    window.set_outer_position(pos);
+                }
+                if let (Some(x), Some(id)) = (&x, x11_id(&window)) {
+                    x.after_map(id, &shape);
+                }
+            }
+        }
+        self.full = true;
+        self.redraw();
     }
 }
 
@@ -680,10 +732,20 @@ impl App {
 
     /// The grip being dragged: the window as tall as the pointer makes it.
     pub(super) fn quake_grip_move(&mut self) {
+        let shape = Shape::of(&self.config);
+        if let Some(((_, gy), (ax, ay, aw, ah))) = wayland::pointer_and_area(&shape, self.config.quake_hide_on_blur) {
+            let min = (ah / 10).max(80);
+            let h = if shape.bottom { ay + ah - gy } else { gy - ay }.clamp(min, ah);
+            let x = ax + (aw as f32 * shape.left / 100.0).round() as i32;
+            let w = (aw as f32 * (100.0 - shape.left - shape.right) / 100.0).round() as i32;
+            let y = if shape.bottom { ay + ah - h } else { ay };
+            wayland::place_pixels(x, y, w.max(1), h, &shape, self.config.quake_hide_on_blur);
+            self.quake_drag_h = Some((h, ah));
+            return;
+        }
         let Some(window) = self.window.clone() else { return };
         let Some(x) = x11::X::open() else { return };
         let Some((_, gy)) = x.pointer() else { return };
-        let shape = Shape::of(&self.config);
         let Some((pos, size, (_, ay, _, ah))) = quake_place_area(&window, Some(&x), &shape) else { return };
         let min = (ah / 10).max(self.px(80.0));
         let h = if shape.bottom { ay + ah - gy } else { gy - ay }.clamp(min, ah);
@@ -701,6 +763,7 @@ impl App {
             let pct = ((h * 100 + ah / 2) / ah.max(1)).clamp(10, 100) as u32;
             self.config.quake_height = pct;
             persist::set_config_value("quake-height", &pct.to_string());
+            wayland::place(&Shape::of(&self.config), self.config.quake_hide_on_blur);
         }
         self.full = true;
         self.redraw();
@@ -859,10 +922,21 @@ impl App {
     pub(super) fn quake_side_move(&mut self) {
         let Some(Drag::QuakeSide(left)) = self.drag else { return };
         let Some(window) = self.window.clone() else { return };
-        let Some(x) = x11::X::open() else { return };
-        let Some((gx, _)) = x.pointer() else { return };
         let shape = Shape::of(&self.config);
-        let Some((_, _, (ax, _, aw, _))) = quake_place_area(&window, Some(&x), &shape) else { return };
+        let mut x = None;
+        let Some((gx, ax, aw)) = (if let Some(((gx, _), (ax, _, aw, _))) = wayland::pointer_and_area(&shape, self.config.quake_hide_on_blur) {
+            Some((gx, ax, aw))
+        } else {
+            x = x11::X::open();
+            (|| {
+                let x = x.as_ref()?;
+                let (gx, _) = x.pointer()?;
+                let (_, _, (ax, _, aw, _)) = quake_place_area(&window, Some(x), &shape)?;
+                Some((gx, ax, aw))
+            })()
+        }) else {
+            return;
+        };
         let aw = aw.max(1);
         let min = (self.px(320.0) as f32 / aw as f32 * 100.0).min(90.0);
         let pct = |px: i32| px as f32 / aw as f32 * 100.0;
@@ -877,9 +951,11 @@ impl App {
         }
         let shape = Shape::of(&self.config);
         self.quake_readout = Some(if shape.narrowed() { format!("from {:.0}%  ·  {:.0}% wide", shape.left, 100.0 - shape.left - shape.right) } else { "full width".to_string() });
-        if let Some((pos, size, _)) = quake_place_area(&window, Some(&x), &shape) {
-            let _ = window.request_inner_size(size);
-            window.set_outer_position(pos);
+        if !wayland::place(&shape, self.config.quake_hide_on_blur) {
+            if let Some((pos, size, _)) = quake_place_area(&window, x.as_ref(), &shape) {
+                let _ = window.request_inner_size(size);
+                window.set_outer_position(pos);
+            }
         }
         self.full = true;
         self.redraw();
@@ -907,11 +983,13 @@ impl App {
         self.config.quake_right = shape.right;
         persist::set_config_value("quake-left", &format!("{:.2}", shape.left));
         persist::set_config_value("quake-right", &format!("{:.2}", shape.right));
-        if let Some(window) = self.window.clone() {
-            let x = x11::X::open();
-            if let Some((pos, size, _)) = quake_place_area(&window, x.as_ref(), &shape) {
-                let _ = window.request_inner_size(size);
-                window.set_outer_position(pos);
+        if !wayland::place(&shape, self.config.quake_hide_on_blur) {
+            if let Some(window) = self.window.clone() {
+                let x = x11::X::open();
+                if let Some((pos, size, _)) = quake_place_area(&window, x.as_ref(), &shape) {
+                    let _ = window.request_inner_size(size);
+                    window.set_outer_position(pos);
+                }
             }
         }
         self.full = true;
@@ -956,5 +1034,404 @@ impl App {
         self.config.quake_right = persist::unset_side();
         persist::unset_config_value("quake-left");
         persist::unset_config_value("quake-right");
+    }
+}
+
+/// On GNOME Wayland, winit cannot move, hide, raise, stick, or query
+/// stacking and pointer coordinates for a window; jot's small GNOME Shell
+/// extension (`jot@jeffjose.github.io`, installed by `jot setup`) does that
+/// in the compositor and answers over `$XDG_RUNTIME_DIR/jot-shell.sock`
+/// (with D-Bus `/io/github/jeffjose/Jot` as fallback).
+pub(crate) mod wayland {
+    use super::Shape;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::Duration;
+
+    pub const EXTENSION_UUID: &str = "jot@jeffjose.github.io";
+    pub const VERSION: u32 = 1;
+
+    const BODY: &str = include_str!("../../assets/extension.js");
+
+    const INTERFACE: &str = r#"<node>
+  <interface name="io.github.jeffjose.Jot">
+    <method name="Quake">
+      <arg type="s" direction="in" name="want"/>
+      <arg type="s" direction="out" name="state"/>
+    </method>
+  </interface>
+</node>"#;
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Reply {
+        pub state: String,
+        pub focused: bool,
+        pub covered: bool,
+        pub pointer: Option<(i32, i32)>,
+        pub area: Option<(i32, i32, i32, i32)>,
+        pub frame: Option<(i32, i32, i32, i32)>,
+    }
+
+    impl Reply {
+        pub fn parse(raw: &str) -> Option<Self> {
+            let state = str_field(raw, "state")?;
+            let focused = bool_field(raw, "focused").unwrap_or(false);
+            let covered = bool_field(raw, "covered").unwrap_or(false);
+            let pointer = ints_field(raw, "pointer").and_then(|v| Some((*v.first()?, *v.get(1)?)));
+            let area = ints_field(raw, "area").and_then(|v| Some((*v.first()?, *v.get(1)?, *v.get(2)?, *v.get(3)?)));
+            let frame = ints_field(raw, "frame").and_then(|v| Some((*v.first()?, *v.get(1)?, *v.get(2)?, *v.get(3)?)));
+            Some(Self { state, focused, covered, pointer, area, frame })
+        }
+    }
+
+    fn str_field(raw: &str, key: &str) -> Option<String> {
+        let pat = format!("\"{key}\":\"");
+        let rest = raw.split_once(&pat)?.1;
+        Some(rest.split_once('"')?.0.to_string())
+    }
+
+    fn bool_field(raw: &str, key: &str) -> Option<bool> {
+        let pat = format!("\"{key}\":");
+        let rest = raw.split_once(&pat)?.1.trim_start();
+        if rest.starts_with("true") {
+            Some(true)
+        } else if rest.starts_with("false") {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    fn ints_field(raw: &str, key: &str) -> Option<Vec<i32>> {
+        let pat = format!("\"{key}\":[");
+        let rest = raw.split_once(&pat)?.1;
+        let inside = rest.split_once(']')?.0;
+        inside.split(',').map(|s| s.trim().parse::<i32>().ok()).collect()
+    }
+
+    pub fn active() -> bool {
+        std::env::var_os("WAYLAND_DISPLAY").is_some()
+    }
+
+    fn socket_path() -> PathBuf {
+        match std::env::var_os("XDG_RUNTIME_DIR") {
+            Some(dir) => PathBuf::from(dir).join("jot-shell.sock"),
+            None => {
+                let user = std::env::var("USER").unwrap_or_else(|_| unsafe { libc::getuid() }.to_string());
+                PathBuf::from(format!("/tmp/jot-{user}-shell.sock"))
+            }
+        }
+    }
+
+    fn json_str(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 2);
+        out.push('"');
+        for ch in s.chars() {
+            match ch {
+                '\\' => out.push_str("\\\\"),
+                '"' => out.push_str("\\\""),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
+    fn shape_fields(shape: &Shape, blur: bool) -> String {
+        let [rx, ry, rw, rh] = shape.rect();
+        format!(
+            "\"rect\":[{rx:.4},{ry:.4},{rw:.4},{rh:.4}],\"pointer\":{},\"all_workspaces\":{},\"blur\":{}",
+            shape.pointer, shape.all_workspaces, blur
+        )
+    }
+
+    fn ask(json: &str) -> Option<Reply> {
+        if let Ok(mut stream) = UnixStream::connect(socket_path()) {
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+            let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+            if stream.write_all(format!("{json}\n").as_bytes()).is_ok() {
+                let mut line = String::new();
+                if BufReader::new(&stream).read_line(&mut line).is_ok() {
+                    if let Some(reply) = Reply::parse(line.trim()) {
+                        return Some(reply);
+                    }
+                }
+            }
+        }
+        let out = Command::new("gdbus")
+            .args([
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.Shell",
+                "--object-path",
+                "/io/github/jeffjose/Jot",
+                "--method",
+                "io.github.jeffjose.Jot.Quake",
+                json,
+            ])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let inner = text.trim().strip_prefix("('")?.strip_suffix("',)")?;
+        let unescaped = inner.replace("\\'", "'").replace("\\\\", "\\");
+        Reply::parse(&unescaped)
+    }
+
+    /// Starts the quake window via GNOME Shell's `Meta.WaylandClient` so it
+    /// stays out of Alt+Tab, the overview, and the dash/panel.
+    pub fn start(exe: &Path) -> bool {
+        if !active() {
+            return false;
+        }
+        let config = crate::persist::load_config();
+        let shape = Shape::of(&config);
+        let exe_str = exe.to_string_lossy();
+        let path = std::env::var("PATH").unwrap_or_default();
+        let json = format!(
+            "{{\"do\":\"start\",\"run\":[{},\"--quake-window\"],\"path\":{},{}}}",
+            json_str(&exe_str),
+            json_str(&path),
+            shape_fields(&shape, config.quake_hide_on_blur)
+        );
+        if let Some(reply) = ask(&json) {
+            return reply.state == "starting" || reply.state == "shown";
+        }
+        if std::env::var_os("XDG_CURRENT_DESKTOP").is_some_and(|d| d.to_string_lossy().to_ascii_lowercase().contains("gnome")) {
+            eprintln!("jot: quake on GNOME Wayland needs jot's GNOME extension (run 'jot setup', then log out and in)");
+        }
+        false
+    }
+
+    /// Tells the shell extension to spawn a fresh `Meta.WaylandClient`
+    /// quake window as soon as this one closes (`jot restart`).
+    pub fn restart(exe: &str, hidden: bool, config: &crate::persist::Config) -> bool {
+        if !active() {
+            return false;
+        }
+        let shape = Shape::of(config);
+        let path = std::env::var("PATH").unwrap_or_default();
+        let run = if hidden {
+            format!("[{},\"--quake-window\",\"--quake-hidden\"]", json_str(exe))
+        } else {
+            format!("[{},\"--quake-window\"]", json_str(exe))
+        };
+        let json = format!(
+            "{{\"do\":\"restart\",\"run\":{run},\"hidden\":{hidden},\"path\":{},{}}}",
+            json_str(&path),
+            shape_fields(&shape, config.quake_hide_on_blur)
+        );
+        ask(&json).is_some_and(|r| r.state == "restarting" || r.state == "starting")
+    }
+
+    pub fn toggle(shape: &Shape, blur: bool) -> Option<bool> {
+        if !active() {
+            return None;
+        }
+        let json = format!("{{\"do\":\"toggle\",{}}}", shape_fields(shape, blur));
+        Some(ask(&json)?.state == "shown")
+    }
+
+    pub fn show(shape: &Shape, blur: bool) -> bool {
+        if !active() {
+            return false;
+        }
+        let json = format!("{{\"do\":\"show\",{}}}", shape_fields(shape, blur));
+        ask(&json).is_some()
+    }
+
+    pub fn hide() -> bool {
+        if !active() {
+            return false;
+        }
+        ask("{\"do\":\"hide\"}").is_some()
+    }
+
+    pub fn place(shape: &Shape, blur: bool) -> bool {
+        if !active() {
+            return false;
+        }
+        let json = format!("{{\"do\":\"place\",{}}}", shape_fields(shape, blur));
+        ask(&json).is_some()
+    }
+
+    pub fn place_pixels(x: i32, y: i32, w: i32, h: i32, shape: &Shape, blur: bool) -> bool {
+        if !active() {
+            return false;
+        }
+        let json = format!(
+            "{{\"do\":\"place\",\"pixels\":[{x},{y},{w},{h}],\"pointer\":{},\"all_workspaces\":{},\"blur\":{blur}}}",
+            shape.pointer, shape.all_workspaces
+        );
+        ask(&json).is_some()
+    }
+
+    pub fn pointer_and_area(shape: &Shape, blur: bool) -> Option<((i32, i32), (i32, i32, i32, i32))> {
+        if !active() {
+            return None;
+        }
+        let json = format!("{{\"do\":\"state\",{}}}", shape_fields(shape, blur));
+        let reply = ask(&json)?;
+        Some((reply.pointer?, reply.area?))
+    }
+
+    /// GNOME 45+ ES module extension source.
+    pub fn es_module_source() -> String {
+        format!(
+            "import Gio from 'gi://Gio';\n\
+             import GLib from 'gi://GLib';\n\
+             import Meta from 'gi://Meta';\n\
+             import * as Main from 'resource:///org/gnome/shell/ui/main.js';\n\
+             import {{Extension}} from 'resource:///org/gnome/shell/extensions/extension.js';\n\n\
+             const VERSION = {VERSION};\n\
+             const INTERFACE = `{INTERFACE}`;\n\n\
+             export default class JotExtension extends Extension {{\n\
+             {BODY}\n\
+             }}\n"
+        )
+    }
+
+    /// GNOME 40-44 legacy `imports.gi` extension source.
+    pub fn legacy_source() -> String {
+        format!(
+            "const {{Gio, GLib, Meta}} = imports.gi;\n\
+             const Main = imports.ui.main;\n\n\
+             const VERSION = {VERSION};\n\
+             const INTERFACE = `{INTERFACE}`;\n\n\
+             class JotExtension {{\n\
+             {BODY}\n\
+             }}\n\n\
+             function init() {{\n    return new JotExtension();\n}}\n"
+        )
+    }
+
+    fn gnome_major() -> Option<u32> {
+        let out = Command::new("gnome-shell").arg("--version").output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        text.split_whitespace().find_map(|tok| tok.split('.').next()?.parse::<u32>().ok())
+    }
+
+    fn enable_in_gsettings() {
+        let quiet = || std::process::Stdio::null();
+        let _ = Command::new("gnome-extensions").args(["enable", EXTENSION_UUID]).stdout(quiet()).stderr(quiet()).status();
+        let Ok(out) = Command::new("gsettings").args(["get", "org.gnome.shell", "enabled-extensions"]).output() else {
+            return;
+        };
+        if !out.status.success() {
+            return;
+        }
+        let cur = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if cur.contains(EXTENSION_UUID) {
+            return;
+        }
+        let next = if cur.starts_with("@as ") || cur == "[]" {
+            format!("['{EXTENSION_UUID}']")
+        } else if let Some(stripped) = cur.strip_suffix(']') {
+            format!("{stripped}, '{EXTENSION_UUID}']")
+        } else {
+            return;
+        };
+        let _ = Command::new("gsettings").args(["set", "org.gnome.shell", "enabled-extensions", &next]).stdout(quiet()).stderr(quiet()).status();
+    }
+
+    /// Called by `jot setup`: writes and enables `jot@jeffjose.github.io`
+    /// when GNOME Shell is installed on the machine.
+    pub fn install_extension(data_home: &Path) {
+        let Some(major) = gnome_major() else { return };
+        let dir = data_home.join("gnome-shell/extensions").join(EXTENSION_UUID);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            eprintln!("jot: could not create {}: {e}", dir.display());
+            return;
+        }
+        let versions = if major >= 45 {
+            r#"["45", "46", "47", "48", "49", "50"]"#
+        } else {
+            r#"["40", "41", "42", "43", "44"]"#
+        };
+        let metadata = format!(
+            "{{\n  \"uuid\": \"{EXTENSION_UUID}\",\n  \"name\": \"jot Quake\",\n  \"description\": \"Places and toggles jot's quake terminal on GNOME Wayland\",\n  \"shell-version\": {versions},\n  \"version\": {VERSION}\n}}\n"
+        );
+        let code = if major >= 45 { es_module_source() } else { legacy_source() };
+        for (path, bytes) in [(dir.join("metadata.json"), metadata.as_bytes()), (dir.join("extension.js"), code.as_bytes())] {
+            match std::fs::write(&path, bytes) {
+                Ok(()) => println!("wrote {}", path.display()),
+                Err(e) => eprintln!("jot: could not write {}: {e}", path.display()),
+            }
+        }
+        enable_in_gsettings();
+        if active() && ask("{\"do\":\"state\"}").is_none() {
+            println!("note: log out and back in once so GNOME Shell loads {EXTENSION_UUID}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shape_rect_respects_edges_and_position() {
+        let mut c = crate::persist::Config::default();
+        c.quake_height = 40;
+        c.quake_width = 100;
+        c.quake_position = "top".into();
+        c.quake_left = -1.0;
+        c.quake_right = -1.0;
+        let s = Shape::of(&c);
+        assert_eq!(s.rect(), [0.0, 0.0, 1.0, 0.4]);
+        assert!(!s.narrowed());
+
+        c.quake_width = 60;
+        c.quake_align = "center".into();
+        c.quake_position = "bottom".into();
+        let s = Shape::of(&c);
+        let [x, y, w, h] = s.rect();
+        assert!((x - 0.2).abs() < 1e-4);
+        assert!((y - 0.6).abs() < 1e-4);
+        assert!((w - 0.6).abs() < 1e-4);
+        assert!((h - 0.4).abs() < 1e-4);
+        assert!(s.narrowed());
+    }
+
+    #[test]
+    fn wayland_reply_parses_state_and_geometry() {
+        let raw = r#"{"version":1,"state":"shown","focused":true,"covered":false,"pointer":[960,540],"area":[0,32,1920,1048],"frame":[0,32,1920,419]}"#;
+        let r = wayland::Reply::parse(raw).expect("valid reply");
+        assert_eq!(r.state, "shown");
+        assert!(r.focused);
+        assert!(!r.covered);
+        assert_eq!(r.pointer, Some((960, 540)));
+        assert_eq!(r.area, Some((0, 32, 1920, 1048)));
+        assert_eq!(r.frame, Some((0, 32, 1920, 419)));
+    }
+
+    #[test]
+    fn extension_runs_in_mock_gnome_shell() {
+        if std::process::Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("jot-ext-{}.js", std::process::id()));
+        std::fs::write(&path, wayland::legacy_source()).expect("write extension");
+        let test_script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/extension_shell.js");
+        let out = std::process::Command::new("node").arg(&test_script).arg(&path).output().expect("run node");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            out.status.success(),
+            "extension_shell.js failed:\n{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 }

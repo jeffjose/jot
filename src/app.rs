@@ -39,7 +39,7 @@ mod info;
 mod dnd;
 mod find;
 mod links;
-mod quake;
+pub(crate) mod quake;
 mod float;
 mod foot;
 mod minimize;
@@ -3594,8 +3594,12 @@ impl ApplicationHandler<()> for App {
         self.unsaved = true;
         // The quake window, just started by jot --quake: shown (started
         // again by jot restart while hidden, not until the key asks).
-        if crate::quake_mode() && !crate::quake_hidden() {
-            self.quake_show();
+        if crate::quake_mode() {
+            if crate::quake_hidden() {
+                self.quake_hide();
+            } else {
+                self.quake_show();
+            }
         }
     }
 

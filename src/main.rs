@@ -263,4 +263,5 @@ fn setup() {
     let quiet = || std::process::Stdio::null();
     let _ = std::process::Command::new("gtk-update-icon-cache").arg("-q").arg(data.join("icons/hicolor")).stdout(quiet()).stderr(quiet()).status();
     let _ = std::process::Command::new("update-desktop-database").arg("-q").arg(data.join("applications")).stdout(quiet()).stderr(quiet()).status();
+    app::quake::wayland::install_extension(&data);
 }

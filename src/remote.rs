@@ -101,6 +101,9 @@ pub fn quake() -> i32 {
     // session so that it outlives the shell that ran this.
     use std::os::unix::process::CommandExt;
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("jot"));
+    if crate::app::quake::wayland::start(&exe) {
+        return 0;
+    }
     let quiet = || std::process::Stdio::null();
     let started = unsafe {
         std::process::Command::new(exe)

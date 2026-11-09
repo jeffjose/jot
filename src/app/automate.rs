@@ -260,6 +260,14 @@ impl App {
             // hidden.
             Some("restart") if crate::quake_mode() => match args.get(1).filter(|e| !e.is_empty()) {
                 Some(exe) => {
+                    if super::quake::wayland::restart(exe, !self.quake_shown, &self.config) {
+                        self.save_scrollback();
+                        self.save();
+                        let _ = req.reply.send("restarting\n".into());
+                        let _ = std::fs::remove_file(crate::remote::quake_socket_path());
+                        event_loop.exit();
+                        return;
+                    }
                     let mut argv = vec!["--quake-window"];
                     if !self.quake_shown {
                         argv.push("--quake-hidden");
