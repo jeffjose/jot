@@ -83,7 +83,10 @@ impl App {
                     // not the folder its layout was saved in); else by that.
                     match m.procs.get(&sid) {
                         Some((fg, busy, cwd)) => {
-                            let label = term_name(cwd, busy.then_some(fg.as_str()));
+                            // A program running in it that set a title: by that,
+                            // as its caption says it where it is shown.
+                            let titled = m.titles.get(&sid).map(|t| super::plain_title(t).to_string()).filter(|t| *busy && !t.trim().is_empty());
+                            let label = titled.unwrap_or_else(|| term_name(cwd, busy.then_some(fg.as_str())));
                             add(Free { k, sid, label, running: *busy, elsewhere: l.elsewhere }, true);
                         }
                         None => {
@@ -296,6 +299,11 @@ pub(super) fn term_name(place: &str, running: Option<&str>) -> String {
 impl App {
     /// The name of a terminal a pane here shows, as term_name gives it.
     pub(super) fn pane_term_name(&self, p: &Pane) -> String {
+        // The title the program running in it set (its caption): Claude
+        // Code's session name, not "claude".
+        if let Some(t) = p.program_title.as_ref().filter(|t| !t.trim().is_empty()) {
+            return t.clone();
+        }
         let running = pane_running(p);
         let place = p.pty.cwd().map(|c| persist::shorten(&c)).unwrap_or_else(|| p.caption.clone());
         term_name(&place, running.as_deref())

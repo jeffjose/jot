@@ -231,6 +231,9 @@ struct Pane {
     /// Its number, the same in every window (ToClient::Numbers): the
     /// lowest free when it started, unless renumbered.
     number: u32,
+    /// The title its program set last (OSC 0 or 2), for naming it in a
+    /// window that does not show it.
+    title: String,
 }
 
 impl Pane {
@@ -381,6 +384,9 @@ impl Server {
         let mut joined = std::mem::take(&mut p.tail);
         joined.extend_from_slice(&b);
         let found = marks(&joined, seen);
+        if let Some(t) = last_title(&joined) {
+            p.title = t;
+        }
         p.tail = joined[joined.len().saturating_sub(15)..].to_vec();
         let mut ended = None;
         for m in found {
@@ -688,7 +694,8 @@ impl Server {
             let proc = p.pty.proc();
             (*id, proc.fg.clone(), proc.busy, crate::persist::shorten(std::path::Path::new(&proc.cwd)))
         }).collect();
-        ToClient::Listing { workspaces, procs }
+        let titles = self.panes.iter().filter(|(_, p)| !p.title.trim().is_empty()).map(|(id, p)| (*id, p.title.clone())).collect();
+        ToClient::Listing { workspaces, procs, titles }
     }
 
     /// Panes window `c` takes to show: those no other window has. Their
@@ -847,7 +854,7 @@ impl Server {
                 let keys = start_io(tx, pane, &pty);
                 let mut log = Log::default();
                 log.size(cols, rows);
-                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, proc: None, viewers: vec![c], windows: vec![self.names.get(&c).copied().unwrap_or(0)], sizes: HashMap::from([(c, (cols, rows, px))]), size: (cols, rows, px), number });
+                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, proc: None, viewers: vec![c], windows: vec![self.names.get(&c).copied().unwrap_or(0)], sizes: HashMap::from([(c, (cols, rows, px))]), size: (cols, rows, px), number, title: String::new() });
                 pid
             }
             Err(e) => {
@@ -1392,7 +1399,7 @@ fn resume(file: &Path, tx: &Sender<Ev>) -> io::Result<(Server, i32)> {
         // Its /tee written on to the end of its file.
         let tee = tee.and_then(|(state, told)| std::fs::OpenOptions::new().create(true).append(true).open(&state.path).ok().map(|file| Tee { state, file, told }));
         let keys = start_io(tx, id, &pty);
-        panes.insert(id, Pane { pty, keys, cmd, log, raw: None, tail, at_prompt, queue, tee, proc: None, viewers: Vec::new(), windows, sizes: HashMap::new(), size, number: 0 });
+        panes.insert(id, Pane { pty, keys, cmd, log, raw: None, tail, at_prompt, queue, tee, proc: None, viewers: Vec::new(), windows, sizes: HashMap::new(), size, number: 0, title: String::new() });
     }
     // The shared workspaces, from a jot that shares them.
     let shared = (0..i.u32().unwrap_or(0)).map_while(|_| i.str().ok()).filter_map(|t| toml::from_str::<crate::persist::WorkspaceSpec>(&t).ok()).collect();
@@ -1746,5 +1753,42 @@ impl Server {
         for w in windows {
             self.send(w, ToClient::Numbers { numbers: numbers.clone() });
         }
+    }
+}
+
+/// The last title set in `bytes` (OSC 0 or 2, ended by BEL or ST), if one
+/// is whole in them.
+fn last_title(bytes: &[u8]) -> Option<String> {
+    let mut found = None;
+    let mut i = 0;
+    while let Some(at) = find(&bytes[i..], b"\x1b]") {
+        let start = i + at + 2;
+        let rest = &bytes[start..];
+        let Some(body) = rest.strip_prefix(b"0;").or_else(|| rest.strip_prefix(b"2;")) else {
+            i = start;
+            continue;
+        };
+        let end = body.iter().position(|&c| c == 0x07 || c == 0x1b);
+        match end {
+            Some(e) => {
+                found = Some(String::from_utf8_lossy(&body[..e]).into_owned());
+                i = start + 2 + e;
+            }
+            None => break,
+        }
+    }
+    found
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::last_title;
+
+    #[test]
+    fn the_last_title_set() {
+        assert_eq!(last_title(b"x\x1b]0;one\x07y\x1b]2;woodwind > displaybug\x1b\\"), Some("woodwind > displaybug".into()));
+        assert_eq!(last_title(b"plain output"), None);
+        assert_eq!(last_title(b"\x1b]0;cut off"), None);
+        assert_eq!(last_title(b"\x1b]7;file://host/dir\x07"), None, "not a title");
     }
 }

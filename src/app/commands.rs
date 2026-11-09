@@ -186,7 +186,14 @@ impl App {
         p.term.select_rows((x, from), (p.cols.saturating_sub(1), last));
         let text = p.term.selection_text().unwrap_or_default();
         p.term.clear_selection();
-        text.trim().to_string()
+        if p.shell.input_at.is_some() {
+            return text.trim().to_string();
+        }
+        // Where the typing began is not known (the shell marks its prompt,
+        // not its end: tcsh): the prompt is read with it. The last line, its
+        // prompt's sign left out ("# claude" is claude).
+        let line = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+        strip_prompt(line).to_string()
     }
 
     fn pane_label(&self, id: PaneId) -> String {
@@ -347,5 +354,31 @@ impl App {
         let (Some(cmd), Some((id, _))) = (self.command_at(at), self.pane_at(at.0, at.1)) else { return };
         let busy = !self.pane_waiting(id);
         self.open_editor_with(id, &cmd, busy);
+    }
+}
+
+/// A command line read off the screen without its prompt's sign: a word
+/// of only #, $, %, >, ❯, », λ or → before it.
+fn strip_prompt(line: &str) -> &str {
+    let mut words = line.splitn(2, char::is_whitespace);
+    match (words.next(), words.next()) {
+        (Some(first), Some(rest)) if !first.is_empty() && first.chars().all(|c| "#$%>❯»λ→".contains(c)) => rest.trim_start(),
+        (Some(first), None) if !first.is_empty() && first.chars().all(|c| "#$%>❯»λ→".contains(c)) => "",
+        _ => line,
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::strip_prompt;
+
+    #[test]
+    fn a_prompt_s_sign_is_not_the_command() {
+        assert_eq!(strip_prompt("# claude"), "claude");
+        assert_eq!(strip_prompt("$ cargo test --release"), "cargo test --release");
+        assert_eq!(strip_prompt("❯ ls -l"), "ls -l");
+        assert_eq!(strip_prompt("#"), "");
+        assert_eq!(strip_prompt("git commit -m '#1'"), "git commit -m '#1'");
+        assert_eq!(strip_prompt("cargo build"), "cargo build");
     }
 }

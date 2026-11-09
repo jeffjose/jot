@@ -125,6 +125,9 @@ pub struct Pane {
     /// Commands pinned to its top, and how far their strip is scrolled.
     pins: Vec<pin::Pin>,
     pins_scroll: usize,
+    /// The title the program running in it set (Claude Code its session's
+    /// name), while it runs: what it is named by, everywhere.
+    program_title: Option<String>,
 }
 
 /// A pane closed, to bring back.
@@ -698,7 +701,7 @@ impl App {
             captions_at: Instant::now() - Duration::from_secs(10),
             clock: clock(),
             session,
-            machines: vec![Machine { host: host.clone(), client: attached.client.clone(), listing: Vec::new(), procs: HashMap::new(), added: true, restarting: false }],
+            machines: vec![Machine { host: host.clone(), client: attached.client.clone(), listing: Vec::new(), procs: HashMap::new(), titles: HashMap::new(), added: true, restarting: false }],
             target: 0,
             unreached: Vec::new(),
             tx: tx.clone(),
@@ -867,7 +870,7 @@ impl App {
         let caption = folder_name(&pty.cwd().unwrap_or(start.cwd));
         self.panes.insert(
             id,
-            Pane { term, pty, cmd, content: Rect::default(), rect: Rect::default(), cols, rows, want: (cols, rows), full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), resized: Instant::now(), untold: None, lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0 },
+            Pane { term, pty, cmd, content: Rect::default(), rect: Rect::default(), cols, rows, want: (cols, rows), full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), resized: Instant::now(), untold: None, lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0, program_title: None },
         );
         // A tee and a queue the session kept going, shown again.
         if let (Some((tee, queue)), Some(p)) = (kept, self.panes.get_mut(&id)) {
@@ -1949,7 +1952,7 @@ impl App {
         }
         // A menu open takes the click first: on a row it runs it, elsewhere
         // it goes, whatever was under it.
-        if (self.menu.is_some() && self.overlay_click(button, event_loop)) || (button == MouseButton::Left && (self.quake_bar_click() || self.offer_click(event_loop) || self.toast_click() || self.mini_click() || self.pin_click() || self.editor_run_click() || self.editor_press() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
+        if (self.menu.is_some() && self.overlay_click(button, event_loop)) || (button == MouseButton::Left && (self.quake_bar_click() || self.offer_click(event_loop) || self.toast_click(event_loop) || self.mini_click() || self.pin_click() || self.editor_run_click() || self.editor_press() || self.bar_field_press() || self.bar_click())) || self.settings_click(event_loop) || self.overlay_click(button, event_loop) || (button == MouseButton::Left && self.find_click()) {
             return;
         }
         if button == MouseButton::Left {
@@ -2118,6 +2121,10 @@ impl App {
             if let Some(w) = &self.window {
                 w.set_cursor(CursorIcon::Default);
             }
+            return;
+        }
+        // Over a toast: its buttons lit, the pointer theirs.
+        if self.drag.is_none() && self.toast_hover(x, y) {
             return;
         }
         // On the project bar: its pointer, set; not the pane's behind it.
@@ -2420,9 +2427,10 @@ impl App {
                 }
                 Output::Back(k, held) => back.push((k, held)),
                 Output::Failed(k, why) => self.not_reached(k, &why),
-                Output::Listing(k, mut l, procs) => {
+                Output::Listing(k, mut l, procs, titles) => {
                     if let Some(m) = self.machines.get_mut(k) {
                         m.procs = procs.into_iter().map(|(p, fg, busy, cwd)| (p, (fg, busy, cwd))).collect();
+                        m.titles = titles.into_iter().collect();
                     }
                     // Terminals let go of here a moment ago, which a list asked
                     // for before then leaves out: kept, until the session lists
@@ -2508,6 +2516,15 @@ impl App {
                     _ => folder,
                 }
             };
+            // Set by a program running in it (the shell not at its prompt):
+            // its name for the terminal, in the sidebar and on the quake bar
+            // as in its caption.
+            let running = !p.shell.at_prompt && (p.shell.running.is_some() || p.pty.busy());
+            let titled = (running && !p.term.title().trim().is_empty()).then(|| caption.clone());
+            if titled != p.program_title {
+                p.program_title = titled;
+                changed = true;
+            }
             if caption != p.caption {
                 p.caption = caption;
                 changed = true;
@@ -3759,7 +3776,7 @@ fn hearer(k: usize, tx: std::sync::mpsc::Sender<Output>, proxy: EventLoopProxy<(
             Heard::Proc(p, pr) => Output::Proc(id(p), pr),
             Heard::Back(held) => Output::Back(k, held),
             Heard::Failed(why) => Output::Failed(k, why),
-            Heard::Listing(l, procs) => Output::Listing(k, l, procs),
+            Heard::Listing(l, procs, titles) => Output::Listing(k, l, procs, titles),
             Heard::Taken(h) => Output::Taken(k, h),
             Heard::Workspaces(s, h) => Output::Workspaces(k, s, h),
             Heard::Numbers(n) => Output::Numbers(k, n),
@@ -3786,6 +3803,9 @@ pub struct Machine {
     /// What each of its terminals runs now, and where, as its session last
     /// said with that list: by its name there.
     pub procs: HashMap<u64, (String, bool, String)>,
+    /// The title each of its terminals' programs set last, as its session
+    /// last said.
+    pub titles: HashMap<u64, String>,
     /// Added in the sidebar: listed there whether or not a pane of it is
     /// shown.
     pub added: bool,
@@ -3804,7 +3824,7 @@ impl App {
         }
         let k = self.machines.len();
         let hear = hearer(k, self.tx.clone(), self.proxy.clone(), self.woken.clone());
-        self.machines.push(Machine { host: Some(host.to_string()), client: crate::mux::Client::lazy(host, hear), listing: Vec::new(), procs: HashMap::new(), added: false, restarting: false });
+        self.machines.push(Machine { host: Some(host.to_string()), client: crate::mux::Client::lazy(host, hear), listing: Vec::new(), procs: HashMap::new(), titles: HashMap::new(), added: false, restarting: false });
         k
     }
 

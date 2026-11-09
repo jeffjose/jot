@@ -34,7 +34,7 @@ pub enum Output {
     /// A machine could not be reached, and why.
     Failed(usize, String),
     /// A machine's workspaces this window does not show.
-    Listing(usize, Vec<crate::mux::Listed>, Vec<(u64, String, bool, String)>),
+    Listing(usize, Vec<crate::mux::Listed>, Vec<(u64, String, bool, String)>, Vec<(u64, String)>),
     /// Panes of a machine taken into this window.
     Taken(usize, Vec<crate::mux::Held>),
     /// A machine's shared workspaces, and the terminals in them now this
