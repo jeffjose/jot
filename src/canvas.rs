@@ -500,6 +500,10 @@ pub mod icons {
     /// The window's maximize and restore, in jot's own title bar.
     pub const WIN_MAX: char = '\u{e309}';
     pub const WIN_RESTORE: char = '\u{e30a}';
+    /// A toast's mark: done, something to know, something wrong.
+    pub const CHECK: char = '\u{e30b}';
+    pub const INFO: char = '\u{e30c}';
+    pub const DANGER: char = '\u{e30d}';
 }
 
 /// An icon's mask at `size` pixels square: its letter drawn to fill the

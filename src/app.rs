@@ -2414,7 +2414,7 @@ impl App {
                 // panes stay as they were.
                 Output::Gone(k) if k > 0 => {
                     let host = self.machines.get(k).and_then(|m| m.host.clone()).unwrap_or_default();
-                    self.toast(&format!("Lost {host}"), "Its panes run on there; reconnect to take them up", Some(0xE5484D), None);
+                    self.toast_with(&format!("Lost {host}"), "Its panes run on there", Some(0xE5484D), None, Some(("Reconnect", crate::palette::Action::Reconnect(k))));
                 }
                 Output::Gone(_) => {
                     match &self.mux.host {
@@ -3949,7 +3949,7 @@ impl App {
         if !self.panes.keys().any(|id| crate::mux::split_id(*id).0 == k) {
             self.machines[k].client.give_up();
         } else if now.is_empty() {
-            self.toast(&format!("Cannot reach {host}"), &format!("{why} · trying again"), Some(0xE5484D), None);
+            self.toast_with(&format!("Cannot reach {host}"), &format!("{why} · trying again"), Some(0xE5484D), None, Some(("Try now", crate::palette::Action::Reconnect(k))));
         }
     }
 }
