@@ -156,7 +156,7 @@ impl App {
         let at = self.mini_btns.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| *id);
         if at != self.mini_lit {
             self.mini_lit = at;
-            self.full = true;
+            self.mini_dirty = true;
             self.redraw();
         }
         let on_row = self.mini_hits.iter().any(|(r, _)| r.contains(x, y));

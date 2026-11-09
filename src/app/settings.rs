@@ -782,7 +782,6 @@ impl App {
             if let Some(s) = &mut self.settings {
                 s.scroll = to;
             }
-            self.full = true;
             self.redraw();
             return true;
         }
@@ -790,7 +789,6 @@ impl App {
         if let Some(s) = &mut self.settings {
             if s.hover != hit {
                 s.hover = hit;
-                self.full = true;
                 self.redraw();
             }
         }
@@ -818,6 +816,19 @@ impl App {
 
     pub(super) fn draw_settings(&mut self) {
         let c = self.theme.chrome();
+        // What it covers kept (see floats_off): its panel, or the whole
+        // window while a list or a color picker hangs off it, which can go
+        // past the panel.
+        let pops = self.settings.as_ref().is_some_and(|s| s.accent_pop.is_some() || s.dropdown.is_some());
+        let area = if pops {
+            Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height }
+        } else {
+            let (r, m) = (self.settings_rect(), self.px(32.0));
+            Rect { x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m }
+        };
+        if self.settings.is_some() {
+            self.float_save(area);
+        }
         let Some(mut st) = self.settings.take() else { return };
         let scale = self.scale;
         let px = |v: f32| (v * scale).round() as i32;
@@ -1491,7 +1502,7 @@ impl App {
 
         st.hits = hits;
         self.settings = Some(st);
-        self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
+        self.damage.push(area);
     }
 }
 

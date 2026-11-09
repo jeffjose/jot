@@ -495,6 +495,9 @@ impl App {
         let shown: Vec<(usize, Item)> = p.matches.iter().cloned().enumerate().skip(p.first).take(l.rows).collect();
         let selected = p.selected;
         let r = l.panel;
+        let m = self.px(24.0);
+        let area = Rect { x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m };
+        self.float_save(area);
         self.canvas.panel(r, l.pad * 2 / 3, c.panel, c.edge);
         let ui = &mut self.fonts.ui;
         let (x, y) = (r.x + l.pad, r.y + l.pad);
@@ -517,7 +520,7 @@ impl App {
             let hint_w = ui.width(&item.hint);
             self.canvas.text(ui, &item.hint, (r.x + r.w - l.pad * 3 / 2 - hint_w) as f32, ty, dim, row_clip);
         }
-        self.damage.push(Rect { x: 0, y: 0, w: self.canvas.width, h: self.canvas.height });
+        self.damage.push(area);
     }
 
     fn palette_row_at(&self, x: i32, y: i32) -> Option<usize> {
@@ -807,7 +810,6 @@ impl App {
                 if let Some(p) = &mut self.palette {
                     if p.selected != row {
                         p.selected = row;
-                        self.full = true;
                         self.redraw();
                     }
                 }

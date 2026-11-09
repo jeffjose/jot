@@ -151,7 +151,6 @@ impl App {
         let hit = f.hits.iter().rev().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h);
         if f.hover != hit {
             f.hover = hit;
-            self.full = true;
             self.redraw();
         }
         if hit.is_some() {
@@ -168,10 +167,12 @@ impl App {
         let c = self.cur_theme.chrome();
         let scale = self.scale;
         let px = |v: f32| (v * scale).round() as i32;
-        let ui = &mut self.fonts.ui;
-        let h = ui.height + px(18.0);
+        let h = self.fonts.ui.height + px(18.0);
         let w = px(400.0).min(rect.w - px(16.0));
         let r = Rect { x: rect.x + rect.w - w - px(14.0), y: rect.y + px(8.0), w, h };
+        let area = Rect { x: r.x - px(20.0), y: r.y - px(20.0), w: r.w + px(40.0), h: r.h + px(40.0) };
+        self.float_save(area);
+        let ui = &mut self.fonts.ui;
         self.canvas.panel(r, px(8.0), c.panel, c.edge);
         let b = h - px(8.0);
         let close = Rect { x: r.x + r.w - b - px(4.0), y: r.y + px(4.0), w: b, h: b };
@@ -223,7 +224,7 @@ impl App {
         }
         f.hits = vec![(r, FindHit::Field), (up, FindHit::Up), (down, FindHit::Down), (close, FindHit::Close)];
         self.find = Some(f);
-        self.damage.push(Rect { x: r.x - px(16.0), y: r.y - px(16.0), w: r.w + px(32.0), h: r.h + px(32.0) });
+        self.damage.push(area);
     }
 }
 

@@ -666,7 +666,6 @@ impl App {
                 }
             }
             self.bar_lit = at;
-            self.full = true;
             self.redraw();
         }
         if at.is_some() {
@@ -739,12 +738,6 @@ mod tests {
 }
 
 impl App {
-    /// Whether the bar's slash commands are showing, so frames are drawn
-    /// whole while they are.
-    pub(super) fn bar_list_open(&self) -> bool {
-        self.bar.as_ref().is_some_and(|b| b.field.text.first() == Some(&'/'))
-    }
-
     /// The bar's slash commands, rising from its line, over everything.
     pub(super) fn draw_bar_list(&mut self) {
         let Some(b) = &self.bar else { return };

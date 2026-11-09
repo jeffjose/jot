@@ -91,7 +91,6 @@ impl App {
         let hit = if o.restore.contains(x, y) { Some(true) } else if o.close.contains(x, y) { Some(false) } else { None };
         if o.hover != hit {
             o.hover = hit;
-            self.full = true;
             self.redraw();
         }
         if hit.is_some() {
@@ -113,6 +112,8 @@ impl App {
         let w = px(330.0).min(self.canvas.width - px(32.0));
         let h = px(14.0) + uh + px(4.0) + sh + px(14.0) + uh + px(12.0) + px(14.0);
         let r = Rect { x: self.canvas.width - w - px(16.0), y: px(16.0), w, h };
+        let area = Rect { x: r.x - px(20.0), y: 0, w: r.w + px(40.0), h: r.y + r.h + px(24.0) };
+        self.float_save(area);
         self.canvas.panel(r, px(10.0), c.panel, c.edge);
         let tx = r.x + px(16.0);
         self.canvas.text(&mut self.fonts.ui, "Restore last session?", tx as f32, r.y + px(14.0), c.text, r);
@@ -134,7 +135,7 @@ impl App {
             o.restore = restore;
             o.close = close;
         }
-        self.damage.push(Rect { x: r.x - px(16.0), y: 0, w: r.w + px(32.0), h: r.y + r.h + px(16.0) });
+        self.damage.push(area);
     }
 }
 

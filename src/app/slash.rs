@@ -583,6 +583,8 @@ impl App {
         let fits_below = below + h <= self.canvas.height - px(8.0);
         let y = if !rise && fits_below { below } else { (above - h).max(px(8.0)) };
         let r = Rect { x, y, w, h };
+        let area = Rect { x: r.x - px(20.0), y: r.y - px(20.0), w: r.w + px(40.0), h: r.h + px(40.0) };
+        self.float_save(area);
         self.canvas.panel(r, px(8.0), c.panel, c.edge);
         for (k, (i, row)) in shown.iter().enumerate() {
             let top = r.y + px(4.0) + k as i32 * row_h;
@@ -599,7 +601,7 @@ impl App {
             let kw = self.fonts.small.width(row.kind);
             self.canvas.text(&mut self.fonts.small, row.kind, (r.x + r.w - px(12.0) - kw) as f32, top + (row_h - sh) / 2, if picked { dim } else { c.faint }, r);
         }
-        self.damage.push(Rect { x: r.x - px(8.0), y: r.y - px(8.0), w: r.w + px(16.0), h: r.h + px(16.0) });
+        self.damage.push(area);
     }
 }
 

@@ -612,7 +612,7 @@ impl App {
         let at = self.quake_hit_at(x, y);
         if at != self.quake_lit {
             self.quake_lit = at;
-            self.full = true;
+            self.quake_dirty = true;
             self.redraw();
         }
         let on_bar = self.quake_bar_rect().contains(x, y);

@@ -126,23 +126,65 @@ impl Canvas {
     /// A rectangle with rounded corners, its edges smoothed, laid over
     /// what is there at `alpha` (0 to 255).
     pub fn round_fill(&mut self, r: Rect, radius: i32, color: u32, alpha: u32) {
+        self.round_fill_except(r, radius, color, alpha, None);
+    }
+
+    /// `round_fill`, but for `hole` (with rounded corners of `hole_radius`
+    /// as a panel's): left as it is, as what is drawn there next covers it
+    /// (a panel over its shadow), so its pixels are not blended for nothing.
+    /// Only the pixels in a corner's curve are worked out one by one; the
+    /// rest of each row is one span, filled at once.
+    fn round_fill_except(&mut self, r: Rect, radius: i32, color: u32, alpha: u32, hole: Option<(Rect, i32)>) {
+        if alpha == 0 {
+            return;
+        }
         let radius = radius.min(r.w / 2).min(r.h / 2).max(0);
         let rad = radius as f32;
         let (x0, y0, x1, y1) = self.bounds(r);
+        // Where the hole covers a row whole: inside it, and clear of its
+        // corners' curves.
+        let covered = |y: i32| -> Option<(i32, i32)> {
+            let (h, hr) = hole?;
+            if y < h.y || y >= h.y + h.h {
+                return None;
+            }
+            let inset = if y < h.y + hr || y >= h.y + h.h - hr { hr } else { 0 };
+            Some((h.x + inset, h.x + h.w - inset))
+        };
+        let span = |canvas: &mut Canvas, row: usize, a: i32, b: i32| {
+            if a >= b {
+                return;
+            }
+            let s = &mut canvas.pixels[row + a as usize..row + b as usize];
+            if alpha >= 255 {
+                s.fill(color);
+            } else {
+                for p in s {
+                    *p = blend(*p, color, alpha);
+                }
+            }
+        };
         for y in y0..y1 {
             let row = (y * self.width) as usize;
-            for x in x0..x1 {
-                // Distance into a corner's curve, for the pixels in one.
-                let (dx, dy) = (
-                    if x < r.x + radius { (r.x + radius) as f32 - (x as f32 + 0.5) } else if x >= r.x + r.w - radius { (x as f32 + 0.5) - (r.x + r.w - radius) as f32 } else { 0.0 },
-                    if y < r.y + radius { (r.y + radius) as f32 - (y as f32 + 0.5) } else if y >= r.y + r.h - radius { (y as f32 + 0.5) - (r.y + r.h - radius) as f32 } else { 0.0 },
-                );
-                let cover = if dx > 0.0 && dy > 0.0 { (rad + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0) } else { 1.0 };
+            let dy = if y < r.y + radius { (r.y + radius) as f32 - (y as f32 + 0.5) } else if y >= r.y + r.h - radius { (y as f32 + 0.5) - (r.y + r.h - radius) as f32 } else { 0.0 };
+            // In a corner's rows, the pixels left and right of the straight
+            // stretch one by one; else the row is straight end to end.
+            let (left, right) = if dy > 0.0 { ((r.x + radius).clamp(x0, x1), (r.x + r.w - radius).clamp(x0, x1)) } else { (x0, x1) };
+            for x in (x0..left).chain(right..x1) {
+                let dx = if x < r.x + radius { (r.x + radius) as f32 - (x as f32 + 0.5) } else { (x as f32 + 0.5) - (r.x + r.w - radius) as f32 };
+                let cover = if dx > 0.0 { (rad + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0) } else { 1.0 };
                 let a = (cover * alpha as f32) as u32;
-                if a > 0 {
+                if a > 0 && !covered(y).is_some_and(|(a0, b0)| x >= a0 && x < b0) {
                     let p = &mut self.pixels[row + x as usize];
                     *p = blend(*p, color, a);
                 }
+            }
+            match covered(y) {
+                Some((a0, b0)) => {
+                    span(self, row, left, a0.clamp(left, right));
+                    span(self, row, b0.clamp(left, right), right);
+                }
+                None => span(self, row, left, right),
             }
         }
     }
@@ -259,7 +301,8 @@ impl Canvas {
         let spread = (radius * 3 / 2).clamp(6, 16);
         for i in (1..=spread).step_by(2) {
             let s = Rect { x: r.x - i, y: r.y - i + spread / 3, w: r.w + 2 * i, h: r.h + 2 * i };
-            self.round_fill(s, radius + i, 0x000000, (28 * (spread - i + 1) / spread) as u32);
+            // Not under the panel itself, which covers it whole.
+            self.round_fill_except(s, radius + i, 0x000000, (28 * (spread - i + 1) / spread) as u32, Some((r, radius)));
         }
         self.round_fill(r, radius, edge, 255);
         self.round_fill(Rect { x: r.x + 1, y: r.y + 1, w: r.w - 2, h: r.h - 2 }, radius - 1, fill, 255);

@@ -324,6 +324,10 @@ pub struct App {
     /// The sidebar alone to draw again (a row under the pointer, a dot
     /// changed), not the window.
     pub(super) side_dirty: bool,
+    /// The minimized rows alone to draw again (a button lit).
+    pub(super) mini_dirty: bool,
+    /// The quake bar alone to draw again (a button lit).
+    pub(super) quake_dirty: bool,
     /// What the open submenu covers, kept to be put back when it goes.
     pub(super) menu_under: Option<(Rect, Vec<u32>)>,
     /// What toasts and the tooltip cover, kept as they were drawn (each
@@ -658,6 +662,8 @@ impl App {
             menu: None,
             menu_relit: false,
             side_dirty: false,
+            mini_dirty: false,
+            quake_dirty: false,
             menu_under: None,
             floats_under: Vec::new(),
             settings: None,
@@ -2557,7 +2563,7 @@ impl App {
         // The sidebar alone drawn again would go over the palette, a menu
         // or the settings, when one is up: the window then.
         let over = self.palette.is_some() || self.menu.is_some() || self.settings.is_some();
-        let full = asked || self.offered.is_some() || self.slash.is_some() || self.bar_list_open() || (self.side_dirty && over);
+        let full = asked || (self.side_dirty && over);
         crate::debuglog::count(match (full, asked) {
             (false, _) => "frame partial",
             (true, true) => "frame full (asked)",
@@ -2640,11 +2646,13 @@ impl App {
         }
         self.side_dirty = false;
         self.draw_titlebar(full);
-        self.quake_bar_frame(full);
+        self.quake_bar_frame(full || self.quake_dirty);
+        self.quake_dirty = false;
         self.draw_quake_sides();
-        if full {
+        if full || self.mini_dirty {
             self.draw_minimized();
         }
+        self.mini_dirty = false;
         if full && self.config.status_line {
             self.draw_status();
         }
@@ -2654,19 +2662,24 @@ impl App {
             self.draw_side_carry();
         }
         self.draw_editors(full, &drawn);
-        if self.find.is_some() && (full || !floating) {
+        // Floats (see floats_off): drawn again every frame, over whatever
+        // changed under them.
+        if self.find.is_some() {
             self.draw_find();
         }
+        // The overlays float too (see floats_off): each drawn every frame
+        // over what changed, none making the window draw whole. The menu
+        // has its own way (draw_menu).
+        self.draw_palette();
         if full {
-            self.draw_palette();
             self.draw_menu(true);
-            self.draw_settings();
-            self.draw_offer();
-            self.draw_slash();
-            self.draw_bar_list();
         } else if self.menu_relit {
             self.draw_menu(false);
         }
+        self.draw_settings();
+        self.draw_offer();
+        self.draw_slash();
+        self.draw_bar_list();
         self.menu_relit = false;
         if self.menu.is_none() {
             self.menu_under = None;

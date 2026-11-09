@@ -858,7 +858,13 @@ impl App {
             on_any |= on || on_close;
         }
         if changed {
-            self.full = true;
+            // Their panes drawn again, the editors with them; not the window.
+            let panes: Vec<PaneId> = self.editors.iter().map(|e| e.pane).collect();
+            for id in panes {
+                if let Some(p) = self.panes.get_mut(&id) {
+                    p.full = true;
+                }
+            }
             self.redraw();
         }
         if on_any {
