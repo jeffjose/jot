@@ -120,7 +120,7 @@ impl App {
         if !self.sidebar_open {
             // No caption held the button (captions off, or empty space or a
             // minimized row at the top left): it floats over that corner.
-            if self.side_toggle.is_none() {
+            if self.side_toggle.is_none() && self.title_h() == 0 {
                 let a = self.area();
                 let bar = Rect { x: a.x, y: a.y, w: self.px(30.0), h: self.px(28.0) };
                 self.draw_side_button(bar);
@@ -162,8 +162,14 @@ impl App {
         };
         // The top: the button, Machines, and + to add one.
         let top = y0 + px(6.0);
-        button(self, Rect { x: pad - px(2.0), y: top, w: b, h: b }, SideHit::Toggle, icons::SIDEBAR, true);
-        self.canvas.text(&mut self.fonts.side_small, "Machines", (pad - px(2.0) + b + px(8.0)) as f32, top + (b - dh) / 2, c.faint, clip);
+        // With jot's own title bar the button is there (see titlebar), not here.
+        let mx = if self.title_h() > 0 {
+            pad + px(4.0)
+        } else {
+            button(self, Rect { x: pad - px(2.0), y: top, w: b, h: b }, SideHit::Toggle, icons::SIDEBAR, true);
+            pad - px(2.0) + b + px(8.0)
+        };
+        self.canvas.text(&mut self.fonts.side_small, "Machines", mx as f32, top + (b - dh) / 2, c.faint, clip);
         button(self, Rect { x: w - pad - b, y: top, w: b, h: b }, SideHit::AddMachine, icons::PLUS, true);
         // The foot: Settings, alone.
         let foot = Rect { x: pad, y: h - row_h - px(8.0), w: inner_w, h: row_h };

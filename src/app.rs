@@ -3059,7 +3059,7 @@ impl App {
         // first, tucked away, in the pane at the top left.
         let mut x = bar.x + pad;
         let a = self.area();
-        if !self.sidebar_open && bar.x == a.x && bar.y == a.y && n > 0 {
+        if !self.sidebar_open && self.title_h() == 0 && bar.x == a.x && bar.y == a.y && n > 0 {
             x = self.draw_side_button(bar);
         }
         if n > 0 {

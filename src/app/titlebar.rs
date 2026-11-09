@@ -13,6 +13,8 @@ use crate::canvas::icons;
 /// What can be pressed in the bar.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum TitleHit {
+    /// The sidebar, shown or tucked away: here, where it never moves.
+    Sidebar,
     Minimize,
     Maximize,
     Close,
@@ -87,10 +89,20 @@ impl App {
             self.title.hits.push((r, hit));
             right = r.x - px(1.0);
         }
-        // At the left: the workspace in its color, its name, the folder.
+        // At the far left: the sidebar's button, in one place whether the
+        // sidebar is shown or not (not in the sidebar, which it hides, nor
+        // in a pane's caption once it is hidden).
+        let side = Rect { x: px(6.0), y: (h - bh) / 2, w: bw, h: bh };
+        let side_lit = self.title.lit == Some(TitleHit::Sidebar);
+        if side_lit {
+            self.canvas.round_fill(side, px(5.0), mix(c.side, c.text, 14), 255);
+        }
+        self.canvas.icon_in(icons::SIDEBAR, side, px(14.0), if side_lit { c.text } else { c.dim });
+        self.title.hits.push((side, TitleHit::Sidebar));
+        // Then the workspace in its color, its name, the folder.
         let uh = self.fonts.ui.height;
         let ty = (h - uh) / 2;
-        let mut x = px(14.0);
+        let mut x = side.x + side.w + px(8.0);
         let d = px(9.0);
         self.canvas.round_fill(Rect { x, y: (h - d) / 2, w: d, h: d }, px(3.0), accent, 255);
         x += d + px(10.0);
@@ -137,6 +149,7 @@ impl App {
         }
         let Some(w) = self.window.clone() else { return true };
         match self.title.hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h) {
+            Some(TitleHit::Sidebar) => self.toggle_sidebar(),
             Some(TitleHit::Minimize) => w.set_minimized(true),
             Some(TitleHit::Maximize) => w.set_maximized(!w.is_maximized()),
             Some(TitleHit::Close) => {
