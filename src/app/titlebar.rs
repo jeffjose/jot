@@ -58,7 +58,8 @@ impl App {
         let folder = self.panes.get(&ws.focus).and_then(|p| p.pty.cwd()).map(|c| persist::shorten(&c)).unwrap_or_default();
         let accent = self.cur_accent;
         let mark = self.cur_mark();
-        let said = format!("{name}\0{folder}\0{accent}\0{mark:?}\0{maximized}\0{:?}\0{}", self.title.lit, self.canvas.width);
+        let open_down = self.switcher.as_ref().is_some_and(|s| !s.up);
+        let said = format!("{name}\0{folder}\0{accent}\0{mark:?}\0{maximized}\0{:?}\0{}\0{open_down}", self.title.lit, self.canvas.width);
         if !full && said == self.title.said {
             return;
         }
@@ -103,30 +104,33 @@ impl App {
         }
         self.canvas.icon_in(icons::SIDEBAR, side, px(14.0), if side_lit { c.text } else { c.dim });
         self.title.hits.push((side, TitleHit::Sidebar));
-        // Then the workspace: its mark and name on a solid chip of its
-        // color, dark on it, so which workspace this is reads at a glance;
-        // then the folder.
+        // Then the workspace as the foot bar has it at its left: its mark
+        // on a square of its color, its name, the folder and a chevron, one
+        // thing, which a click opens the switcher down from.
         let uh = self.fonts.ui.height;
         let ty = (h - uh) / 2;
         let room = Rect { x: 0, y: 0, w: (right - px(12.0)).max(0), h };
-        let d = px(14.0);
-        let x0 = side.x + side.w + px(6.0);
-        let ch = (bh - px(2.0)).max(uh + px(4.0));
-        let cw = (px(7.0) + d + px(7.0) + self.fonts.ui.width(&name) + px(10.0)).min((room.w - x0).max(0));
-        let chip = Rect { x: x0, y: (h - ch) / 2, w: cw, h: ch };
-        self.title.hits.push((chip, TitleHit::Workspace));
-        let ink = mix(accent, 0x000000, 215);
-        self.canvas.round_fill(chip, px(6.0), accent, 255);
-        if let Some(m) = mark {
-            self.canvas.icon_in(m, Rect { x: chip.x + px(7.0), y: chip.y + (ch - d) / 2, w: d, h: d }, d, ink);
+        let ts = (bh - px(2.0)).max(uh);
+        let x0 = side.x + side.w + px(4.0);
+        let name_w = self.fonts.ui.width(&name).min((room.w - x0 - ts - px(10.0)).max(0));
+        let fx = x0 + px(4.0) + ts + px(10.0) + name_w + px(10.0);
+        let folder_w = if folder.is_empty() { 0 } else { self.fonts.ui.width(&folder).min((room.w - fx).max(0)) };
+        let cih = px(10.0);
+        let cx = if folder.is_empty() { fx - px(10.0) } else { fx + folder_w } + px(8.0);
+        let area = Rect { x: x0, y: (h - bh) / 2, w: (cx + cih + px(8.0) - x0).max(0), h: bh };
+        let lit = self.title.lit == Some(TitleHit::Workspace);
+        let open = self.switcher.as_ref().is_some_and(|s| !s.up);
+        if lit || open {
+            self.canvas.round_fill(area, px(6.0), accent, if open { 110 } else { 70 });
         }
-        let nx = chip.x + px(7.0) + d + px(7.0);
-        self.canvas.text_fit(&mut self.fonts.ui, &name, nx, ty, (chip.x + chip.w - px(8.0) - nx).max(0), ink, chip);
-        let mut x = chip.x + chip.w;
+        self.mark_tile(Rect { x: x0 + px(4.0), y: (h - ts) / 2, w: ts, h: ts }, accent, mark, true);
+        let nx = x0 + px(4.0) + ts + px(10.0);
+        self.canvas.text_fit(&mut self.fonts.ui, &name, nx, ty, name_w, c.text, room);
         if !folder.is_empty() {
-            x += px(10.0);
-            self.canvas.text_fit(&mut self.fonts.ui, &folder, x, ty, (room.w - x).max(0), c.dim, room);
+            self.canvas.text_fit(&mut self.fonts.ui, &folder, fx, ty, folder_w, c.dim, room);
         }
+        self.canvas.icon_in(icons::CHEVRON_DOWN, Rect { x: cx, y: (h - cih) / 2, w: cih, h: cih }, cih, c.dim);
+        self.title.hits.push((area, TitleHit::Workspace));
         self.damage.push(bar);
     }
 

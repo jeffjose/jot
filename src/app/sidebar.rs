@@ -384,7 +384,8 @@ impl App {
             return true;
         }
         let on_toggle = self.side_toggle.is_some_and(|r| r.contains(x, y));
-        let inside = x < self.sidebar_w() || on_toggle;
+        // Below jot's title bar: above the sidebar is the title bar's.
+        let inside = (x < self.sidebar_w() && y >= self.title_h()) || on_toggle;
         let at = if on_toggle { Some(SideHit::Toggle) } else if inside { self.side_hit_at(x, y) } else { None };
         let heading = if inside { self.heading_under(y) } else { None };
         if at != self.side_lit || heading != self.side_heading {
