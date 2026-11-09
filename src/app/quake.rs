@@ -387,6 +387,8 @@ pub(super) enum QuakeHit {
     Hide,
     /// Make it full width again (there while it is narrower).
     Full,
+    /// Its default height again (there while it is not).
+    Height,
 }
 
 /// jot's own color, its icon's: the quake window's square, which stands
@@ -531,6 +533,25 @@ impl App {
             hits.push((full, QuakeHit::Full));
             left_of = full.x;
         }
+        // Not its default height: a button to make it so again.
+        if self.config.quake_height != persist::default_quake_height() {
+            let tall = Rect { x: left_of - px(4.0) - hw, y: by, w: hw, h: bh };
+            let on = lit == Some(QuakeHit::Height);
+            if on {
+                self.canvas.round_fill(tall, px(5.0), lift, 30);
+            }
+            // ↕: arrows up and down.
+            let (cx, cy, half) = (tall.x + tall.w / 2, tall.y + tall.h / 2, px(6.0));
+            let color = if on { c.text } else { c.dim };
+            self.canvas.fill(Rect { x: cx, y: cy - half, w: px(1.5).max(1), h: 2 * half }, color);
+            for (sy, d) in [(cy - half, 1), (cy + half, -1)] {
+                for i in 0..px(3.0) {
+                    self.canvas.fill(Rect { x: cx - i, y: sy + d * i, w: 2 * i + 1, h: 1 }, color);
+                }
+            }
+            hits.push((tall, QuakeHit::Height));
+            left_of = tall.x;
+        }
         let k = self.foot_machine();
         let machine = self.machine_name(k);
         let ih = px(10.0);
@@ -645,6 +666,7 @@ impl App {
             Some(QuakeHit::Grip) => self.drag = Some(Drag::QuakeGrip),
             Some(QuakeHit::Hide) => self.quake_hide(),
             Some(QuakeHit::Full) => self.quake_full_width(),
+            Some(QuakeHit::Height) => self.quake_reset_height(),
             None => {}
         }
         true
@@ -723,17 +745,54 @@ impl App {
         if !self.quake_bar_rect().contains(x, y) {
             return false;
         }
-        if let Some(QuakeHit::Term(hit)) = self.quake_hit_at(x, y) {
-            self.terminal_menu(hit);
-            // Up from the bar along the foot, down from one along the top.
-            let (row, pad, on_top) = (self.fonts.ui.height + self.px(8.0), self.px(12.0), self.quake_bar_on_top());
-            let below = y + self.px(8.0);
-            if let Some(m) = &mut self.menu {
-                let h = m.items.len() as i32 * row + pad;
-                m.at = if on_top { (x, below) } else { (x, (y - h).max(0)) };
+        match self.quake_hit_at(x, y) {
+            Some(QuakeHit::Term(hit)) => self.terminal_menu(hit),
+            // Elsewhere on it: its size and place, back to how they were made.
+            _ => {
+                use crate::palette::{Action, Item};
+                let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
+                let shape = Shape::of(&self.config);
+                let mut items = Vec::new();
+                if shape.narrowed() {
+                    items.push(c("Full width", "double-click a side", Action::QuakeFullWidth));
+                }
+                if (shape.left - shape.right).abs() > 0.5 {
+                    items.push(c("Centered", "", Action::QuakeCenter));
+                }
+                if self.config.quake_height != persist::default_quake_height() {
+                    items.push(c("Reset height", "", Action::QuakeResetHeight));
+                }
+                if !items.is_empty() {
+                    items.push(None);
+                }
+                items.push(c("Hide", "jot --quake", Action::QuakeHide));
+                self.open_items_menu(items);
             }
         }
+        // Up from the bar along the foot, down from one along the top.
+        let (row, pad, on_top) = (self.fonts.ui.height + self.px(8.0), self.px(12.0), self.quake_bar_on_top());
+        let below = y + self.px(8.0);
+        if let Some(m) = &mut self.menu {
+            let h = m.items.len() as i32 * row + pad;
+            m.at = if on_top { (x, below) } else { (x, (y - h).max(0)) };
+        }
         true
+    }
+
+    /// The quake window in the middle of the screen, its width kept.
+    pub(super) fn quake_center(&mut self) {
+        let shape = Shape::of(&self.config);
+        let side = (shape.left + shape.right) / 2.0;
+        self.config.quake_left = side;
+        self.config.quake_right = side;
+        self.quake_sides_keep();
+    }
+
+    /// The quake window its default height again.
+    pub(super) fn quake_reset_height(&mut self) {
+        self.config.quake_height = persist::default_quake_height();
+        persist::unset_config_value("quake-height");
+        self.quake_sides_keep();
     }
 }
 

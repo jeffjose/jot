@@ -271,6 +271,10 @@ impl App {
             }
             Action::PickTerminal => self.terminal_picker(),
             Action::NewWindow => self.new_window(),
+            Action::QuakeFullWidth => self.quake_full_width(),
+            Action::QuakeCenter => self.quake_center(),
+            Action::QuakeResetHeight => self.quake_reset_height(),
+            Action::QuakeHide => self.quake_hide(),
             Action::NewTerminalHere => self.new_terminal_here(),
             Action::NextTerminal => self.step_terminal(1),
             Action::PrevTerminal => self.step_terminal(-1),

@@ -24,6 +24,12 @@ pub enum Action {
     /// before.
     PickTerminal,
     NewWindow,
+    /// The quake window full width, centered (its width kept), its height
+    /// the default again.
+    QuakeFullWidth,
+    QuakeCenter,
+    QuakeResetHeight,
+    QuakeHide,
     NewTerminalHere,
     NextTerminal,
     PrevTerminal,
