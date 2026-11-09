@@ -44,6 +44,9 @@ pub enum Key {
     QuakeHideOnBlur,
     /// The long-command editor's colors.
     EditorColors,
+    /// The project shown in Settings › Projects: its theme, its tint.
+    ProjTheme,
+    ProjTint,
     /// The debug log: a switch every jot on the machine shares, not a setting.
     Debug,
 }
@@ -80,6 +83,14 @@ pub enum Hit {
     Project(usize),
     /// A terminal set to a project by hand, set back.
     SetBack(u64),
+    /// The project shown: its mark and color picked, its theme's list
+    /// opened; a folder of it taken off, one added; a project added.
+    ProjIcon(usize),
+    ProjColor(usize),
+    ProjThemeOpen,
+    FolderRemove(usize),
+    FolderAdd,
+    ProjNew,
 }
 
 pub struct Dropdown {
@@ -125,6 +136,8 @@ pub struct Settings {
     pub drag: Option<(i32, i32)>,
     /// The project shown in Settings › Projects, by name.
     pub project: Option<String>,
+    /// A folder for it being typed (true), or a new project's name.
+    pub adding: Option<(bool, crate::field::TextField)>,
     /// The installed fonts, read once: monospaced, and all.
     mono: Option<Vec<String>>,
     all: Option<Vec<String>>,
@@ -198,7 +211,7 @@ fn config_key(key: Key) -> &'static str {
         Key::QuakeAllWorkspaces => "quake-all-workspaces",
         Key::QuakeHideOnBlur => "quake-hide-on-blur",
         Key::EditorColors => "editor-colors",
-        Key::Debug => "",
+        Key::Debug | Key::ProjTheme | Key::ProjTint => "",
     }
 }
 
@@ -206,8 +219,45 @@ impl App {
     pub(super) fn open_settings(&mut self) {
         self.palette = None;
         self.menu = None;
-        self.settings = Some(Settings { scroll: 0, hover: None, hits: Vec::new(), content_h: 0, view_h: 1, tops: Vec::new(), section: 0, dropdown: None, accent_pop: None, renaming: None, closing: None, hex: crate::field::TextField::default(), drag: None, project: None, mono: None, all: None });
+        self.settings = Some(Settings { scroll: 0, hover: None, hits: Vec::new(), content_h: 0, view_h: 1, tops: Vec::new(), section: 0, dropdown: None, accent_pop: None, renaming: None, closing: None, hex: crate::field::TextField::default(), drag: None, project: None, adding: None, mono: None, all: None });
         self.full = true;
+        self.redraw();
+    }
+
+    /// The project Settings › Projects shows: the one picked, else the first.
+    fn shown_project(&self) -> Option<String> {
+        self.settings.as_ref().and_then(|s| s.project.clone()).or_else(|| self.project_rows().first().map(|r| r.project.name.clone()))
+    }
+
+    /// What was typed for a project kept (a folder added to it, or a new
+    /// project made and shown), or let go of.
+    fn finish_adding(&mut self, keep: bool) {
+        let Some((folder, field)) = self.settings.as_mut().and_then(|s| s.adding.take()) else { return };
+        let typed = field.string().trim().to_string();
+        if keep && !typed.is_empty() {
+            if folder {
+                if let Some(name) = self.shown_project() {
+                    let path = persist::shorten(&persist::expand(&typed));
+                    super::projects::change(|b| {
+                        let f = b.folders.entry(name).or_default();
+                        if !f.contains(&path) {
+                            f.push(path);
+                        }
+                    });
+                }
+            } else {
+                super::projects::change(|b| {
+                    if !b.made.contains(&typed) {
+                        b.made.push(typed.clone());
+                    }
+                });
+                if let Some(s) = &mut self.settings {
+                    s.project = Some(typed);
+                }
+            }
+        }
+        self.full = true;
+        self.side_dirty = true;
         self.redraw();
     }
 
@@ -255,7 +305,7 @@ impl App {
             Key::QuakeAllWorkspaces => !c.quake_all_workspaces,
             Key::QuakeHideOnBlur => c.quake_hide_on_blur,
             Key::EditorColors => !c.editor_colors.eq_ignore_ascii_case(&persist::default_editor_colors()),
-            Key::Debug => false,
+            Key::Debug | Key::ProjTheme | Key::ProjTint => false,
         }
     }
 
@@ -317,7 +367,7 @@ impl App {
                 self.config.captions = true;
                 self.relayout();
             }
-            Key::WsTheme => {}
+            Key::WsTheme | Key::ProjTheme | Key::ProjTint => {}
             Key::Bold => {
                 self.config.bold_text = true;
                 self.reload_fonts();
@@ -394,6 +444,45 @@ impl App {
                 }
             }
             Hit::SetBack(sid) => self.set_back(sid),
+            Hit::ProjIcon(i) => {
+                if let Some(name) = self.shown_project() {
+                    super::projects::change(|b| b.looks.entry(name).or_default().icon = icons::PROJECT.get(i).copied());
+                }
+            }
+            Hit::ProjColor(i) => {
+                if let Some(name) = self.shown_project() {
+                    super::projects::change(|b| b.looks.entry(name).or_default().color = super::projects::COLORS.get(i).map(|c| c.0));
+                }
+            }
+            Hit::ProjThemeOpen => {
+                let anchor = self.settings.as_ref().and_then(|s| s.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r)).unwrap_or_default();
+                let current = self.shown_project().and_then(|n| super::projects::look_of(&n).theme);
+                let mut items = vec!["As the workspace".to_string()];
+                items.extend(THEMES.iter().map(|t| t.name.to_string()));
+                let selected = current.and_then(|c| items.iter().position(|n| *n == c)).unwrap_or(0);
+                if let Some(s) = &mut self.settings {
+                    s.dropdown = Some(Dropdown { key: Key::ProjTheme, ws: 0, items, filter: crate::field::TextField::default(), selected, first: selected.saturating_sub(4), anchor });
+                }
+            }
+            Hit::FolderRemove(i) => {
+                if let Some(name) = self.shown_project() {
+                    super::projects::change(|b| {
+                        if let Some(f) = b.folders.get_mut(&name) {
+                            if i < f.len() {
+                                f.remove(i);
+                            }
+                            if f.is_empty() {
+                                b.folders.remove(&name);
+                            }
+                        }
+                    });
+                }
+            }
+            Hit::FolderAdd | Hit::ProjNew => {
+                if let Some(s) = &mut self.settings {
+                    s.adding = Some((hit == Hit::FolderAdd, crate::field::TextField::default()));
+                }
+            }
             Hit::Theme(i) => self.set_theme(i),
             Hit::Accent(i) => {
                 let (name, color) = ACCENTS[i];
@@ -475,6 +564,16 @@ impl App {
                 self.reload_fonts();
             }
             // The quake window's size, by fives of a percent.
+            // A project's tint, by tens of a percent, to 60; none at 0.
+            Hit::Step(Key::ProjTint, by) => {
+                if let Some(name) = self.shown_project() {
+                    super::projects::change(|b| {
+                        let l = b.looks.entry(name).or_default();
+                        let v = (l.tint.unwrap_or(0) as i32 + by * 10).clamp(0, 60) as u8;
+                        l.tint = (v > 0).then_some(v);
+                    });
+                }
+            }
             Hit::Step(key @ (Key::QuakeHeight | Key::QuakeWidth), by) => {
                 let v = if key == Key::QuakeHeight { &mut self.config.quake_height } else { &mut self.config.quake_width };
                 *v = ((*v as i32 + by * 5).clamp(10, 100)) as u32;
@@ -523,6 +622,13 @@ impl App {
                             ws.theme = (i > 0).then_some(name);
                         }
                         self.unsaved = true;
+                        self.full = true;
+                    }
+                    // A project's theme; the first is its workspace's.
+                    Some((Key::ProjTheme, _, i, theme)) => {
+                        if let Some(name) = self.shown_project() {
+                            super::projects::change(|b| b.looks.entry(name).or_default().theme = (i > 0).then_some(theme));
+                        }
                         self.full = true;
                     }
                     Some((key, _, _, name)) => self.set_family(key, name),
@@ -595,6 +701,21 @@ impl App {
         let PhysicalKey::Code(code) = event.physical_key else { return };
         let page = self.settings.as_ref().map_or(400, |s| s.view_h * 9 / 10);
         let step = self.px(48.0);
+        // A project's folder, or a new project's name, being typed.
+        if self.settings.as_ref().is_some_and(|s| s.adding.is_some()) {
+            match code {
+                KeyCode::Enter | KeyCode::NumpadEnter => return self.finish_adding(true),
+                KeyCode::Escape => return self.finish_adding(false),
+                _ => {}
+            }
+            let pasted = if self.mods.control_key() && code == KeyCode::KeyV { self.clip_get(false) } else { None };
+            let mods = self.mods;
+            if let Some((_, field)) = self.settings.as_mut().and_then(|s| s.adding.as_mut()) {
+                field.key(code, mods, event.text.as_deref(), &mut || pasted.clone(), &mut |_| {});
+            }
+            self.full = true;
+            return self.redraw();
+        }
         // With a name being typed, the keys are its.
         if self.settings.as_ref().is_some_and(|s| s.renaming.is_some()) {
             match code {
@@ -862,6 +983,7 @@ impl App {
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         let hover = st.hover;
         let (renaming, closing) = (st.renaming.clone(), st.closing);
+        let adding = st.adding.clone();
         let modified: Vec<Key> = ALL_KEYS.into_iter().filter(|k| self.modified(*k)).collect();
         let current_theme = THEMES.iter().position(|t| std::ptr::eq(t, self.theme));
         let current_accent = ACCENTS.iter().position(|(_, c)| *c == self.accent);
@@ -1263,6 +1385,31 @@ impl App {
             canvas.icon_in(p.icon, r, r.w * 64 / 100, ink);
         };
         let shown = st.project.clone().or_else(|| project_rows.first().map(|r| r.project.name.clone()));
+        // A row that adds something: a + and its words; clicked, a field
+        // to type it in (Enter keeps it, Escape lets it go).
+        let add_row = |canvas: &mut Canvas, fonts: &mut font::Fonts, page: &mut Vec<(Rect, Hit)>, y: i32, words: &str, typing: Option<&crate::field::TextField>, hit: Hit, hint: &str| -> i32 {
+            let b = Rect { x: body.x, y, w: body.w, h: field_h };
+            match typing {
+                Some(field) => {
+                    canvas.round_fill(b, px(7.0), c.field, 255);
+                    canvas.ring(b, px(7.0), 1, accent);
+                    if field.text.is_empty() {
+                        canvas.text(&mut fonts.ui, hint, (b.x + px(10.0)) as f32, y + (field_h - uh) / 2, c.faint, b);
+                    }
+                    field.draw(canvas, &mut fonts.ui, b.x + px(10.0), y + (field_h - uh) / 2, c.text, mix(accent, c.panel, 140), true, b);
+                }
+                None => {
+                    let lit = hover == Some(hit);
+                    if lit {
+                        canvas.round_fill(b, px(7.0), c.hover, 255);
+                    }
+                    solar(canvas, icons::PLUS, b.x + px(14.0), y + field_h / 2, px(14.0), if lit { c.text } else { accent_text });
+                    canvas.text(&mut fonts.ui, words, (b.x + px(28.0)) as f32, y + (field_h - uh) / 2, if lit { c.text } else { accent_text }, b);
+                }
+            }
+            page.push((b, hit));
+            y + field_h
+        };
         // The projects as a list in a box, a row each.
         let rh = px(48.0);
         if project_rows.is_empty() {
@@ -1300,7 +1447,13 @@ impl App {
                 page.push((cell, Hit::Project(i)));
             }
             canvas.ring(group, px(10.0), 1, c.edge);
-            y = group.y + group.h + px(28.0);
+            y = group.y + group.h + px(10.0);
+        }
+        // A project of its own: its name typed, then shown below.
+        {
+            let typing = adding.as_ref().filter(|(folder, _)| !*folder).map(|(_, f)| f.clone());
+            y = add_row(canvas, fonts, &mut page, y, "Add a project", typing.as_ref(), Hit::ProjNew, "Its name");
+            y += px(18.0);
         }
         // The one picked: its mark and name, its folders, and the
         // terminals put in it by hand.
@@ -1309,19 +1462,83 @@ impl App {
             mark(canvas, Rect { x: body.x, y, w: d, h: d }, &row.project);
             canvas.text(&mut fonts.heading, &row.project.name, (body.x + d + px(14.0)) as f32, y + (d - hh) / 2, c.text, view);
             y += d + px(20.0);
+            // Its mark and its color: picked here, for every pane in it.
             canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
-            title(canvas, fonts, &mut page, y, "Folders", &format!("A terminal in one of these, or in a folder under one, is {}.", row.project.name), Key::Debug);
+            title(canvas, fonts, &mut page, y, "Icon and color", "Its mark and color, on its panes' badges and sidebar rows.", Key::Debug);
             y += row_h - row_pad / 2;
-            if row.folders.is_empty() {
-                canvas.text(&mut fonts.ui, "None: no terminal here is in its folder now.", body.x as f32, y, c.dim, view);
-                y += uh + px(14.0);
+            {
+                let (cell, gap) = (px(30.0), px(6.0));
+                let per = ((body.w + gap) / (cell + gap)).max(1);
+                for (i, glyph) in icons::PROJECT.iter().enumerate() {
+                    let r = Rect { x: body.x + (i as i32 % per) * (cell + gap), y: y + (i as i32 / per) * (cell + gap), w: cell, h: cell };
+                    let picked = *glyph == row.project.icon;
+                    if picked {
+                        canvas.round_fill(r, px(7.0), row.project.color, if dark { 64 } else { 44 });
+                    } else if hover == Some(Hit::ProjIcon(i)) {
+                        canvas.round_fill(r, px(7.0), c.hover, 255);
+                    }
+                    let ink = if picked { if dark { mix(row.project.color, 0xFFFFFF, 77) } else { mix(row.project.color, 0x000000, 40) } } else { c.dim };
+                    canvas.icon_in(*glyph, r, px(16.0), ink);
+                    page.push((r, Hit::ProjIcon(i)));
+                }
+                y += ((icons::PROJECT.len() as i32 + per - 1) / per) * (cell + gap) + px(6.0);
+                let sd = px(22.0);
+                for (i, (color, _)) in super::projects::COLORS.iter().enumerate() {
+                    let r = Rect { x: body.x + i as i32 * (sd + px(10.0)), y, w: sd, h: sd };
+                    canvas.round_fill(r, sd / 2, *color, 255);
+                    if *color == row.project.color {
+                        canvas.ring(Rect { x: r.x - px(3.0), y: r.y - px(3.0), w: r.w + px(6.0), h: r.h + px(6.0) }, sd / 2 + px(3.0), px(2.0), c.text);
+                    } else if hover == Some(Hit::ProjColor(i)) {
+                        canvas.ring(Rect { x: r.x - px(2.0), y: r.y - px(2.0), w: r.w + px(4.0), h: r.h + px(4.0) }, sd / 2 + px(2.0), 1, c.dim);
+                    }
+                    page.push((r, Hit::ProjColor(i)));
+                }
+                y += sd + px(20.0);
+            }
+            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
+            title(canvas, fonts, &mut page, y, "Folders", &format!("A terminal in one of these, or in a folder under one, is {}. The deepest wins when projects overlap.", row.project.name), Key::Debug);
+            y += row_h - row_pad / 2;
+            for (i, f) in row.configured.iter().enumerate() {
+                let cy = y + field_h / 2;
+                canvas.text_fit(&mut fonts.ui, f, body.x, cy - uh / 2, body.w - field_h - px(10.0), c.text, view);
+                let b = Rect { x: right - field_h, y: cy - field_h / 2, w: field_h, h: field_h };
+                let lit = hover == Some(Hit::FolderRemove(i));
+                if lit {
+                    canvas.round_fill(b, px(7.0), c.hover, 255);
+                }
+                solar(canvas, icons::CLOSE, b.x + b.w / 2, cy, px(14.0), if lit { c.text } else { c.dim });
+                page.push((b, Hit::FolderRemove(i)));
+                y += field_h + px(6.0);
             }
             for f in &row.folders {
-                let end = canvas.text(&mut fonts.ui, f, body.x as f32, y, c.text, view);
-                canvas.text(&mut fonts.small, "its git repository", (end + px(10.0)) as f32, y + (uh - sh_) / 2, c.dim, view);
-                y += uh + px(14.0);
+                let cy = y + field_h / 2;
+                let end = canvas.text(&mut fonts.ui, f, body.x as f32, cy - uh / 2, c.text, view);
+                canvas.text(&mut fonts.small, "its git repository", (end + px(10.0)) as f32, cy - sh_ / 2, c.dim, view);
+                y += field_h + px(6.0);
             }
-            y += px(8.0);
+            let typing = adding.as_ref().filter(|(folder, _)| *folder).map(|(_, f)| f.clone());
+            y = add_row(canvas, fonts, &mut page, y, "Add a folder", typing.as_ref(), Hit::FolderAdd, "~/path/to/it");
+            y += px(14.0);
+            // Its theme, for its panes in any workspace.
+            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
+            let mid = title(canvas, fonts, &mut page, y, "Theme", "Its terminals in this theme, in any workspace.", Key::Debug);
+            {
+                let tw = px(220.0).min(body.w / 2);
+                let tb = Rect { x: right - tw, y: mid - field_h / 2, w: tw, h: field_h };
+                canvas.round_fill(tb, px(7.0), if hover == Some(Hit::ProjThemeOpen) { c.hover } else { c.field }, 255);
+                canvas.ring(tb, px(7.0), 1, c.edge);
+                let shown_theme = row.look.theme.clone().unwrap_or_else(|| "As the workspace".into());
+                canvas.text_fit(&mut fonts.ui, &shown_theme, tb.x + px(12.0), mid - uh / 2, tw - px(40.0), if row.look.theme.is_some() { c.text } else { c.dim }, tb);
+                solar(canvas, icons::CHEVRON_DOWN, tb.x + tb.w - px(16.0), mid, px(14.0), c.dim);
+                page.push((tb, Hit::ProjThemeOpen));
+            }
+            y += row_h;
+            // Its tint: the theme as it is, its ground washed toward its color.
+            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
+            let mid = title(canvas, fonts, &mut page, y, "Tint its panes", &format!("The theme as it is, its background washed toward {}'s color.", row.project.name), Key::Debug);
+            let tint = row.look.tint.map_or("Off".to_string(), |t| format!("{t}%"));
+            stepper(canvas, fonts, &mut page, mid, Key::ProjTint, &tint);
+            y += row_h;
             canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
             title(canvas, fonts, &mut page, y, &format!("Terminals set to {} by hand", row.project.name), "They stay in it wherever they go, until set back.", Key::Debug);
             y += row_h - row_pad / 2;

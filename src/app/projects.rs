@@ -82,6 +82,9 @@ pub struct ProjectRow {
     pub folders: Vec<String>,
     /// The terminals put in it by hand: their id there, and name.
     pub by_hand: Vec<(u64, String)>,
+    /// What it was given: its look, and the folders added to it.
+    pub look: Look,
+    pub configured: Vec<String>,
 }
 
 /// A look given by hand, to a project or to one pane: each part unset
@@ -504,7 +507,9 @@ impl App {
                     })
                     .collect();
                 hand.sort();
-                ProjectRow { project, folders, by_hand: hand }
+                let (look, configured) = (look_of(&project.name), folders_of(&project.name));
+                folders.retain(|f| !configured.contains(f));
+                ProjectRow { project, folders, by_hand: hand, look, configured }
             })
             .collect()
     }
