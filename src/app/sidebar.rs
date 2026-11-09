@@ -26,6 +26,8 @@ pub enum SideHit {
     Pane(PaneId),
     /// A terminal no pane here shows, by machine and its name there.
     Free(usize, u64),
+    /// The list as it is (false), or by project (true).
+    View(bool),
     Settings,
 }
 
@@ -169,7 +171,26 @@ impl App {
             button(self, Rect { x: pad - px(2.0), y: top, w: b, h: b }, SideHit::Toggle, icons::SIDEBAR, true);
             pad - px(2.0) + b + px(8.0)
         };
-        self.canvas.text(&mut self.fonts.side_small, "Machines", mx as f32, top + (b - dh) / 2, c.faint, clip);
+        // List | Projects: the terminals machine by machine, or by project.
+        let by_project = super::projects::sidebar_by_project();
+        {
+            let seg_h = dh + px(10.0);
+            let sy = top + (b - seg_h) / 2;
+            let mut sx = mx - px(4.0);
+            for (word, on) in [("List", false), ("Projects", true)] {
+                let sw = self.fonts.side_small.width(word) + px(16.0);
+                let r = Rect { x: sx, y: sy, w: sw, h: seg_h };
+                let picked = by_project == on;
+                if picked {
+                    self.canvas.round_fill(r, px(6.0), focus_fill, 255);
+                } else if lit == Some(SideHit::View(on)) {
+                    self.canvas.round_fill(r, px(6.0), hover, 255);
+                }
+                self.canvas.text(&mut self.fonts.side_small, word, (r.x + px(8.0)) as f32, sy + (seg_h - dh) / 2, if picked { c.text } else { c.faint }, clip);
+                self.side_hits.push((r, SideHit::View(on)));
+                sx += sw + px(2.0);
+            }
+        }
         button(self, Rect { x: w - pad - b, y: top, w: b, h: b }, SideHit::AddMachine, icons::PLUS, true);
         // The foot: Settings, alone.
         let foot = Rect { x: pad, y: h - row_h - px(8.0), w: inner_w, h: row_h };
@@ -191,6 +212,62 @@ impl App {
         let terms = self.side_terminals();
         let focus = self.focused();
         let srow = nh + px(10.0);
+        // By project: each project a heading (its mark, its name, its
+        // folder), its terminals under it on every machine, by their own
+        // names; those in none last, as elsewhere.
+        if by_project {
+            let mut groups: Vec<(Option<super::projects::Project>, Vec<&SideTerm>)> = Vec::new();
+            for t in &terms {
+                let name = t.project.as_ref().map(|p| p.name.clone());
+                match groups.iter_mut().find(|(p, _)| p.as_ref().map(|p| p.name.clone()) == name) {
+                    Some((_, ts)) => ts.push(t),
+                    None => groups.push((t.project.clone(), vec![t])),
+                }
+            }
+            groups.sort_by_key(|(p, _)| p.as_ref().map_or((1, String::new()), |p| (0, p.name.to_lowercase())));
+            let rows = self.project_rows();
+            for (project, ts) in groups {
+                if y > bottom - row_h {
+                    break;
+                }
+                let head = Rect { x: pad, y, w: inner_w, h: row_h - px(4.0) };
+                let mut x = head.x + px(4.0);
+                let (name, folder) = match &project {
+                    Some(p) => {
+                        let tone = if self.cur_theme.dark { mix(p.color, 0xFFFFFF, 64) } else { mix(p.color, 0x000000, 30) };
+                        self.canvas.icon_in(p.icon, Rect { x, y: head.y + (head.h - ih) / 2, w: ih, h: ih }, ih, tone);
+                        let folder = rows.iter().find(|r| r.project.name == p.name).and_then(|r| r.configured.first().or(r.folders.first()).cloned()).unwrap_or_default();
+                        (p.name.clone(), folder)
+                    }
+                    None => {
+                        self.canvas.text(&mut self.fonts.side_small, "~", x as f32, head.y + (head.h - dh) / 2, c.faint, clip);
+                        ("elsewhere".to_string(), String::new())
+                    }
+                };
+                x += ih + px(9.0);
+                x = self.canvas.text(&mut self.fonts.side_small, &name, x as f32, head.y + (head.h - dh) / 2, c.dim, clip) + px(8.0);
+                if !folder.is_empty() {
+                    self.canvas.text_fit(&mut self.fonts.side_small, &folder, x, head.y + (head.h - dh) / 2, (head.x + head.w - x).max(0), c.faint, clip);
+                }
+                y += head.h;
+                for t in ts {
+                    if y > bottom - srow {
+                        break;
+                    }
+                    // Under its project's heading, by its own name: no mark,
+                    // the project's name not said again.
+                    let mut own = SideTerm { k: t.k, sid: t.sid, pane: t.pane, label: t.label.clone(), cmd: t.cmd.clone(), status: t.status, here: t.here, project: None };
+                    if let Some(p) = &project {
+                        own.label = super::projects::without_project(&t.label, &p.name).to_string();
+                    }
+                    let focused = t.pane.zip(focus).is_some_and(|(p, f)| crate::mux::base_id(p) == crate::mux::base_id(f));
+                    y = self.side_term_row(&own, y, srow, pad, inner_w, focused, clip, focus_fill, hover);
+                }
+                y += px(8.0);
+            }
+            self.damage.push(area);
+            return;
+        }
         for k in 0..self.machines.len() {
             let mine: Vec<&SideTerm> = terms.iter().filter(|t| t.k == k).collect();
             // A machine is listed once added, or while it holds a terminal.
@@ -284,6 +361,11 @@ impl App {
             // where it was, a click.
             Some(hit @ (SideHit::Free(..) | SideHit::Pane(_))) => self.drag = Some(Drag::Side(SideCarry { hit, from: (x, y), moving: false, over: None, slot: None })),
             Some(SideHit::Settings) => self.open_settings(),
+            Some(SideHit::View(by)) => {
+                super::projects::change(|b| b.by_project = by);
+                self.side_dirty = true;
+                self.redraw();
+            }
             // A machine's heading: its terminals folded away, or back; its
             // menu is on a right click.
             Some(SideHit::Machine(k)) => self.fold_machine(k),

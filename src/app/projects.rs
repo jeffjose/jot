@@ -147,6 +147,8 @@ pub struct ByHand {
     /// Each project's folders, as written (~/scripts/jot).
     pub folders: BTreeMap<String, Vec<String>>,
     pub pane_looks: HashMap<u64, Look>,
+    /// The sidebar by project, not as a list.
+    pub by_project: bool,
 }
 
 impl ByHand {
@@ -157,6 +159,7 @@ impl ByHand {
                 let w: Vec<&str> = line.split('\t').collect();
                 match w.as_slice() {
                     ["look", name, key, value] => b.looks.entry(name.to_string()).or_default().set(key, value),
+                    ["view", "projects"] => b.by_project = true,
                     ["folder", name, path] => {
                         let f = b.folders.entry(name.to_string()).or_default();
                         if !f.iter().any(|p| p == path) {
@@ -205,6 +208,9 @@ impl ByHand {
             for f in folders {
                 out += &format!("folder\t{name}\t{f}\n");
             }
+        }
+        if self.by_project {
+            out += "view\tprojects\n";
         }
         let mut sids: Vec<&u64> = self.pane_looks.keys().collect();
         sids.sort();
@@ -791,4 +797,9 @@ mod workspace_marks_tests {
         assert_eq!(workspace_marks(&["wild-orchid", "slow-ember"]), workspace_marks(&["wild-orchid", "slow-ember"]));
         assert_eq!(workspace_marks(&["wild-orchid"])[0], workspace_marks(&["wild-orchid", "slow-ember"])[0]);
     }
+}
+
+/// Whether the sidebar shows its terminals by project.
+pub fn sidebar_by_project() -> bool {
+    with_by_hand(|b| b.by_project)
 }
