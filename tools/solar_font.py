@@ -38,11 +38,12 @@ PICKS = {
     "LAYERS": "layers-minimalistic", "CHEVRON_UP": "alt-arrow-up",
     "WIN_MAX": "stop", "WIN_RESTORE": "copy",
     "CHECK": "check", "INFO": "info-circle", "DANGER": "danger-circle",
-    # Projects' marks: one picked by its name, as its color is.
-    "PROJ_PEN": "pen", "PROJ_MOON": "moon", "PROJ_SERVER": "server", "PROJ_CODE": "code",
-    "PROJ_PLAY": "play", "PROJ_GALLERY": "gallery", "PROJ_LEAF": "leaf", "PROJ_BOLT": "bolt",
-    "PROJ_BOOK": "book", "PROJ_GLOBE": "global", "PROJ_BOX": "box", "PROJ_STAR": "star",
-    "PROJ_HEART": "heart", "PROJ_CUP": "cup-hot", "PROJ_ROCKET": "rocket", "PROJ_PALETTE": "palette",
+    # Projects' marks, in Solar's bold (its line reads badly at 14):
+    # one picked by its name, as its color is.
+    "PROJ_PEN": "pen-bold", "PROJ_MOON": "moon-bold", "PROJ_SERVER": "server-bold", "PROJ_CODE": "code-bold",
+    "PROJ_PLAY": "play-bold", "PROJ_GALLERY": "gallery-bold", "PROJ_LEAF": "leaf-bold", "PROJ_BOLT": "bolt-bold",
+    "PROJ_BOOK": "book-bold", "PROJ_GLOBE": "global-bold", "PROJ_BOX": "box-bold", "PROJ_STAR": "star-bold",
+    "PROJ_HEART": "heart-bold", "PROJ_CUP": "cup-hot-bold", "PROJ_ROCKET": "rocket-bold", "PROJ_PALETTE": "palette-bold",
     # Workspaces' marks on the foot bar: Solar's bold, plain shapes that
     # hold at 13 pixels (one picked by the workspace's name).
     "WS_STAR": "star-bold", "WS_HEART": "heart-bold", "WS_BOLT": "bolt-bold", "WS_MOON": "moon-bold",
