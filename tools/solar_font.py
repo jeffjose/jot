@@ -43,6 +43,23 @@ PICKS = {
     "PROJ_PLAY": "play", "PROJ_GALLERY": "gallery", "PROJ_LEAF": "leaf", "PROJ_BOLT": "bolt",
     "PROJ_BOOK": "book", "PROJ_GLOBE": "global", "PROJ_BOX": "box", "PROJ_STAR": "star",
     "PROJ_HEART": "heart", "PROJ_CUP": "cup-hot", "PROJ_ROCKET": "rocket", "PROJ_PALETTE": "palette",
+    # The same marks, duotone, in two layers each (see duotone): on tiles.
+    "DUO_PEN_BACK": "pen@back", "DUO_PEN_FRONT": "pen@front",
+    "DUO_MOON_BACK": "moon@back", "DUO_MOON_FRONT": "moon@front",
+    "DUO_SERVER_BACK": "server@back", "DUO_SERVER_FRONT": "server@front",
+    "DUO_CODE_BACK": "code@back", "DUO_CODE_FRONT": "code@front",
+    "DUO_PLAY_BACK": "play@back", "DUO_PLAY_FRONT": "play@front",
+    "DUO_GALLERY_BACK": "gallery@back", "DUO_GALLERY_FRONT": "gallery@front",
+    "DUO_LEAF_BACK": "leaf@back", "DUO_LEAF_FRONT": "leaf@front",
+    "DUO_BOLT_BACK": "bolt@back", "DUO_BOLT_FRONT": "bolt@front",
+    "DUO_BOOK_BACK": "book@back", "DUO_BOOK_FRONT": "book@front",
+    "DUO_GLOBAL_BACK": "global@back", "DUO_GLOBAL_FRONT": "global@front",
+    "DUO_BOX_BACK": "box@back", "DUO_BOX_FRONT": "box@front",
+    "DUO_STAR_BACK": "star@back", "DUO_STAR_FRONT": "star@front",
+    "DUO_HEART_BACK": "heart@back", "DUO_HEART_FRONT": "heart@front",
+    "DUO_CUP_HOT_BACK": "cup-hot@back", "DUO_CUP_HOT_FRONT": "cup-hot@front",
+    "DUO_ROCKET_BACK": "rocket@back", "DUO_ROCKET_FRONT": "rocket@front",
+    "DUO_PALETTE_BACK": "palette@back", "DUO_PALETTE_FRONT": "palette@front",
 }
 
 LINE = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'
@@ -68,6 +85,33 @@ def outline(body, stroke):
     return pen.glyph()
 
 
+def duotone(body, part):
+    """One of a duotone drawing's two layers, as its own drawing: "back",
+    the parts Solar draws at half strength, or "front", the rest. jot draws
+    the back faintly and the front over it, a font holding one color a
+    glyph."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(f"<svg>{body}</svg>")
+
+    def keep(el, back):
+        back = back or el.get("opacity") not in (None, "1")
+        kids = list(el)
+        if not kids:
+            return back == (part == "back")
+        for kid in kids:
+            if not keep(kid, back):
+                el.remove(kid)
+        return len(el) > 0
+
+    for kid in list(root):
+        if not keep(kid, False):
+            root.remove(kid)
+    for el in root.iter():
+        el.attrib.pop("opacity", None)
+    return "".join(ET.tostring(kid, encoding="unicode") for kid in root)
+
+
 def main():
     icons_json, consts, out = sys.argv[1:4]
     stroke = sys.argv[4] if len(sys.argv) > 4 else "2.25"
@@ -77,7 +121,13 @@ def main():
     for line in open(consts):
         name, point = line.split()
         pick = PICKS.get(name, "")
-        drawing = OWN.get(name) or (solar.get(pick if pick.endswith("-bold") else pick + "-linear") or {}).get("body")
+        # "name@back" or "name@front": one layer of a bold-duotone drawing.
+        pick, _, part = pick.partition("@")
+        if part:
+            drawing = (solar.get(pick + "-bold-duotone") or {}).get("body")
+            drawing = drawing and duotone(drawing, part)
+        else:
+            drawing = OWN.get(name) or (solar.get(pick if pick.endswith("-bold") else pick + "-linear") or {}).get("body")
         if not drawing:
             missing.append(f"{name} ({PICKS.get(name, 'no pick')})")
             continue
@@ -90,7 +140,14 @@ def main():
     font.setupGlyphOrder(list(glyphs))
     font.setupCharacterMap(cmap)
     font.setupGlyf(glyphs)
-    font.setupHorizontalMetrics({name: (EM, 0) for name in glyphs})
+    # Each glyph's left side bearing is where its outline starts, as
+    # TrueType has it: with 0 for all, a renderer that places glyphs by it
+    # moved every outline to the left edge, a duotone's two halves (see
+    # duotone) onto each other.
+    def lsb(g):
+        return min((x for x, _ in g.coordinates), default=0) if g.numberOfContours > 0 else 0
+
+    font.setupHorizontalMetrics({name: (EM, lsb(g)) for name, g in glyphs.items()})
     font.setupHorizontalHeader(ascent=EM, descent=0)
     font.setupNameTable({"familyName": "jot icons", "styleName": "Regular"})
     font.setupOS2(sTypoAscender=EM, sTypoDescender=0, usWinAscent=EM, usWinDescent=0)

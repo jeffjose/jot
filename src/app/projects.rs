@@ -116,3 +116,57 @@ pub fn remember(k: usize, sid: u64, project: Option<Project>) {
 pub fn remembered(k: usize, sid: u64) -> Option<Project> {
     SEEN.with(|m| m.borrow().get(&(k, sid)).cloned().flatten())
 }
+
+/// The project a folder is in, if any.
+pub fn project_in(dir: &Path) -> Option<Project> {
+    let root = repo_root(dir)?;
+    Some(project_named(&root.file_name()?.to_string_lossy()))
+}
+
+/// The project most of these are in (the first, on a tie).
+pub fn main_project(all: impl Iterator<Item = Project>) -> Option<Project> {
+    let mut counts: Vec<(Project, usize)> = Vec::new();
+    for p in all {
+        match counts.iter_mut().find(|(q, _)| q.name == p.name) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((p, 1)),
+        }
+    }
+    let most = counts.iter().map(|(_, n)| *n).max()?;
+    counts.into_iter().find(|(_, n)| *n == most).map(|(p, _)| p)
+}
+
+impl App {
+    /// A workspace's project: the one most of its panes are in.
+    pub(super) fn ws_project(&self, wi: usize) -> Option<Project> {
+        let ws = self.workspaces.get(wi)?;
+        let mut ids = Vec::new();
+        ws.root.panes(&mut ids);
+        main_project(ids.into_iter().filter_map(|id| self.project_of(id)))
+    }
+
+    /// A workspace as a tile: a rounded square of its color, faint, with
+    /// its project's mark on it in duotone (the back faint, the front in
+    /// the color); a dot of the color for a workspace in no project.
+    pub(super) fn mark_tile(&mut self, r: Rect, color: u32, mark: Option<char>, strong: bool) {
+        let c = self.cur_theme.chrome();
+        let ground = c.side;
+        let wash = if strong { 72 } else { 46 };
+        self.canvas.round_fill(r, (r.w as f32 * 0.27).round() as i32, color, wash);
+        // On a dark ground the color lifted a little, to read as well as it
+        // does on a light one.
+        let ink = if self.cur_theme.dark { mix(color, 0xFFFFFF, 50) } else { mix(color, 0x000000, 30) };
+        let under = mix(ground, color, wash);
+        match mark.and_then(crate::canvas::icons::duotone) {
+            Some((back, front)) => {
+                let size = (r.w as f32 * 0.66).round() as i32;
+                self.canvas.icon_in(back, r, size, mix(under, ink, 128));
+                self.canvas.icon_in(front, r, size, ink);
+            }
+            None => {
+                let d = (r.w as f32 * 0.36).round() as f32;
+                self.canvas.disc(r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0, d / 2.0, ink);
+            }
+        }
+    }
+}

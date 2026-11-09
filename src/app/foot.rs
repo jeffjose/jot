@@ -86,6 +86,22 @@ impl App {
         out
     }
 
+    /// A dot's project: its workspace's (see ws_project); for one its
+    /// session holds that no window shows, the one most of its saved
+    /// folders are in, on this machine.
+    pub(super) fn dot_project(&self, d: FootDot) -> Option<super::projects::Project> {
+        match d {
+            FootDot::Here(wi) => self.ws_project(wi),
+            FootDot::There(k, i) if k == 0 => {
+                let spec = toml::from_str::<WorkspaceSpec>(&self.machines.get(k)?.listing.get(i)?.spec).ok()?;
+                let mut cwds = Vec::new();
+                cwds_in(spec.layout.as_ref()?, &mut cwds);
+                super::projects::main_project(cwds.iter().filter_map(|c| super::projects::project_in(&persist::expand(c))))
+            }
+            FootDot::There(..) => None,
+        }
+    }
+
     /// A dot gone to: a workspace of this window shown, one held on a
     /// machine opened here.
     pub(super) fn go_dot(&mut self, d: FootDot) {
@@ -235,9 +251,11 @@ impl App {
         let accent = self.cur_accent;
         let clock = if self.config.status_line { String::new() } else { self.clock.clone() };
         let dots: Vec<(FootDot, u32)> = set.iter().map(|(d, _, c)| (*d, *c)).collect();
+        // Each workspace's mark: its project's.
+        let marks: Vec<Option<char>> = dots.iter().map(|(d, _)| self.dot_project(*d).map(|p| p.icon)).collect();
         let hot = self.foot_lit;
         let lit = hot == FootHot::Machine;
-        let said = format!("{name}\0{folder}\0{machine}\0{accent}\0{dots:?}\0{}\0{clock}\0{}\0{}\0{hot:?}", self.current, self.canvas.width, self.cur_theme.bg);
+        let said = format!("{name}\0{folder}\0{machine}\0{accent}\0{dots:?}{marks:?}\0{}\0{clock}\0{}\0{}\0{hot:?}", self.current, self.canvas.width, self.cur_theme.bg);
         if !full && said == self.foot_said {
             return;
         }
@@ -272,14 +290,13 @@ impl App {
         // number in its machine's set in it (Alt and the number go there;
         // one day the icon its settings give it). Dark or light, whichever
         // reads better on the color, as WCAG reckons it.
-        let (dark, light) = (mix(accent, 0x000000, 215), mix(accent, 0xFFFFFF, 235));
-        let fg = if crate::canvas::contrast(dark, accent) >= crate::canvas::contrast(light, accent) { dark } else { light };
+        // The workspace you are in, always at the far left: its mark on a
+        // tile of its color (its project's mark; a dot when it has none).
         let place = dots.iter().position(|(d, _)| *d == FootDot::Here(self.current)).unwrap_or(0);
-        let number = (place + 1).to_string();
-        let tile = Rect { x: bar.x, y: bar.y, w: h.max(self.fonts.ui.width(&number) + pad), h };
-        self.canvas.fill(tile, accent);
-        let nw = self.fonts.ui.width(&number);
-        self.canvas.text(&mut self.fonts.ui, &number, (tile.x + (tile.w - nw) / 2) as f32, ty, fg, tile);
+        let ts = h - self.px(4.0);
+        let mark = marks.get(place).copied().flatten();
+        self.mark_tile(Rect { x: bar.x + self.px(6.0), y: bar.y + 1 + (h - 1 - ts) / 2, w: ts, h: ts }, accent, mark, true);
+        let tile = Rect { x: bar.x, y: bar.y, w: ts + self.px(6.0), h };
         // Its name, plain; the folder of the pane you are in, dim.
         let clip = Rect { x: tile.x + tile.w, y: bar.y, w: (right - self.px(60.0) - tile.x - tile.w).max(0), h };
         // Under the pointer (double-clicked, it is renamed): a soft lift.
@@ -304,25 +321,24 @@ impl App {
         // The machine's workspaces, a dot each in order, all one size: the
         // one you are in ringed in its color, and nothing else.
         self.foot_dots.clear();
-        let s = self.scale;
-        let (r, ring_in, ring_out, step) = (3.5 * s, 5.5 * s, 7.0 * s, self.px(18.0));
-        // The middle of the line under the bar's top hairline.
-        let cy = bar.y as f32 + 1.0 + (h - 1) as f32 / 2.0;
+        // Every workspace of the machine in order, each its tile; the one
+        // you are in bigger, in its place (the order never moves).
+        let step = self.px(21.0);
+        let (small_tile, big_tile) = (self.px(14.0), self.px(18.0));
         let mut x = end.min(clip.x + clip.w) + self.px(10.0);
         for (i, (d, color)) in dots.into_iter().enumerate() {
             if x + step > right {
                 break;
             }
-            let cx = x as f32 + step as f32 / 2.0;
-            // Under the pointer: a soft disc behind it.
+            // Under the pointer: a soft lift behind it.
             if hot == FootHot::Dot(i) {
                 let lift = if self.cur_theme.dark { 0xFFFFFF } else { 0x000000 };
                 self.canvas.round_fill(Rect { x: x + 1, y: bar.y + self.px(3.0), w: step - 2, h: h - self.px(6.0) }, self.px(5.0), lift, 22);
             }
-            if d == FootDot::Here(self.current) {
-                self.canvas.annulus(cx, cy, ring_in, ring_out, color);
-            }
-            self.canvas.disc(cx, cy, r, color);
+            let here = d == FootDot::Here(self.current);
+            let s = if here { big_tile } else { small_tile };
+            let r = Rect { x: x + (step - s) / 2, y: bar.y + 1 + (h - 1 - s) / 2, w: s, h: s };
+            self.mark_tile(r, color, marks.get(i).copied().flatten(), here);
             self.foot_dots.push((Rect { x, y: bar.y, w: step, h }, d));
             x += step;
         }
