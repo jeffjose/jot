@@ -292,70 +292,44 @@ impl App {
         self.canvas.icon_in(icons::CHEVRON_UP, Rect { x: ix, y: button.y + (button.h - ih) / 2, w: ih, h: ih }, ih, c.dim);
         self.foot_button = Some(button);
         right = button.x - gap;
-        // The workspace you are in, always at the far left: its mark on a
-        // square of its color.
+        // The workspace you are in, at the far left: its mark on a square of
+        // its color, its name, the folder of the pane you are in, and a
+        // chevron: all one thing, which a click opens the switcher from
+        // (see switcher.rs; Alt and a number still go straight there).
         let place = dots.iter().position(|(d, _)| *d == FootDot::Here(self.current)).unwrap_or(0);
         let ts = h - self.px(4.0);
         let mark = marks.get(place).copied().flatten();
-        self.mark_tile(Rect { x: bar.x + self.px(6.0), y: bar.y + 1 + (h - 1 - ts) / 2, w: ts, h: ts }, accent, mark, true);
         let tile = Rect { x: bar.x, y: bar.y, w: ts + self.px(6.0), h };
-        // Its name, plain; the folder of the pane you are in, dim.
-        let clip = Rect { x: tile.x + tile.w, y: bar.y, w: (right - self.px(60.0) - tile.x - tile.w).max(0), h };
-        // Under the pointer (double-clicked, it is renamed): a soft lift.
-        if hot == FootHot::Name && self.inline.is_none() {
-            let nw = self.fonts.ui.width(&name).min((clip.w - 2 * pad).max(0));
-            let lift = if self.cur_theme.dark { 0xFFFFFF } else { 0x000000 };
-            self.canvas.round_fill(Rect { x: clip.x + pad - self.px(6.0), y: bar.y + self.px(3.0), w: nw + self.px(12.0), h: h - self.px(6.0) }, self.px(5.0), lift, 16);
-        }
-        // Being renamed: the field where its name is (wide enough to type in).
+        let clip = Rect { x: tile.x + tile.w, y: bar.y, w: (right - self.px(24.0) - tile.x - tile.w).max(0), h };
         let ws_id = self.ws().id;
+        let renaming = self.inline.as_ref().is_some_and(|i| i.target == super::inline::Target::Workspace(ws_id));
         let room = (self.fonts.ui.width(&name) + self.px(80.0)).min((clip.w - 2 * pad).max(0));
-        let mut end = match self.draw_inline(super::inline::Target::Workspace(ws_id), clip.x + pad, ty, room, false, clip) {
-            Some(_) => clip.x + pad + room + self.px(4.0),
-            None => self.canvas.text_fit(&mut self.fonts.ui, &name, clip.x + pad, ty, (clip.w - pad).max(0), c.text, clip),
-        };
-        // Its name, double-clicked to rename it.
-        self.foot_name = Some(Rect { x: clip.x, y: bar.y, w: (end - clip.x).max(0), h });
+        let name_w = if renaming { room } else { self.fonts.ui.width(&name).min((clip.w - pad).max(0)) };
+        let fx = clip.x + pad + name_w + self.px(10.0);
+        let folder_w = if folder.is_empty() { 0 } else { self.fonts.ui.width(&folder).min((clip.x + clip.w - fx).max(0)) };
+        let cx = if folder.is_empty() { clip.x + pad + name_w } else { fx + folder_w } + self.px(8.0);
+        let cih = self.px(10.0);
+        let area = Rect { x: bar.x + self.px(2.0), y: bar.y + self.px(3.0), w: (cx + cih + self.px(8.0) - bar.x - self.px(2.0)).max(0), h: h - self.px(6.0) };
+        // Under the pointer, or open: a soft lift behind it all.
+        let open = self.switcher.as_ref().is_some_and(|s| s.up);
+        if (hot == FootHot::Name || open) && !renaming {
+            self.canvas.round_fill(area, self.px(6.0), accent, if open { 110 } else { 70 });
+        }
+        self.mark_tile(Rect { x: bar.x + self.px(6.0), y: bar.y + 1 + (h - 1 - ts) / 2, w: ts, h: ts }, accent, mark, true);
+        // Being renamed: the field where its name is (wide enough to type in).
+        match self.draw_inline(super::inline::Target::Workspace(ws_id), clip.x + pad, ty, room, false, clip) {
+            Some(_) => {}
+            None => {
+                self.canvas.text_fit(&mut self.fonts.ui, &name, clip.x + pad, ty, (clip.w - pad).max(0), c.text, clip);
+            }
+        }
         if !folder.is_empty() {
-            let x = end + self.px(10.0);
-            end = self.canvas.text_fit(&mut self.fonts.ui, &folder, x, ty, (clip.x + clip.w - x).max(0), c.dim, clip);
+            self.canvas.text_fit(&mut self.fonts.ui, &folder, fx, ty, folder_w, c.dim, clip);
         }
+        self.canvas.icon_in(icons::CHEVRON_UP, Rect { x: cx, y: bar.y + 1 + (h - 1 - cih) / 2, w: cih, h: cih }, cih, c.dim);
+        self.foot_name = Some(area);
         self.foot_dots.clear();
-        // Every workspace of the machine in order, each its tile; the one
-        // you are in bigger, in its place (the order never moves).
-        let step = self.px(21.0);
-        let (small_tile, big_tile) = (self.px(14.0), self.px(18.0));
-        let mut x = end.min(clip.x + clip.w) + self.px(10.0);
-        for (i, (d, color)) in dots.into_iter().enumerate() {
-            if x + step > right {
-                break;
-            }
-            // Under the pointer: a soft lift behind it.
-            if hot == FootHot::Dot(i) {
-                let lift = if self.cur_theme.dark { 0xFFFFFF } else { 0x000000 };
-                self.canvas.round_fill(Rect { x: x + 1, y: bar.y + self.px(3.0), w: step - 2, h: h - self.px(6.0) }, self.px(5.0), lift, 22);
-            }
-            let here = d == FootDot::Here(self.current);
-            let s = if here { big_tile } else { small_tile };
-            let r = Rect { x: x + (step - s) / 2, y: bar.y + 1 + (h - 1 - s) / 2, w: s, h: s };
-            self.mark_tile(r, color, marks.get(i).copied().flatten(), here);
-            self.foot_dots.push((Rect { x, y: bar.y, w: step, h }, d));
-            x += step;
-        }
-        // After them a +: a new workspace, as Ctrl N (not on the quake
-        // window's bar, which has one).
         self.foot_plus = None;
-        if !crate::quake_mode() && x + step <= right {
-            let box_ = Rect { x: x + 1, y: bar.y + self.px(3.0), w: step - 2, h: h - self.px(6.0) };
-            if hot == FootHot::Plus {
-                let lift = if self.cur_theme.dark { 0xFFFFFF } else { 0x000000 };
-                self.canvas.round_fill(box_, self.px(5.0), lift, 22);
-            }
-            let ih = self.px(10.0);
-            let at = Rect { x: x + (step - ih) / 2, y: bar.y + 1 + (h - 1 - ih) / 2, w: ih, h: ih };
-            self.canvas.icon_in(icons::PLUS, at, ih, if hot == FootHot::Plus { c.text } else { c.dim });
-            self.foot_plus = Some(Rect { x, y: bar.y, w: step, h });
-        }
         self.damage.push(bar);
     }
 
@@ -395,6 +369,28 @@ impl App {
         }
     }
 
+    /// The folders of a workspace's panes, in order: this window's as they
+    /// are, one held elsewhere as its session last listed it.
+    pub(super) fn dot_cwds(&self, d: FootDot) -> Vec<String> {
+        let mut cwds: Vec<String> = Vec::new();
+        match d {
+            FootDot::Here(wi) => {
+                let mut ids = Vec::new();
+                if let Some(ws) = self.workspaces.get(wi) {
+                    ws.root.panes(&mut ids);
+                }
+                cwds.extend(ids.iter().filter_map(|id| self.panes.get(id).and_then(|p| p.pty.cwd())).map(|c| c.display().to_string()));
+            }
+            FootDot::There(k, i) => {
+                let spec = self.machines.get(k).and_then(|m| m.listing.get(i)).and_then(|l| toml::from_str::<WorkspaceSpec>(&l.spec).ok());
+                if let Some(layout) = spec.as_ref().and_then(|s| s.layout.as_ref()) {
+                    cwds_in(layout, &mut cwds);
+                }
+            }
+        }
+        cwds
+    }
+
     /// Whether a point is on the project bar.
     pub(super) fn foot_at(&self, _x: i32, y: i32) -> bool {
         let h = self.foot_h();
@@ -418,10 +414,12 @@ impl App {
             self.new_workspace();
             return true;
         }
-        // Its name, double-clicked: renamed there.
-        if self.foot_name.is_some_and(|r| r.contains(x, y)) && !self.workspaces.is_empty() {
-            let id = self.ws().id;
-            self.inline_click(super::inline::Target::Workspace(id));
+        // Its name (its mark, its folder): the switcher, up from there (its
+        // pencil renames it).
+        if let Some(r) = self.foot_name.filter(|r| r.contains(x, y)) {
+            if !self.workspaces.is_empty() && !crate::quake_mode() {
+                self.toggle_switcher(true, (r.x, r.y - self.px(3.0)));
+            }
             return true;
         }
         false
@@ -453,7 +451,7 @@ impl App {
         }
         if on {
             if let Some(w) = &self.window {
-                w.set_cursor(if matches!(hot, FootHot::Machine | FootHot::Dot(_) | FootHot::Plus) { CursorIcon::Pointer } else { CursorIcon::Default });
+                w.set_cursor(if matches!(hot, FootHot::Machine | FootHot::Dot(_) | FootHot::Plus | FootHot::Name) { CursorIcon::Pointer } else { CursorIcon::Default });
             }
         }
         on
@@ -500,7 +498,7 @@ pub(super) enum FootHot {
     None,
     /// The machine's button.
     Machine,
-    /// The workspace's name (double-clicked to rename).
+    /// The workspace's name: a click opens the switcher.
     Name,
     /// A workspace's dot, by its place.
     Dot(usize),

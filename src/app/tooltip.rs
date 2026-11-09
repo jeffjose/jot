@@ -9,7 +9,7 @@ impl App {
     /// What the pointer is on that has a tooltip: the button's place, and
     /// what to say.
     pub(super) fn tooltip(&self) -> Option<(Rect, String)> {
-        if self.menu.is_some() || self.palette.is_some() || self.settings.is_some() || self.drag.is_some() {
+        if self.menu.is_some() || self.palette.is_some() || self.settings.is_some() || self.drag.is_some() || self.switcher.is_some() {
             return None;
         }
         let (x, y) = self.pointer;

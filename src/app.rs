@@ -45,6 +45,7 @@ mod foot;
 mod minimize;
 mod pin;
 mod projects;
+mod switcher;
 pub(crate) use projects::told_for;
 mod mouse;
 mod popout;
@@ -231,6 +232,8 @@ pub struct App {
     /// The divider under the pointer or dragged: its line in the accent,
     /// to show it can be grabbed.
     divider_lit: Option<Rect>,
+    /// The workspace switcher, while it is open.
+    switcher: Option<switcher::Switcher>,
     /// The pane whose caption the pointer is on: its pencil and cog shown.
     caption_hover: Option<PaneId>,
     /// A theme hovered in a Theme submenu: shown on that pane while the
@@ -636,6 +639,7 @@ impl App {
             roam_cwd: None,
             dividers: Vec::new(),
             divider_lit: None,
+            switcher: None,
             caption_hover: None,
             theme_preview: None,
             full: true,
@@ -1869,6 +1873,9 @@ impl App {
             }
             return;
         }
+        if self.switcher.is_some() && event.state == ElementState::Pressed && self.switcher_key(code) {
+            return;
+        }
         if self.menu.is_some() && event.state == ElementState::Pressed {
             self.close_overlay();
             if code == KeyCode::Escape {
@@ -1965,6 +1972,15 @@ impl App {
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
         self.tip_quiet = Some(self.pointer);
+        // The workspace switcher up: a press is its (outside it, it shuts).
+        if self.switcher.is_some() {
+            if button == MouseButton::Left {
+                self.switcher_click();
+            } else {
+                self.close_switcher();
+            }
+            return;
+        }
         self.tip_quiet_at = None;
         // A name being edited: a press in it moves the cursor; elsewhere it
         // keeps the name, and goes on to what it is on.
@@ -2162,7 +2178,7 @@ impl App {
         match &self.drag {
             Some(Drag::Divider(d)) => self.dividers.iter().find(|e| e.path == d.path && e.gap == d.gap).map(|e| e.rect),
             Some(_) => None,
-            None if self.roam_shown || self.menu.is_some() || self.palette.is_some() || self.settings.is_some() => None,
+            None if self.roam_shown || self.menu.is_some() || self.palette.is_some() || self.settings.is_some() || self.switcher.is_some() => None,
             None => self.divider_at(x, y).map(|d| d.rect),
         }
     }
@@ -2220,6 +2236,10 @@ impl App {
     fn mouse_move(&mut self, x: i32, y: i32) {
         self.pointer = (x, y);
         self.float_track(x, y);
+        // The workspace switcher up: the pointer is its.
+        if self.switcher.is_some() {
+            return self.switcher_hover(x, y);
+        }
         let lit = self.divider_to_light(x, y);
         self.light_divider(lit);
         // Onto a caption or off it: its pencil and cog come or go.
@@ -2862,6 +2882,7 @@ impl App {
         // Last, over all else: the toasts, then the tooltip (see floats_off).
         self.draw_toasts();
         self.draw_side_preview();
+        self.draw_switcher();
         self.draw_tooltip();
         let drawn = t0.elapsed();
         // How much is sent to the screen (each rect damaged, overlaps counted twice).

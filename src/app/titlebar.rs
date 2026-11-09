@@ -15,6 +15,8 @@ use crate::canvas::icons;
 pub enum TitleHit {
     /// The sidebar, shown or tucked away: here, where it never moves.
     Sidebar,
+    /// The workspace's chip: the switcher, down from it.
+    Workspace,
     Minimize,
     Maximize,
     Close,
@@ -112,6 +114,7 @@ impl App {
         let ch = (bh - px(2.0)).max(uh + px(4.0));
         let cw = (px(7.0) + d + px(7.0) + self.fonts.ui.width(&name) + px(10.0)).min((room.w - x0).max(0));
         let chip = Rect { x: x0, y: (h - ch) / 2, w: cw, h: ch };
+        self.title.hits.push((chip, TitleHit::Workspace));
         let ink = mix(accent, 0x000000, 215);
         self.canvas.round_fill(chip, px(6.0), accent, 255);
         if let Some(m) = mark {
@@ -139,7 +142,7 @@ impl App {
         if over {
             if let Some(w) = &self.window {
                 // The arrow over the window's own buttons too, as every desktop has it.
-                w.set_cursor(CursorIcon::Default);
+                w.set_cursor(if lit == Some(TitleHit::Workspace) { CursorIcon::Pointer } else { CursorIcon::Default });
             }
         }
         over
@@ -162,6 +165,10 @@ impl App {
         let Some(w) = self.window.clone() else { return true };
         match self.title.hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h) {
             Some(TitleHit::Sidebar) => self.toggle_sidebar(),
+            Some(TitleHit::Workspace) => {
+                let r = self.title.hits.iter().find(|(_, h)| *h == TitleHit::Workspace).map(|(r, _)| *r).unwrap_or_default();
+                self.toggle_switcher(false, (r.x, r.y + r.h));
+            }
             Some(TitleHit::Minimize) => w.set_minimized(true),
             Some(TitleHit::Maximize) => w.set_maximized(!w.is_maximized()),
             Some(TitleHit::Close) => {
