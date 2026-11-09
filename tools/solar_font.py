@@ -38,6 +38,11 @@ PICKS = {
     "LAYERS": "layers-minimalistic", "CHEVRON_UP": "alt-arrow-up",
     "WIN_MAX": "stop", "WIN_RESTORE": "copy",
     "CHECK": "check", "INFO": "info-circle", "DANGER": "danger-circle",
+    # Projects' marks: one picked by its name, as its color is.
+    "PROJ_PEN": "pen", "PROJ_MOON": "moon", "PROJ_SERVER": "server", "PROJ_CODE": "code",
+    "PROJ_PLAY": "play", "PROJ_GALLERY": "gallery", "PROJ_LEAF": "leaf", "PROJ_BOLT": "bolt",
+    "PROJ_BOOK": "book", "PROJ_GLOBE": "global", "PROJ_BOX": "box", "PROJ_STAR": "star",
+    "PROJ_HEART": "heart", "PROJ_CUP": "cup-hot", "PROJ_ROCKET": "rocket", "PROJ_PALETTE": "palette",
 }
 
 LINE = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'

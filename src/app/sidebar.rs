@@ -369,6 +369,8 @@ pub(super) struct SideTerm {
     pub status: u8,
     /// Shown by a pane in the workspace you are in.
     pub here: bool,
+    /// The project it is in, as a pane here last showed it.
+    pub project: Option<super::projects::Project>,
 }
 
 impl App {
@@ -397,7 +399,9 @@ impl App {
                 let status = if running.is_some() { 1 } else if failed { 2 } else { 0 };
                 let label = self.terminal_label(*id);
                 let cmd = running.filter(|r| r.split_whitespace().next() != Some(label.as_str()) || r.contains(' '));
-                out.push(SideTerm { k, sid, pane: Some(*id), label, cmd, status, here });
+                let project = self.project_of(*id);
+                super::projects::remember(k, sid, project.clone());
+                out.push(SideTerm { k, sid, pane: Some(*id), label, cmd, status, here, project });
             }
         }
         for f in self.free_terminals() {
@@ -409,7 +413,7 @@ impl App {
                 Some((l, c, s)) => (l.clone(), c.clone(), *s),
                 None => (f.label, None, u8::from(f.running)),
             };
-            out.push(SideTerm { k: f.k, sid: f.sid, pane: None, label: self.given_name(f.k, f.sid).unwrap_or(label), cmd, status, here: false });
+            out.push(SideTerm { k: f.k, sid: f.sid, pane: None, label: self.given_name(f.k, f.sid).unwrap_or(label), cmd, status, here: false, project: super::projects::remembered(f.k, f.sid) });
         }
         // One on its way into a pane, in no list for the moment: its row
         // stays where it is, as it was.
@@ -419,7 +423,7 @@ impl App {
                     continue;
                 }
                 let Some((l, c, s)) = self.term_seen.get(&(*k, sid)) else { continue };
-                out.push(SideTerm { k: *k, sid, pane: None, label: self.given_name(*k, sid).unwrap_or_else(|| l.clone()), cmd: c.clone(), status: *s, here: false });
+                out.push(SideTerm { k: *k, sid, pane: None, label: self.given_name(*k, sid).unwrap_or_else(|| l.clone()), cmd: c.clone(), status: *s, here: false, project: super::projects::remembered(*k, sid) });
             }
         }
         // By machine, then by number (one new since numbers were last given
@@ -453,8 +457,16 @@ impl App {
             _ => mix(c.side, c.text, 60),
         };
         let mut x = row.x + px(10.0);
-        self.canvas.round_fill(Rect { x, y: y + (h - d) / 2, w: d, h: d }, d / 2, dot, 255);
-        x += d + px(10.0);
+        // In a project: its mark, in its color, where the dot would be.
+        if let Some(pr) = &t.project {
+            let ih = px(13.0);
+            let tone = if self.cur_theme.dark { mix(pr.color, 0xFFFFFF, 40) } else { pr.color };
+            self.canvas.icon_in(pr.icon, Rect { x: x - px(3.0), y: y + (h - ih) / 2, w: ih, h: ih }, ih, tone);
+            x += ih - px(3.0) + px(8.0);
+        } else {
+            self.canvas.round_fill(Rect { x, y: y + (h - d) / 2, w: d, h: d }, d / 2, dot, 255);
+            x += d + px(10.0);
+        }
         // At the right: its number, which stays with it whatever pane shows
         // it; ringed when a pane here shows it.
         let mut right = row.x + row.w - px(8.0);
@@ -481,8 +493,17 @@ impl App {
         let shown = t.pane.is_some();
         let name_color = if focused { c.text } else if shown { c.dim } else { mix(c.side, c.dim, 200) };
         let room = right - x;
-        let nw = self.fonts.side.width(&t.label).min(if t.cmd.is_some() { room * 6 / 10 } else { room });
-        let after = self.canvas.text_fit(&mut self.fonts.side, &t.label, x, y + (h - nh) / 2, nw.max(0), name_color, clip);
+        // project › name, the name without the project's in front of it
+        // (or the project alone, when that is all its name is).
+        let label = match &t.project {
+            Some(pr) => {
+                let rest = super::projects::without_project(&t.label, &pr.name);
+                if rest == pr.name { pr.name.clone() } else { format!("{} › {rest}", pr.name) }
+            }
+            None => t.label.clone(),
+        };
+        let nw = self.fonts.side.width(&label).min(if t.cmd.is_some() { room * 6 / 10 } else { room });
+        let after = self.canvas.text_fit(&mut self.fonts.side, &label, x, y + (h - nh) / 2, nw.max(0), name_color, clip);
         if let Some(cmd) = &t.cmd {
             let mh = self.fonts.mono.height;
             let x2 = after + px(8.0);

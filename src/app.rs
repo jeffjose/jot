@@ -44,6 +44,7 @@ mod float;
 mod foot;
 mod minimize;
 mod pin;
+mod projects;
 mod mouse;
 mod popout;
 mod restore;
@@ -3066,8 +3067,31 @@ impl App {
             self.canvas.text_fit(&mut self.fonts.small, &label, pill.x + p6, bar.y + (h - small) / 2, pill.w - p12, amber, pill);
             x = pill.x + pill.w + self.px(8.0);
         }
+        // Its project: the mark and name on a faint wash of its color, then
+        // the pane's own name, without the project's in front of it.
+        let mut caption = caption.to_string();
+        if let Some(pr) = self.project_of(id) {
+            let (bh, ih, p4) = (self.px(18.0), self.px(11.0), self.px(4.0));
+            let name_w = self.fonts.small.width(&pr.name);
+            let w = (p4 + ih + self.px(5.0) + name_w + self.px(6.0)).min((right - x) / 2).max(0);
+            let badge = Rect { x, y: bar.y + (h - bh) / 2, w, h: bh };
+            let ink = if t.dark { mix(pr.color, white, 110) } else { mix(pr.color, black, 70) };
+            self.canvas.round_fill(badge, p4, pr.color, if t.dark { 40 } else { 32 });
+            self.canvas.icon_in(pr.icon, Rect { x: badge.x + p4, y: badge.y + (bh - ih) / 2, w: ih, h: ih }, ih, if t.dark { mix(pr.color, white, 40) } else { pr.color });
+            let nx = badge.x + p4 + ih + self.px(5.0);
+            self.canvas.text_fit(&mut self.fonts.small, &pr.name, nx, bar.y + (h - small) / 2, (badge.x + badge.w - nx).max(0), ink, badge);
+            x = badge.x + badge.w + self.px(6.0);
+            // A name that is only the project's says nothing more.
+            let rest = projects::without_project(&caption, &pr.name).to_string();
+            if rest == pr.name {
+                caption.clear();
+            } else {
+                x = self.canvas.text(&mut self.fonts.ui, "›", x as f32, ty, dim, bar) + self.px(6.0);
+                caption = rest;
+            }
+        }
         let room = right - self.px(8.0) - x;
-        self.canvas.text_fit(&mut self.fonts.ui, caption, x, ty, room.max(0), fg, bar);
+        self.canvas.text_fit(&mut self.fonts.ui, &caption, x, ty, room.max(0), fg, bar);
         self.damage.push(bar);
     }
 
