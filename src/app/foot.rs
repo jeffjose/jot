@@ -255,7 +255,19 @@ impl App {
         }
         self.foot_said = said;
         let bar = Rect { x: 0, y: self.canvas.height - self.status_h() - h, w: self.canvas.width, h };
-        let c = self.cur_theme.chrome();
+        // The bar in the workspace's color, tinted: its ground washed toward
+        // it, its edge a step more, its quieter words a light shade of it
+        // (not a gray, which reads muddy on the tint), its name white.
+        let mut c = self.cur_theme.chrome();
+        let dark = self.cur_theme.dark;
+        c.side = mix(c.side, accent, 51);
+        c.edge = mix(c.side, accent, 89);
+        if dark {
+            c.text = 0xFFFFFF;
+            c.dim = mix(mix(accent, 0xFFFFFF, 158), c.side, 64);
+        } else {
+            c.dim = mix(mix(accent, 0x000000, 110), c.side, 64);
+        }
         self.canvas.fill(bar, c.side);
         self.canvas.fill(Rect { x: bar.x, y: bar.y, w: bar.w, h: 1 }, c.edge);
         let ty = bar.y + (h - self.fonts.ui.height) / 2;
@@ -272,8 +284,8 @@ impl App {
         let bw = self.px(8.0) + self.fonts.ui.width(&machine) + self.px(6.0) + ih + self.px(7.0);
         let bh = (h - self.px(5.0)).max(self.px(16.0));
         let button = Rect { x: right - bw + self.px(4.0), y: bar.y + 1 + (h - 1 - bh) / 2, w: bw, h: bh };
-        let lift = if self.cur_theme.dark { 0xFFFFFF } else { 0x000000 };
-        self.canvas.round_fill(button, self.px(5.0), lift, if lit { 30 } else { 14 });
+        // The machine's button a deeper shade of the tint.
+        self.canvas.round_fill(button, self.px(5.0), accent, if lit { 120 } else { 80 });
         let tx = (button.x + self.px(8.0)) as f32;
         self.canvas.text(&mut self.fonts.ui, &machine, tx, ty, if lit { c.text } else { mix(c.dim, c.text, 128) }, bar);
         let ix = button.x + button.w - self.px(7.0) - ih;

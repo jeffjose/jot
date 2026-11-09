@@ -101,16 +101,25 @@ impl App {
         }
         self.canvas.icon_in(icons::SIDEBAR, side, px(14.0), if side_lit { c.text } else { c.dim });
         self.title.hits.push((side, TitleHit::Sidebar));
-        // Then the workspace's mark in its color (as the foot bar has it),
-        // its name, the folder.
+        // Then the workspace: its mark and name on a solid chip of its
+        // color, dark on it, so which workspace this is reads at a glance;
+        // then the folder.
         let uh = self.fonts.ui.height;
         let ty = (h - uh) / 2;
-        let mut x = side.x + side.w + px(6.0);
-        let d = px(14.0);
-        self.mark_tile(Rect { x, y: (h - d) / 2, w: d, h: d }, accent, mark, false);
-        x += d + px(8.0);
         let room = Rect { x: 0, y: 0, w: (right - px(12.0)).max(0), h };
-        x = self.canvas.text_fit(&mut self.fonts.ui, &name, x, ty, (room.w - x).max(0), c.text, room);
+        let d = px(14.0);
+        let x0 = side.x + side.w + px(6.0);
+        let ch = (bh - px(2.0)).max(uh + px(4.0));
+        let cw = (px(7.0) + d + px(7.0) + self.fonts.ui.width(&name) + px(10.0)).min((room.w - x0).max(0));
+        let chip = Rect { x: x0, y: (h - ch) / 2, w: cw, h: ch };
+        let ink = mix(accent, 0x000000, 215);
+        self.canvas.round_fill(chip, px(6.0), accent, 255);
+        if let Some(m) = mark {
+            self.canvas.icon_in(m, Rect { x: chip.x + px(7.0), y: chip.y + (ch - d) / 2, w: d, h: d }, d, ink);
+        }
+        let nx = chip.x + px(7.0) + d + px(7.0);
+        self.canvas.text_fit(&mut self.fonts.ui, &name, nx, ty, (chip.x + chip.w - px(8.0) - nx).max(0), ink, chip);
+        let mut x = chip.x + chip.w;
         if !folder.is_empty() {
             x += px(10.0);
             self.canvas.text_fit(&mut self.fonts.ui, &folder, x, ty, (room.w - x).max(0), c.dim, room);

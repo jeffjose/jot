@@ -3184,37 +3184,37 @@ impl App {
             self.canvas.text_fit(&mut self.fonts.small, &label, pill.x + p6, bar.y + (h - small) / 2, pill.w - p12, amber, pill);
             x = pill.x + pill.w + self.px(8.0);
         }
-        // Its project: a pill as tall as the caption allows, the mark in
-        // bold at 14 and the name on a wash of its color, then the pane's
-        // own name, without the project's in front of it. The color is the
-        // mark's and the wash's only: the name is near white (or near
-        // black), as a tint of the color read at under 3:1.
+        // Its project's badge, as tall as the caption allows, then the
+        // pane's own name, without the project's in front of it.
         let mut caption = caption.to_string();
         if let Some((pr, own)) = self.badge_of(id) {
             let differs = own;
-            let (bh, ih, p4) = (b, self.px(14.0), self.px(4.0));
+            // Two shades of its color (B2 on the "jot: workspace and project
+            // color" canvas): its mark on a deep shade, then its name, dark,
+            // on the color itself. Under the pointer a little lighter: a
+            // click opens the projects.
+            let (bh, ih, r5) = (b, self.px(14.0), self.px(5.0));
+            let blk = ih + self.px(8.0);
             let name_w = self.fonts.ui.width(&pr.name);
-            let w = (p4 + ih + self.px(5.0) + name_w + self.px(8.0)).min((right - x) / 2).max(0);
+            let w = (blk + self.px(7.0) + name_w + self.px(9.0)).min((right - x) / 2).max(0);
             let badge = Rect { x, y: bar.y + (h - bh) / 2, w, h: bh };
-            let ink = match (t.dark, focused) {
-                (true, true) => fg,
-                (true, false) => 0xC9CBD1,
-                (false, true) => fg,
-                (false, false) => 0x3C3F45,
-            };
-            // Under the pointer, a little stronger: a click opens the projects.
             let lit = self.multi_lit == Some((id, watch::Tag::Project));
-            self.canvas.round_fill(badge, self.px(5.0), pr.color, if t.dark { 56 } else { 40 } + if lit { 36 } else { 0 });
+            let solid = if lit { mix(pr.color, white, 36) } else { pr.color };
+            let deep = mix(pr.color, black, 97);
+            self.canvas.round_fill(badge, r5, solid, 255);
+            let block = Rect { x: badge.x, y: badge.y, w: blk.min(badge.w), h: bh };
+            self.canvas.round_fill(block, r5, deep, 255);
+            self.canvas.fill(Rect { x: block.x + block.w - r5, y: block.y, w: r5, h: bh }, deep);
             self.multi_tags.push((badge, id, watch::Tag::Project));
-            self.canvas.icon_in(pr.icon, Rect { x: badge.x + p4, y: badge.y + (bh - ih) / 2, w: ih, h: ih }, ih, if t.dark { mix(pr.color, white, 77) } else { mix(pr.color, black, 40) });
-            let nx = badge.x + p4 + ih + self.px(5.0);
-            self.canvas.text_fit(&mut self.fonts.ui, &pr.name, nx, ty, (badge.x + badge.w - nx).max(0), ink, badge);
+            self.canvas.icon_in(pr.icon, Rect { x: block.x + (blk - ih) / 2, y: badge.y + (bh - ih) / 2, w: ih, h: ih }, ih, mix(pr.color, white, 140));
+            let nx = block.x + blk + self.px(7.0);
+            self.canvas.text_fit(&mut self.fonts.ui, &pr.name, nx, ty, (badge.x + badge.w - nx).max(0), mix(pr.color, black, 215), badge);
             x = badge.x + badge.w + self.px(6.0);
             // A pane with a look of its own (not its project's): a dot of
             // its color after the badge, as Settings › Projects says.
             if differs {
                 let d = self.px(5.0);
-                self.canvas.disc((badge.x + badge.w + self.px(1.0)) as f32 - d as f32 / 2.0, (badge.y + self.px(3.0)) as f32, d as f32 / 2.0 + 0.5, pr.color);
+                self.canvas.disc((badge.x + badge.w + self.px(1.0)) as f32 - d as f32 / 2.0, (badge.y + self.px(3.0)) as f32, d as f32 / 2.0 + 0.5, mix(pr.color, white, 150));
             }
             // A name that is only the project's says nothing more.
             let rest = projects::without_project(&caption, &pr.name).to_string();
