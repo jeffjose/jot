@@ -503,3 +503,55 @@ fn a_window_from_before_numbering_is_not_told() {
     old.spawn();
     assert!(old.numbers(A_WHILE).is_none(), "it would not know the message");
 }
+
+const CAN_REOPEN: u32 = 4;
+const REOPEN_ASK: u8 = 16;
+const REOPEN: u8 = 17;
+
+/// `jot restart --all`'s word to the session, said apart from any window.
+fn ask_reopen(s: &Session, exe: &str) {
+    let mut c = UnixStream::connect(s.socket()).unwrap();
+    let mut o = vec![REOPEN_ASK];
+    put_str(&mut o, exe);
+    send(&mut c, &o);
+}
+
+#[test]
+fn reopen_is_told_to_the_windows_that_can_and_not_to_older_ones() {
+    let s = Session::start();
+    let mut a = Window::hello(&s.socket(), 1, false, CAN_SHARE | CAN_REOPEN);
+    let mut old = s.window(2, true);
+    ask_reopen(&s, "/some/jot");
+    let f = a.expect(REOPEN, A_WHILE).expect("told to reopen");
+    assert_eq!(In(&f[1..]).str(), "/some/jot");
+    assert!(old.expect(REOPEN, A_WHILE).is_none(), "it would not know the message");
+}
+
+#[test]
+fn a_window_reopened_takes_back_its_own_workspaces_and_terminals() {
+    let s = Session::start();
+    let mut a = Window::hello(&s.socket(), 1, false, CAN_SHARE | CAN_REOPEN);
+    let mut b = Window::hello(&s.socket(), 3, false, CAN_SHARE | CAN_REOPEN);
+    let (t1, t2) = (a.spawn(), a.spawn());
+    a.says(&ws("w1", 10, 0, &side_by_side(&[(None, t1), (None, t2)])));
+    a.settles(A_WHILE);
+    b.settles(A_WHILE);
+    let tb = b.spawn();
+    b.says(&format!("{}{}", ws("w1", 10, 1, &side_by_side(&[(None, t1), (None, t2)])), ws("w2", 11, 0, &one(tb))));
+    b.settles(A_WHILE);
+    ask_reopen(&s, "/some/jot");
+    a.expect(REOPEN, A_WHILE).expect("a told");
+    b.expect(REOPEN, A_WHILE).expect("b told");
+    // Each closes (exec) and opens again as the same window, in either order.
+    let (an, bn) = (a.name, b.name);
+    drop(b);
+    drop(a);
+    std::thread::sleep(Duration::from_millis(200));
+    let b = Window::hello(&s.socket(), bn, true, CAN_SHARE | CAN_REOPEN);
+    let a = Window::hello(&s.socket(), an, true, CAN_SHARE | CAN_REOPEN);
+    // Every terminal of the shared workspaces is each one's.
+    for t in [t1, t2, tb] {
+        assert!(a.given.contains(&t) && b.given.contains(&t), "{t}: a {:?}, b {:?}", a.given, b.given);
+    }
+    assert!(b.layout.contains("w2"), "b's own workspaces: {}", b.layout);
+}

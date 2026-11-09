@@ -260,20 +260,11 @@ impl App {
             // hidden.
             Some("restart") if crate::quake_mode() => match args.get(1).filter(|e| !e.is_empty()) {
                 Some(exe) => {
-                    self.save();
-                    let exe = std::ffi::CString::new(exe.as_str()).unwrap_or_default();
-                    let mut argv = vec![c"jot".to_owned(), c"--quake-window".to_owned()];
+                    let mut argv = vec!["--quake-window"];
                     if !self.quake_shown {
-                        argv.push(c"--quake-hidden".to_owned());
+                        argv.push("--quake-hidden");
                     }
-                    // After the answer has gone, and what was saved with it.
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(300));
-                        let mut ptrs: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
-                        ptrs.push(std::ptr::null());
-                        unsafe { libc::execv(exe.as_ptr(), ptrs.as_ptr()) };
-                        eprintln!("jot: the quake window could not start again: {}", std::io::Error::last_os_error());
-                    });
+                    self.exec_again(exe, &argv);
                     "restarting\n".into()
                 }
                 None => "jot: restart needs the jot to start\n".into(),
@@ -282,5 +273,52 @@ impl App {
         };
         let _ = event_loop;
         let _ = req.reply.send(reply);
+    }
+}
+
+impl App {
+    /// `jot restart --all`, told by the session: this window closed and
+    /// opened again as the jot at `exe`, as the same window (--again, its
+    /// name in the session), which takes back its workspaces, terminals and
+    /// place.
+    pub(super) fn reopen_as(&mut self, exe: &str) {
+        if crate::quake_mode() {
+            return;
+        }
+        crate::debuglog::log(format!("reopening as {exe}"));
+        let id = format!("{:x}", crate::mux::window_id());
+        // A window on another machine's session (jot ssh HOST) opens on it again.
+        let host = self.machines.first().and_then(|m| m.host.clone());
+        let mut args: Vec<&str> = host.as_deref().map(|h| vec!["ssh", h]).unwrap_or_default();
+        args.extend(["--again", &id]);
+        self.exec_again(exe, &args);
+    }
+
+    /// This process become the jot at `exe` again, with `args` (exec): the
+    /// workspaces told to the session first; its connections close with the
+    /// exec, and the new one takes them up as this window coming back.
+    fn exec_again(&mut self, exe: &str, args: &[&str]) {
+        self.save();
+        let exe = std::ffi::CString::new(exe).unwrap_or_default();
+        let argv: Vec<std::ffi::CString> = std::iter::once("jot").chain(args.iter().copied()).filter_map(|a| std::ffi::CString::new(a).ok()).collect();
+        // After the answer has gone, and what was saved with it.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let mut ptrs: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
+            ptrs.push(std::ptr::null());
+            unsafe { libc::execv(exe.as_ptr(), ptrs.as_ptr()) };
+            eprintln!("jot: could not start again: {}", std::io::Error::last_os_error());
+        });
+    }
+}
+
+impl App {
+    /// The palette's Restart jot: `jot restart --all`, run apart from the
+    /// window (which it closes and opens again), as the jot installed now.
+    pub(super) fn restart_all(&mut self) {
+        let exe = std::env::current_exe().map(|e| PathBuf::from(e.to_string_lossy().trim_end_matches(" (deleted)"))).unwrap_or_else(|_| PathBuf::from("jot"));
+        crate::debuglog::log(format!("restart --all as {}", exe.display()));
+        self.save();
+        super::open_detached(&exe, &["restart".as_ref(), "--all".as_ref()]);
     }
 }

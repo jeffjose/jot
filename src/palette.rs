@@ -24,6 +24,9 @@ pub enum Action {
     /// before.
     PickTerminal,
     NewWindow,
+    /// `jot restart --all`: the session, the quake window and every window
+    /// as the jot installed now, each as it was.
+    RestartAll,
     /// The quake window full width, centered (its width kept), its height
     /// the default again.
     QuakeFullWidth,
@@ -304,6 +307,7 @@ pub fn commands() -> Vec<Item> {
         c("Settings", "Ctrl ,", Action::Settings),
         c("Connect to machine…", "", Action::ConnectPrompt),
         c("Show or hide the sidebar", "", Action::Sidebar),
+        c("Restart jot (after an update): every window, terminals kept", "", Action::RestartAll),
         c("Quit and end all panes", "", Action::QuitAll),
         c("Go to workspace, pane or folder", "Ctrl K", Action::Palette),
     ]

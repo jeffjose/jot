@@ -271,6 +271,7 @@ impl App {
             }
             Action::PickTerminal => self.terminal_picker(),
             Action::NewWindow => self.new_window(),
+            Action::RestartAll => self.restart_all(),
             Action::QuakeFullWidth => self.quake_full_width(),
             Action::QuakeCenter => self.quake_center(),
             Action::QuakeResetHeight => self.quake_reset_height(),

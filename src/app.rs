@@ -2304,6 +2304,7 @@ impl App {
                 Output::Numbers(..) => "heard numbers",
                 Output::Size(..) => "heard size",
                 Output::Restarting(..) => "heard restarting",
+                Output::Reopen(..) => "heard reopen",
                 Output::Gone(..) => "heard gone",
             });
             match out {
@@ -2400,6 +2401,9 @@ impl App {
                         m.restarting = true;
                     }
                 }
+                // `jot restart --all`: this window closed and opened again as
+                // the jot installed now, as it was.
+                Output::Reopen(exe) => self.reopen_as(&exe),
                 Output::Gone(k) if self.machines.get(k).is_some_and(|m| m.restarting) => {
                     crate::debuglog::log(format!("machine {k}: its server is restarting, reaching it again"));
                     self.machines[k].restarting = false;
@@ -3782,6 +3786,7 @@ fn hearer(k: usize, tx: std::sync::mpsc::Sender<Output>, proxy: EventLoopProxy<(
             Heard::Numbers(n) => Output::Numbers(k, n),
             Heard::Size(p, cols, rows) => Output::Size(id(p), cols, rows),
             Heard::Restarting => Output::Restarting(k),
+            Heard::Reopen(exe) => Output::Reopen(exe),
             Heard::Gone => Output::Gone(k),
         };
         if let Ok(tx) = tx.lock() {

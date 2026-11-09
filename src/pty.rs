@@ -47,6 +47,8 @@ pub enum Output {
     Size(u64, u16, u16),
     /// A machine's server is being swapped for a newer one.
     Restarting(usize),
+    /// To close and open again as the jot at the path (`jot restart --all`).
+    Reopen(String),
     /// The connection to a machine's session ended.
     Gone(usize),
 }

@@ -327,6 +327,9 @@ struct Server {
     changed_by: HashMap<u64, u64>,
     /// The windows told terminals' numbers (Hello's caps).
     numbering: Vec<u64>,
+    /// The windows that close and open again when told (CAN_REOPEN,
+    /// `jot restart --all`).
+    reopening: Vec<u64>,
 }
 
 impl Server {
@@ -507,6 +510,7 @@ impl Server {
             self.names.remove(&old);
             self.sharing.retain(|w| *w != old);
             self.numbering.retain(|w| *w != old);
+            self.reopening.retain(|w| *w != old);
             self.seen.remove(&old);
             self.windows.retain(|w| *w != old);
             if let Some(l) = self.layouts.remove(&old) {
@@ -894,7 +898,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
             return;
         }
         None => match UnixListener::bind(path) {
-            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new() }, l),
+            Ok(l) => (Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new() }, l),
             Err(e) => {
                 eprintln!("jot serve: {}: {e}", path.display());
                 return;
@@ -951,6 +955,14 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     let _ = st.shutdown(std::net::Shutdown::Both);
                 }
             }
+            // `jot restart --all`: each window that can, told to close and
+            // open again as the jot at `exe`.
+            Ev::Said(_, ToServer::Reopen { exe }) => {
+                crate::debuglog::log(format!("session: reopening {} windows as {exe}", s.reopening.len()));
+                for w in s.reopening.clone() {
+                    s.send(w, ToClient::Reopen { exe: exe.clone() });
+                }
+            }
             // `jot restart`: what the panes printed meanwhile passed on
             // first, then the server swapped for the jot installed now.
             Ev::Said(c, ToServer::Restart { exe }) => {
@@ -986,6 +998,9 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 s.abouts.insert(c, about);
                 if caps & super::CAN_NUMBER != 0 && !s.numbering.contains(&c) {
                     s.numbering.push(c);
+                }
+                if caps & super::CAN_REOPEN != 0 && !s.reopening.contains(&c) {
+                    s.reopening.push(c);
                 }
                 if caps & super::CAN_SHARE != 0 && !s.sharing.contains(&c) {
                     s.sharing.push(c);
@@ -1084,7 +1099,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     s.renumber(&numbers);
                     s.tell_numbers(None);
                 }
-                ToServer::Hello { .. } | ToServer::Peek | ToServer::Restart { .. } => {}
+                ToServer::Hello { .. } | ToServer::Peek | ToServer::Restart { .. } | ToServer::Reopen { .. } => {}
             },
             Ev::Said(..) => {}
             Ev::Left(c) => {
@@ -1110,6 +1125,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                     s.abouts.remove(&c);
                     s.sharing.retain(|w| *w != c);
                     s.numbering.retain(|w| *w != c);
+                    s.reopening.retain(|w| *w != c);
                     s.seen.remove(&c);
                     if let Some(l) = s.layouts.remove(&c).filter(|_| any) {
                         s.left.push((name, l));
@@ -1316,6 +1332,7 @@ impl Server {
         self.names.clear();
         self.sharing.clear();
         self.numbering.clear();
+        self.reopening.clear();
         self.seen.clear();
         for p in self.panes.values_mut() {
             p.viewers.clear();
@@ -1423,7 +1440,7 @@ fn resume(file: &Path, tx: &Sender<Ev>) -> io::Result<(Server, i32)> {
         }
     }
     keep_on_exec(listener, false);
-    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane, desktop: None, abouts: HashMap::new(), shared, sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new() }, listener))
+    Ok((Server { panes, conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left, next_pane, desktop: None, abouts: HashMap::new(), shared, sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new() }, listener))
 }
 
 /// The session's names of the panes a window's layout has (its workspaces'
@@ -1491,7 +1508,7 @@ mod tests {
     use crate::persist::{Session, Spec, WorkspaceSpec};
 
     fn server() -> Server {
-        Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new() }
+        Server { panes: HashMap::new(), conns: HashMap::new(), windows: Vec::new(), layouts: HashMap::new(), names: HashMap::new(), left: Vec::new(), next_pane: 1, desktop: None, abouts: HashMap::new(), shared: Vec::new(), sharing: Vec::new(), seen: HashMap::new(), changed_by: HashMap::new(), numbering: Vec::new(), reopening: Vec::new() }
     }
 
     /// A window that shares workspaces, connected as `c`.

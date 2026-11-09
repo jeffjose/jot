@@ -33,6 +33,14 @@ pub fn debug() -> bool {
 static RESTORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static RESTORING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SHOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static AGAIN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Opened again by `jot restart --all` (--again, its name in the session):
+/// the same window as before, taking back its own workspaces, terminals
+/// and place.
+pub fn again() -> Option<u64> {
+    Some(AGAIN.load(std::sync::atomic::Ordering::Relaxed)).filter(|w| *w != 0)
+}
 
 /// Opened to show a terminal another window shows (--show, its name in the
 /// session): taken up, with no shell of its own.
@@ -83,6 +91,7 @@ jot: a terminal with splits and workspaces
   jot ssh HOST    a window on HOST's session (jot installed there)
   jot status      what the session holds, and whether a window shows it
   jot restart     swap the session's server for this jot (after an update), every pane kept running
+  jot restart --all  that, and every window closed and opened again as it was (Ctrl P, Restart jot)
   jot kill        end the session and every pane in it
   jot serve SOCK  a session (started by jot itself)
   jot --version
@@ -179,6 +188,11 @@ fn main() {
             "--quake-hidden" => QUAKE_HIDDEN.store(true, std::sync::atomic::Ordering::Relaxed),
             "--debug" => DEBUG.store(true, std::sync::atomic::Ordering::Relaxed),
             "--restored" => RESTORED.store(true, std::sync::atomic::Ordering::Relaxed),
+            "--again" => {
+                RESTORED.store(true, std::sync::atomic::Ordering::Relaxed);
+                let w = args.next().and_then(|w| u64::from_str_radix(&w, 16).ok()).unwrap_or(0);
+                AGAIN.store(w, std::sync::atomic::Ordering::Relaxed);
+            }
             "--show" => {
                 RESTORED.store(true, std::sync::atomic::Ordering::Relaxed);
                 let pane = args.next().and_then(|p| p.parse().ok()).unwrap_or(0);

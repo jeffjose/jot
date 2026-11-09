@@ -89,6 +89,10 @@ pub enum ToServer {
     /// sidebar): each pane and its number. Said only to a session that told
     /// numbers (ToClient::Numbers), which knows it.
     Renumber { numbers: Vec<(u64, u32)> },
+    /// `jot restart --all`: every window that can (CAN_REOPEN) closed and
+    /// opened again as the jot at `exe`, each as it was. Said by the jot
+    /// command, not a window; the session tells the windows (ToClient::Reopen).
+    Reopen { exe: String },
 }
 
 /// A pane the session has, as it says on attaching.
@@ -152,6 +156,10 @@ pub enum ToClient {
     /// window: sent to a window that knows the message (CAN_NUMBER) when it
     /// comes and whenever they change.
     Numbers { numbers: Vec<(u64, u32)> },
+    /// Close and open again as the jot at `exe`, as this same window (its
+    /// workspaces, terminals and place kept): `jot restart --all`, told to
+    /// a window that can (CAN_REOPEN).
+    Reopen { exe: String },
 }
 
 // The wire: a frame is its length (u32), then a tag, then the fields.
@@ -308,6 +316,7 @@ impl ToServer {
             ToServer::List => o.u8(11),
             ToServer::Release { pane } => o.u8(13).u64(*pane),
             ToServer::Restart { exe } => o.u8(14).str(exe),
+            ToServer::Reopen { exe } => o.u8(16).str(exe),
             ToServer::Renumber { numbers } => {
                 o.u8(15).u32(numbers.len() as u32);
                 for (pane, n) in numbers {
@@ -349,6 +358,7 @@ impl ToServer {
             11 => ToServer::List,
             13 => ToServer::Release { pane: i.u64()? },
             14 => ToServer::Restart { exe: i.str()? },
+            16 => ToServer::Reopen { exe: i.str()? },
             15 => {
                 let n = i.u32()?;
                 ToServer::Renumber { numbers: (0..n).map(|_| Ok((i.u64()?, i.u32()?))).collect::<io::Result<Vec<_>>>()? }
@@ -451,6 +461,9 @@ impl ToClient {
                     o.u64(*pane).u32(*n);
                 }
             }
+            ToClient::Reopen { exe } => {
+                o.u8(17).str(exe);
+            }
         }
         frame(o)
     }
@@ -511,6 +524,7 @@ impl ToClient {
                 let n = i.u32()?;
                 ToClient::Numbers { numbers: (0..n).map(|_| Ok((i.u64()?, i.u32()?))).collect::<io::Result<Vec<_>>>()? }
             }
+            17 => ToClient::Reopen { exe: i.str()? },
             t => return Err(bad(t)),
         })
     }
@@ -608,6 +622,8 @@ pub enum Heard {
     Workspaces(Vec<String>, Vec<Held>),
     /// Its terminals' numbers (see ToClient::Numbers).
     Numbers(Vec<(u64, u32)>),
+    /// To close and open again as the jot at the path (see ToClient::Reopen).
+    Reopen(String),
     /// The size its program writes for now.
     Size(u64, u16, u16),
     /// The server is being swapped for a newer one: the connection about
@@ -697,7 +713,7 @@ impl Client {
         // One opened to show a terminal names it, and takes it up whatever
         // other window shows it.
         let want: Vec<u64> = crate::show_pane().into_iter().collect();
-        s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again: crate::quake_mode() || !want.is_empty(), want, about: about(), caps: caps() }.encode())?;
+        s.write_all(&ToServer::Hello { proto: PROTO, window: window_id(), again: crate::quake_mode() || crate::again().is_some() || !want.is_empty(), want, about: about(), caps: caps() }.encode())?;
         let f = read_frame(&mut s)?;
         s.set_read_timeout(None)?;
         match ToClient::decode(&f) {
@@ -826,6 +842,7 @@ fn listen(mut r: Box<dyn Read + Send>, spawned: Sender<(u64, i32)>, hear: Arc<dy
             Ok(ToClient::Numbers { numbers }) => hear(Heard::Numbers(numbers)),
             Ok(ToClient::Size { pane, cols, rows }) => hear(Heard::Size(pane, cols, rows)),
             Ok(ToClient::Restarting) => hear(Heard::Restarting),
+            Ok(ToClient::Reopen { exe }) => hear(Heard::Reopen(exe)),
             Ok(ToClient::Spawned { pane, pid }) => {
                 let _ = spawned.send((pane, pid));
             }
@@ -856,14 +873,19 @@ pub fn peek() -> io::Result<ToClient> {
 
 /// `jot restart`: the session's server swapped for this jot (the one
 /// installed now), every pane running on as it was, the windows reaching
-/// it again by themselves.
-fn restart() -> i32 {
+/// it again by themselves. `--all` (the palette's Restart jot): the windows
+/// too, each closed and opened again as this jot, as it was.
+fn restart(all: bool) -> i32 {
     let path = socket();
     let Ok(mut s) = UnixStream::connect(&path) else {
         println!("No session running.");
         return 0;
     };
     let before = server_pid(&path);
+    let had = match peek() {
+        Ok(ToClient::Info { windows, .. }) => windows,
+        _ => 0,
+    };
     let exe = match std::env::current_exe() {
         Ok(e) => e.to_string_lossy().trim_end_matches(" (deleted)").to_string(),
         Err(e) => {
@@ -884,6 +906,9 @@ fn restart() -> i32 {
             let same = before.is_some() && server_pid(&path) == before;
             let panes = if panes == 1 { "1 pane".to_string() } else { format!("{panes} panes") };
             println!("The session's server is now {}: {panes} running on{}.", crate::version(), if same { "" } else { " (in a new process)" });
+            if all {
+                reopen_windows(&exe, had);
+            }
             if crate::remote::quake_restart(&exe) {
                 println!("The quake window: started again as this jot, its terminals kept.");
             }
@@ -892,6 +917,22 @@ fn restart() -> i32 {
     }
     eprintln!("jot restart: the new server did not answer; ~/.local/state/jot/serve.log may say why.");
     1
+}
+
+/// The session's windows (those that can) closed and opened again as the
+/// jot at `exe`, once the `had` of them have reached its new server.
+fn reopen_windows(exe: &str, had: u32) {
+    for _ in 0..100 {
+        if matches!(peek(), Ok(ToClient::Info { windows, .. }) if windows >= had) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let told = UnixStream::connect(socket()).and_then(|mut s| s.write_all(&ToServer::Reopen { exe: exe.to_string() }.encode()));
+    match told {
+        Ok(()) => println!("The windows: opening again as this jot (one older than this opens again only after you reopen it)."),
+        Err(e) => eprintln!("jot restart: the windows could not be told to open again: {e}"),
+    }
 }
 
 /// `jot status`: the session, what it holds and whether a window shows
@@ -990,7 +1031,7 @@ pub fn command(args: &[String]) -> i32 {
             println!("{}", if ended == 0 { "No session running.".to_string() } else { "The session ended, and its panes.".to_string() });
             0
         }
-        Some("restart") => restart(),
+        Some("restart") => restart(args.iter().any(|a| a == "--all")),
         _ => 2,
     }
 }
@@ -1279,6 +1320,10 @@ pub fn window_id() -> u64 {
         if crate::quake_mode() {
             return QUAKE_WINDOW;
         }
+        // Opened again by `jot restart --all`: the same window as before.
+        if let Some(id) = crate::again() {
+            return id;
+        }
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
         t ^ ((std::process::id() as u64) << 32) | 1
     })
@@ -1340,6 +1385,10 @@ pub const CAN_SHARE: u32 = 1;
 /// same in every window), and says a renumbering to them.
 pub const CAN_NUMBER: u32 = 2;
 
+/// A window that closes and opens again as a newer jot when told
+/// (ToClient::Reopen, `jot restart --all`).
+pub const CAN_REOPEN: u32 = 4;
+
 /// What this window can do, said in its hello: a regular window shares
 /// workspaces (the quake window has its own, and does not); every window
 /// takes its terminals' numbers from their sessions.
@@ -1347,6 +1396,6 @@ fn caps() -> u32 {
     if crate::quake_mode() {
         CAN_NUMBER
     } else {
-        CAN_SHARE | CAN_NUMBER
+        CAN_SHARE | CAN_NUMBER | CAN_REOPEN
     }
 }
