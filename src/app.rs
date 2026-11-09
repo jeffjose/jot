@@ -3223,19 +3223,24 @@ impl App {
         if n > 0 {
             x = self.canvas.text(&mut self.fonts.ui, &format!("{n}"), x as f32, ty, num, bar) + self.px(8.0);
         }
-        // On another machine: its name, in amber, on a faint pill; while
-        // it is being reached again, said.
+        // On another machine: its name outlined in amber (R1 on the "jot:
+        // workspace and project color" canvas), Solar's server in amber
+        // before it and the name in the caption's own ink, as readable as
+        // the rest; while it is being reached again, said.
         let m = crate::mux::split_id(id).0;
         if let Some(mach) = self.machines.get(m).filter(|_| m > 0) {
             let host = mach.host.clone().unwrap_or_default();
             let label = if mach.client.connected() { host } else { format!("{host} · reconnecting") };
             let amber = 0xF0B43C;
-            let w = self.fonts.small.width(&label) + self.px(12.0);
+            let (ih, p5, p8) = (self.px(13.0), self.px(5.0), self.px(8.0));
+            let w = p5 + ih + p5 + self.fonts.ui.width(&label) + p8;
             let pill = Rect { x, y: bar.y + (h - b) / 2, w: w.min((right - x) / 2).max(0), h: b };
-            let (p6, p12) = (self.px(6.0), self.px(12.0));
-            self.canvas.round_fill(pill, self.px(4.0), amber, 30);
-            self.canvas.text_fit(&mut self.fonts.small, &label, pill.x + p6, bar.y + (h - small) / 2, pill.w - p12, amber, pill);
-            x = pill.x + pill.w + self.px(8.0);
+            self.canvas.ring(pill, self.px(5.0), 1, mix(bg, amber, 153));
+            let server = crate::canvas::icons::PROJECT[2];
+            self.canvas.icon_in(server, Rect { x: pill.x + p5, y: pill.y + (b - ih) / 2, w: ih, h: ih }, ih, amber);
+            let tx = pill.x + p5 + ih + p5;
+            self.canvas.text_fit(&mut self.fonts.ui, &label, tx, ty, (pill.x + pill.w - p8 - tx).max(0), fg, pill);
+            x = pill.x + pill.w + self.px(6.0);
         }
         // Its project's badge, as tall as the caption allows, then the
         // pane's own name, without the project's in front of it.
