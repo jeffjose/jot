@@ -12,7 +12,9 @@ use crate::font;
 use crate::theme::{ACCENTS, THEMES};
 
 
-const SECTIONS: [&str; 7] = ["Appearance", "Workspaces", "Fonts", "Quake", "Keys", "Debug", "About"];
+const SECTIONS: [&str; 8] = ["Appearance", "Workspaces", "Projects", "Fonts", "Quake", "Keys", "Debug", "About"];
+/// The Projects page's place among them.
+pub const PROJECTS: usize = 2;
 
 /// A setting, for Reset.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -74,6 +76,10 @@ pub enum Hit {
     WsNew,
     /// Not closing the workspace after all.
     WsKeep,
+    /// A project in Settings › Projects, shown below the list.
+    Project(usize),
+    /// A terminal set to a project by hand, set back.
+    SetBack(u64),
 }
 
 pub struct Dropdown {
@@ -117,6 +123,8 @@ pub struct Settings {
     pub hex: crate::field::TextField,
     /// The scrollbar's thumb being dragged: where from, and the scroll then.
     pub drag: Option<(i32, i32)>,
+    /// The project shown in Settings › Projects, by name.
+    pub project: Option<String>,
     /// The installed fonts, read once: monospaced, and all.
     mono: Option<Vec<String>>,
     all: Option<Vec<String>>,
@@ -198,9 +206,18 @@ impl App {
     pub(super) fn open_settings(&mut self) {
         self.palette = None;
         self.menu = None;
-        self.settings = Some(Settings { scroll: 0, hover: None, hits: Vec::new(), content_h: 0, view_h: 1, tops: Vec::new(), section: 0, dropdown: None, accent_pop: None, renaming: None, closing: None, hex: crate::field::TextField::default(), drag: None, mono: None, all: None });
+        self.settings = Some(Settings { scroll: 0, hover: None, hits: Vec::new(), content_h: 0, view_h: 1, tops: Vec::new(), section: 0, dropdown: None, accent_pop: None, renaming: None, closing: None, hex: crate::field::TextField::default(), drag: None, project: None, mono: None, all: None });
         self.full = true;
         self.redraw();
+    }
+
+    /// Settings › Projects, at a project (a project's cog in its badge's list).
+    pub(super) fn open_project_settings(&mut self, name: &str) {
+        self.open_settings();
+        if let Some(s) = &mut self.settings {
+            s.section = PROJECTS;
+            s.project = Some(name.to_string());
+        }
     }
 
     fn close_settings(&mut self) {
@@ -370,6 +387,13 @@ impl App {
                     s.dropdown = None;
                 }
             }
+            Hit::Project(i) => {
+                let name = self.project_rows().get(i).map(|r| r.project.name.clone());
+                if let Some(s) = &mut self.settings {
+                    s.project = name;
+                }
+            }
+            Hit::SetBack(sid) => self.set_back(sid),
             Hit::Theme(i) => self.set_theme(i),
             Hit::Accent(i) => {
                 let (name, color) = ACCENTS[i];
@@ -853,6 +877,8 @@ impl App {
         let q = &self.config;
         let quake = (q.quake_height, q.quake_width, capitalize(&q.quake_position), capitalize(&q.quake_align), capitalize(&q.quake_monitor), q.quake_all_workspaces, q.quake_hide_on_blur);
         let version = crate::version();
+        let project_rows = if st.section == PROJECTS { self.project_rows() } else { Vec::new() };
+        let dark = self.cur_theme.dark;
         let canvas_h = self.canvas.height;
         let canvas = &mut self.canvas;
         let fonts = &mut self.fonts;
@@ -1225,7 +1251,98 @@ impl App {
         canvas.ring(group, px(10.0), 1, c.edge);
         y = group.y + group.h + px(24.0);
         }
-        if section == 2 {
+        if section == PROJECTS {
+        // ---- Projects ----
+        heading(canvas, fonts, &mut y, &mut tops, "Projects");
+        canvas.text(&mut fonts.small, "A terminal takes the look of the project its folder is in, or of the one it is put in from its badge.", body.x as f32, y - px(8.0), c.dim, view);
+        y += sh_ + px(16.0);
+        // A project's mark as its badge has it: on a wash of its color.
+        let mark = |canvas: &mut Canvas, r: Rect, p: &super::projects::Project| {
+            canvas.round_fill(r, r.w * 28 / 100, p.color, if dark { 64 } else { 44 });
+            let ink = if dark { mix(p.color, 0xFFFFFF, 77) } else { mix(p.color, 0x000000, 40) };
+            canvas.icon_in(p.icon, r, r.w * 64 / 100, ink);
+        };
+        let shown = st.project.clone().or_else(|| project_rows.first().map(|r| r.project.name.clone()));
+        // The projects as a list in a box, a row each.
+        let rh = px(48.0);
+        if project_rows.is_empty() {
+            canvas.text(&mut fonts.ui, "No projects yet: a terminal in a git repository is in one.", body.x as f32, y, c.dim, view);
+            y += uh + px(24.0);
+        } else {
+            let group = Rect { x: body.x, y, w: body.w, h: rh * project_rows.len() as i32 };
+            canvas.round_fill(group, px(10.0), c.side, 255);
+            for (i, row) in project_rows.iter().enumerate() {
+                let top = group.y + i as i32 * rh;
+                if i > 0 {
+                    canvas.fill(Rect { x: group.x + px(14.0), y: top, w: group.w - px(28.0), h: 1 }, c.edge);
+                }
+                let cell = Rect { x: group.x + px(4.0), y: top + px(4.0), w: group.w - px(8.0), h: rh - px(8.0) };
+                let picked = shown.as_ref() == Some(&row.project.name);
+                if picked {
+                    canvas.round_fill(cell, px(7.0), mix(c.side, c.text, 22), 255);
+                } else if hover == Some(Hit::Project(i)) {
+                    canvas.round_fill(cell, px(7.0), c.hover, 255);
+                }
+                let cy = top + rh / 2;
+                let d = px(24.0);
+                mark(canvas, Rect { x: group.x + px(14.0), y: cy - d / 2, w: d, h: d }, &row.project);
+                let nx = group.x + px(14.0) + d + px(12.0);
+                let end = canvas.text(&mut fonts.ui, &row.project.name, nx as f32, cy - uh / 2, c.text, view);
+                let detail = match (row.folders.len(), row.by_hand.len()) {
+                    (1, 0) => row.folders[0].clone(),
+                    (0, 0) => "made by hand".to_string(),
+                    (0, n) => format!("{n} terminal{} set by hand", if n == 1 { "" } else { "s" }),
+                    (f, 0) => format!("{f} folders"),
+                    (f, n) => format!("{f} folder{}, {n} set by hand", if f == 1 { "" } else { "s" }),
+                };
+                canvas.text_fit(&mut fonts.small, &detail, end + px(10.0), cy - sh_ / 2, (group.x + group.w - px(40.0) - end).max(0), c.dim, view);
+                solar(canvas, icons::CHEVRON_RIGHT, group.x + group.w - px(22.0), cy, px(14.0), c.dim);
+                page.push((cell, Hit::Project(i)));
+            }
+            canvas.ring(group, px(10.0), 1, c.edge);
+            y = group.y + group.h + px(28.0);
+        }
+        // The one picked: its mark and name, its folders, and the
+        // terminals put in it by hand.
+        if let Some(row) = project_rows.iter().find(|r| Some(&r.project.name) == shown.as_ref()) {
+            let d = px(40.0);
+            mark(canvas, Rect { x: body.x, y, w: d, h: d }, &row.project);
+            canvas.text(&mut fonts.heading, &row.project.name, (body.x + d + px(14.0)) as f32, y + (d - hh) / 2, c.text, view);
+            y += d + px(20.0);
+            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
+            title(canvas, fonts, &mut page, y, "Folders", &format!("A terminal in one of these, or in a folder under one, is {}.", row.project.name), Key::Debug);
+            y += row_h - row_pad / 2;
+            if row.folders.is_empty() {
+                canvas.text(&mut fonts.ui, "None: no terminal here is in its folder now.", body.x as f32, y, c.dim, view);
+                y += uh + px(14.0);
+            }
+            for f in &row.folders {
+                let end = canvas.text(&mut fonts.ui, f, body.x as f32, y, c.text, view);
+                canvas.text(&mut fonts.small, "its git repository", (end + px(10.0)) as f32, y + (uh - sh_) / 2, c.dim, view);
+                y += uh + px(14.0);
+            }
+            y += px(8.0);
+            canvas.fill(Rect { x: body.x, y, w: body.w, h: 1 }, rule);
+            title(canvas, fonts, &mut page, y, &format!("Terminals set to {} by hand", row.project.name), "They stay in it wherever they go, until set back.", Key::Debug);
+            y += row_h - row_pad / 2;
+            if row.by_hand.is_empty() {
+                canvas.text(&mut fonts.ui, "None.", body.x as f32, y, c.dim, view);
+                y += uh + px(14.0);
+            }
+            for (sid, label) in &row.by_hand {
+                let cy = y + field_h / 2;
+                canvas.text_fit(&mut fonts.ui, label, body.x, cy - uh / 2, body.w / 2, c.text, view);
+                let bw = fonts.ui.width("Set back") + px(28.0);
+                let b = Rect { x: right - bw, y: cy - field_h / 2, w: bw, h: field_h };
+                canvas.round_fill(b, px(7.0), if hover == Some(Hit::SetBack(*sid)) { c.hover } else { c.field }, 255);
+                canvas.ring(b, px(7.0), 1, c.edge);
+                canvas.text(&mut fonts.ui, "Set back", (b.x + px(14.0)) as f32, cy - uh / 2, c.text, b);
+                page.push((b, Hit::SetBack(*sid)));
+                y += field_h + px(10.0);
+            }
+        }
+        }
+        if section == 3 {
         // ---- Fonts ----
         heading(canvas, fonts, &mut y, &mut tops, "Fonts");
         let field_w = px(260.0).min(body.w / 2);
@@ -1271,7 +1388,7 @@ impl App {
         y += px(32.0);
 
         }
-        if section == 3 {
+        if section == 4 {
         // ---- Quake ----
         heading(canvas, fonts, &mut y, &mut tops, "Quake");
         canvas.text(&mut fonts.small, "jot --quake shows a terminal over everything, and hides it again: bind a key to it in", body.x as f32, y - px(8.0), c.dim, view);
@@ -1309,7 +1426,7 @@ impl App {
         y += px(32.0);
 
         }
-        if section == 4 {
+        if section == 5 {
         // ---- Keys ----
         heading(canvas, fonts, &mut y, &mut tops, "Keys");
         let key_h = sh_ + px(10.0);
@@ -1329,7 +1446,7 @@ impl App {
         y += px(32.0);
 
         }
-        if section == 5 {
+        if section == 6 {
         // ---- Debug ----
         heading(canvas, fonts, &mut y, &mut tops, "Debug");
         {
@@ -1354,7 +1471,7 @@ impl App {
             }
         }
         }
-        if section == 6 {
+        if section == 7 {
         // ---- About ----
         heading(canvas, fonts, &mut y, &mut tops, "About");
         for (k, v) in [

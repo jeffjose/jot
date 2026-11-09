@@ -410,8 +410,7 @@ impl App {
             Action::FontReset => self.set_font_size(self.config.font_size),
             Action::Settings => self.open_settings(),
             Action::SetProject(name) => self.set_project(name),
-            // Settings › Projects is to come: until then, the settings.
-            Action::ProjectSettings(_) => self.open_settings(),
+            Action::ProjectSettings(name) => self.open_project_settings(&name),
             Action::NewProject => self.new_project_prompt(),
             Action::Broadcast => self.toggle_broadcast(),
             Action::PopOut => self.pop_out(event_loop),

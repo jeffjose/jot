@@ -67,6 +67,15 @@ pub fn without_project<'a>(name: &'a str, project: &str) -> &'a str {
     }
 }
 
+/// A project as Settings › Projects shows it.
+pub struct ProjectRow {
+    pub project: Project,
+    /// The repositories its terminals are in, shortened (~/scripts/jot).
+    pub folders: Vec<String>,
+    /// The terminals put in it by hand: their id there, and name.
+    pub by_hand: Vec<(u64, String)>,
+}
+
 /// Projects set by hand: the terminals put in one (or in none) whatever
 /// their folder, and the projects made that no folder is. Kept in the
 /// state folder's `jot/projects`, a line each: `pane SID NAME` (`-` for
@@ -241,6 +250,46 @@ impl App {
         self.menu_at = at;
         self.menu = Some(super::overlay::Menu { items, at, hover: None, children: Vec::new(), open: None, icons, cogs });
         self.full = true;
+        self.redraw();
+    }
+
+    /// Each project known here as Settings › Projects lists it: the
+    /// folders its terminals are in (their repositories), and the
+    /// terminals put in it by hand, by name.
+    pub(super) fn project_rows(&self) -> Vec<ProjectRow> {
+        let by_hand: Vec<(u64, Option<String>)> = with_by_hand(|b| b.panes.iter().map(|(s, n)| (*s, n.clone())).collect());
+        self.known_projects()
+            .into_iter()
+            .map(|project| {
+                let mut folders: Vec<String> = self
+                    .panes
+                    .iter()
+                    .filter(|(id, p)| p.pty.machine == 0 && self.found_project(**id).is_some_and(|f| f.name == project.name))
+                    .filter_map(|(_, p)| repo_root(&p.pty.cwd()?))
+                    .map(|r| persist::shorten(&r))
+                    .collect();
+                folders.sort();
+                folders.dedup();
+                let mut hand: Vec<(u64, String)> = by_hand
+                    .iter()
+                    .filter(|(_, n)| n.as_ref() == Some(&project.name))
+                    .map(|(sid, _)| {
+                        let shown = self.panes.keys().find(|id| crate::mux::split_id(**id) == (0, *sid)).map(|id| self.terminal_label(*id));
+                        (*sid, shown.unwrap_or_else(|| format!("terminal {sid}")))
+                    })
+                    .collect();
+                hand.sort();
+                ProjectRow { project, folders, by_hand: hand }
+            })
+            .collect()
+    }
+
+    /// A terminal set to a project by hand set back: in its folder's again.
+    pub(super) fn set_back(&mut self, sid: u64) {
+        with_by_hand(|b| b.panes.remove(&sid));
+        save_by_hand();
+        self.full = true;
+        self.side_dirty = true;
         self.redraw();
     }
 
