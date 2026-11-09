@@ -296,7 +296,7 @@ impl App {
             Key::Ligatures => !c.ligatures,
             Key::CommandBars => c.command_bars,
             Key::WsColors => !c.workspace_colors,
-            Key::Bold => !c.bold_text,
+            Key::Bold => c.bold_text,
             Key::QuakeHeight => c.quake_height != persist::default_quake_height(),
             Key::QuakeWidth => c.quake_width != persist::default_quake_width(),
             Key::QuakePosition => !c.quake_position.eq_ignore_ascii_case(&persist::default_quake_position()),
@@ -369,7 +369,7 @@ impl App {
             }
             Key::WsTheme | Key::ProjTheme | Key::ProjTint => {}
             Key::Bold => {
-                self.config.bold_text = true;
+                self.config.bold_text = false;
                 self.reload_fonts();
             }
             Key::WsColors => {
