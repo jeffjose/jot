@@ -846,6 +846,13 @@ impl App {
         let views = sibling.map(|p| p.pty.views.clone()).unwrap_or_default();
         let (raw, proc) = sibling.map(|p| (p.pty.raw, p.pty.proc.clone())).unwrap_or_default();
         let speaks = sibling.map(|p| p.pty.speaks.clone()).unwrap_or_else(|| std::rc::Rc::new(std::cell::Cell::new(true)));
+        // The folder it was started in, until its session says the one it is
+        // in: where it shows (the project bar, the sidebar) it has one from
+        // the start, not nothing and then one, moving what comes after.
+        let mut proc = proc;
+        if proc.cwd.is_empty() && start.pane.is_none() {
+            proc.cwd = start.cwd.display().to_string();
+        }
         views.borrow_mut().push(id);
         let pty = Pty { pane, machine: m, pid, mux: client.clone(), raw, proc, end: false, views: views.clone(), view: id, speaks: speaks.clone() };
         // Only the first view answers what the program asks of its terminal
