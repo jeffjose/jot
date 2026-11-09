@@ -2829,6 +2829,7 @@ impl App {
         }
         // Last, over all else: the toasts, then the tooltip (see floats_off).
         self.draw_toasts();
+        self.draw_side_preview();
         self.draw_tooltip();
         let drawn = t0.elapsed();
         // How much is sent to the screen (each rect damaged, overlaps counted twice).

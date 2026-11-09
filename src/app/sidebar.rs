@@ -337,6 +337,102 @@ impl App {
 }
 
 impl App {
+    /// A sidebar row under the pointer whose terminal a pane here shows:
+    /// beside it, a card of that terminal as it is (its last lines, in its
+    /// own font and colors), one slim line above them (its project and
+    /// name, what it runs and for how long). Nothing else round it.
+    pub(super) fn draw_side_preview(&mut self) {
+        if !self.sidebar_open || self.menu.is_some() || self.palette.is_some() || self.settings.is_some() || self.drag.is_some() {
+            return;
+        }
+        let Some(SideHit::Pane(id)) = self.side_lit else { return };
+        let Some(row) = self.side_hits.iter().find(|(_, h)| *h == SideHit::Pane(id)).map(|(r, _)| *r) else { return };
+        // A pane in the workspace you are in is in view already.
+        let mut shown = Vec::new();
+        self.ws().root.panes(&mut shown);
+        if shown.contains(&id) {
+            return;
+        }
+        // Its rows read afresh: not drawn here, they are not kept up to date
+        // (and never were, in a workspace not yet gone to).
+        if let Some(p) = self.panes.get_mut(&id) {
+            let (term, lines, rows, cols) = (&mut p.term, &mut p.lines, p.rows as usize, p.cols as usize);
+            term.update();
+            lines.resize(rows, Vec::new());
+            let mut row = Vec::new();
+            term.rows(true, &[], &mut row, |y, cells| {
+                if let Some(l) = lines.get_mut(y as usize) {
+                    l.clear();
+                    l.extend(cells.iter().take(cols).map(|c| if c.ch == '\0' { ' ' } else { c.ch }));
+                }
+            });
+        }
+        let Some(p) = self.panes.get(&id) else { return };
+        let theme = p.theme;
+        // Its last lines with anything on them, as many as fit.
+        let mut lines: Vec<String> = p.lines.iter().map(|l| l.iter().collect::<String>().trim_end().to_string()).collect();
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+        let keep = 14.min(lines.len());
+        let lines: Vec<String> = lines.split_off(lines.len() - keep);
+        let running = p.shell.running.as_ref().filter(|_| !p.shell.at_prompt).map(|(at, _, cmd)| (at.elapsed(), cmd.clone()));
+        let label = self.terminal_label(id);
+        let badge = self.badge_of(id).map(|(b, _)| b);
+        let (cw, ch) = (self.fonts.cell_w, self.fonts.cell_h);
+        let cols = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0).clamp(40, 90) as i32;
+        let pad = self.px(10.0);
+        let head = self.fonts.small.height + self.px(12.0);
+        let w = (cols * cw + 2 * pad).min(self.canvas.width - self.sidebar_w() - self.px(24.0));
+        let h = head + keep.max(1) as i32 * ch + pad;
+        let x = self.sidebar_w() + self.px(8.0);
+        let y = row.y.min(self.canvas.height - h - self.px(8.0)).max(self.px(8.0));
+        let r = Rect { x, y, w, h };
+        let s = self.px(16.0);
+        self.float_save(Rect { x: r.x - s, y: r.y - s, w: r.w + 2 * s, h: r.h + 2 * s });
+        let c = self.cur_theme.chrome();
+        self.canvas.panel(r, self.px(8.0), theme.bg, c.edge);
+        // The slim line: its mark, project › name, then what runs and how long.
+        let small = self.fonts.small.height;
+        let ty = r.y + (head - small) / 2;
+        let mut hx = r.x + pad;
+        let dim = crate::canvas::mix(theme.bg, theme.fg, 140);
+        if let Some(b) = &badge {
+            let ih = self.px(12.0);
+            self.canvas.icon_in(b.icon, Rect { x: hx, y: r.y + (head - ih) / 2, w: ih, h: ih }, ih, b.color);
+            hx += ih + self.px(6.0);
+            hx = self.canvas.text(&mut self.fonts.small, &b.name, hx as f32, ty, theme.fg, r) + self.px(5.0);
+        }
+        // Its own name after its project's, unless it is only that.
+        let rest = badge.as_ref().map_or(label.clone(), |b| super::projects::without_project(&label, &b.name).to_string());
+        if badge.as_ref().is_none_or(|b| rest != b.name) {
+            if badge.is_some() {
+                hx = self.canvas.text(&mut self.fonts.small, "›", hx as f32, ty, dim, r) + self.px(5.0);
+            }
+            hx = self.canvas.text_fit(&mut self.fonts.small, &rest, hx, ty, (r.x + r.w - pad - hx).max(0), theme.fg, r);
+        }
+        hx += self.px(10.0);
+        if let Some((took, cmd)) = running {
+            let secs = took.as_secs();
+            let t = if secs >= 3600 { format!("{}h {}m", secs / 3600, secs / 60 % 60) } else if secs >= 60 { format!("{}m {}s", secs / 60, secs % 60) } else { format!("{secs}s") };
+            self.canvas.text_fit(&mut self.fonts.small, &format!("{cmd} · {t}"), hx, ty, (r.x + r.w - pad - hx).max(0), dim, r);
+        }
+        self.canvas.fill(Rect { x: r.x + 1, y: r.y + head - 1, w: r.w - 2, h: 1 }, crate::canvas::mix(theme.bg, theme.fg, 30));
+        // Its lines, in its font, in its own color.
+        let body = Rect { x: r.x + pad, y: r.y + head, w: r.w - 2 * pad, h: r.h - head - pad / 2 };
+        for (i, line) in lines.iter().enumerate() {
+            let top = body.y + i as i32 * ch;
+            for (col, chr) in line.chars().enumerate() {
+                if chr == ' ' || col as i32 * cw >= body.w {
+                    continue;
+                }
+                let g = self.fonts.glyph(chr, 0);
+                self.canvas.glyph(&g, body.x + col as i32 * cw, top, theme.fg, body);
+            }
+        }
+        self.damage.push(Rect { x: r.x - s, y: r.y - s, w: r.w + 2 * s, h: r.h + 2 * s });
+    }
+
     /// What the sidebar shows that changes on its own (whether each
     /// pane's last command failed, its caption, whether it runs one), as one
     /// number: drawn again when it changes, and only then.
