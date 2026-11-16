@@ -48,9 +48,9 @@ impl App {
             return None;
         }
         let gap = self.px(3.0);
-        let h = (p.rows as i32 * self.fonts.cell_h).min(p.rect.y + p.rect.h - p.content.y).max(1);
+        let h = p.view.h.min(p.rect.y + p.rect.h - p.view.y).max(1);
         let reach = self.scroll_reach();
-        let track = Rect { x: p.rect.x + p.rect.w - reach, y: p.content.y + gap, w: reach, h: (h - 2 * gap).max(1) };
+        let track = Rect { x: p.rect.x + p.rect.w - reach, y: p.view.y + gap, w: reach, h: (h - 2 * gap).max(1) };
         let thumb_h = ((track.h as f64 * len as f64 / total as f64).round() as i32).max(self.px(24.0)).min(track.h);
         let span = total - len;
         let y = track.y + ((track.h - thumb_h) as f64 * offset.min(span) as f64 / span as f64).round() as i32;

@@ -228,6 +228,8 @@ struct Pane {
     /// into last.
     sizes: HashMap<u64, (u16, u16, (u32, u32))>,
     size: (u16, u16, (u32, u32)),
+    /// The window typed into last, whose size it keeps (see size_for).
+    owner: Option<u64>,
     /// Its number, the same in every window (ToClient::Numbers): the
     /// lowest free when it started, unless renumbered.
     number: u32,
@@ -259,13 +261,21 @@ impl Pane {
 
     /// The size viewer `c` gives it, made its own if it is not already.
     /// Whether that changed it: every window showing it is then told, so
-    /// each draws it at the one size its program writes for.
-    /// A window on another machine (in `afar`) gives it no size while a
-    /// window on this one does: what is done there (its font made larger,
-    /// its panes split) does not reshape a terminal here under its own
-    /// window. Alone, it does.
-    fn size_for(&mut self, c: u64, afar: &[u64]) -> bool {
-        if afar.contains(&c) && self.sizes.keys().any(|v| *v != c && !afar.contains(v)) {
+    /// each draws it at the one size its program writes for, and each
+    /// fills its own pane with it all the same (rows from its scrollback
+    /// over it when the pane is taller, the rows by its cursor when shorter).
+    /// The window typed into last (`typed`) gives it its size, on this
+    /// machine or another, and keeps giving it as it is resized. Until one
+    /// is, a window here gives it rather than one on another machine (in
+    /// `afar`): what is done there does not reshape a terminal here under
+    /// its own window unless it is typed into there.
+    fn size_for(&mut self, c: u64, afar: &[u64], typed: bool) -> bool {
+        if typed {
+            self.owner = Some(c);
+        }
+        let owner = self.owner.filter(|o| self.sizes.contains_key(o));
+        let others_here = || self.sizes.keys().any(|v| *v != c && !afar.contains(v));
+        if owner.is_some_and(|o| o != c) || (owner.is_none() && afar.contains(&c) && others_here()) {
             return false;
         }
         let Some(s) = self.sizes.get(&c).copied().filter(|s| *s != self.size) else { return false };
@@ -281,13 +291,16 @@ impl Pane {
     fn drop_viewer(&mut self, c: u64, afar: &[u64]) -> bool {
         self.viewers.retain(|v| *v != c);
         self.sizes.remove(&c);
+        if self.owner == Some(c) {
+            self.owner = None;
+        }
         if self.sizes.values().any(|s| *s == self.size) {
             return false;
         }
         // A window here first, then one from afar.
         let here = self.viewers.iter().rev().find(|v| !afar.contains(v) && self.sizes.contains_key(v)).copied();
         match here.or(self.viewers.last().copied()) {
-            Some(other) => self.size_for(other, afar),
+            Some(other) => self.size_for(other, afar, false),
             None => false,
         }
     }
@@ -879,7 +892,7 @@ impl Server {
                 let keys = start_io(tx, pane, &pty);
                 let mut log = Log::default();
                 log.size(cols, rows);
-                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, proc: None, viewers: vec![c], windows: vec![self.names.get(&c).copied().unwrap_or(0)], sizes: HashMap::from([(c, (cols, rows, px))]), size: (cols, rows, px), number, title: String::new() });
+                self.panes.insert(pane, Pane { pty, keys, cmd, log, raw: None, tail: Vec::new(), at_prompt: false, queue: Queue::default(), tee: None, proc: None, viewers: vec![c], windows: vec![self.names.get(&c).copied().unwrap_or(0)], sizes: HashMap::from([(c, (cols, rows, px))]), size: (cols, rows, px), owner: Some(c), number, title: String::new() });
                 pid
             }
             Err(e) => {
@@ -1050,7 +1063,7 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 // Typed into from a window: the size that window gives it, first.
                 ToServer::Input { pane, bytes } => {
                     if let Some(p) = s.panes.get_mut(&pane) {
-                        let resized = p.size_for(c, &s.afar);
+                        let resized = p.size_for(c, &s.afar, true);
                         let _ = p.keys.send(bytes);
                         if resized {
                             let m = p.size_msg(pane);
@@ -1061,12 +1074,13 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 ToServer::Resize { pane, cols, rows, px } => {
                     if let Some(p) = s.panes.get_mut(&pane) {
                         p.sizes.insert(c, (cols, rows, px));
-                        if p.size_for(c, &s.afar) {
+                        if p.size_for(c, &s.afar, false) {
                             let m = p.size_msg(pane);
                             s.tell(pane, m);
                         } else if p.size != (cols, rows, px) {
-                            // Not its to give (a window here gives it): told
-                            // the size it is, to draw it at that.
+                            // Not its to give (another window was typed into
+                            // last, or a window here gives it): told the size
+                            // it is, to draw it at that.
                             let m = p.size_msg(pane);
                             s.send(c, m);
                         }
@@ -1474,7 +1488,7 @@ fn resume(file: &Path, tx: &Sender<Ev>) -> io::Result<(Server, i32)> {
         // Its /tee written on to the end of its file.
         let tee = tee.and_then(|(state, told)| std::fs::OpenOptions::new().create(true).append(true).open(&state.path).ok().map(|file| Tee { state, file, told }));
         let keys = start_io(tx, id, &pty);
-        panes.insert(id, Pane { pty, keys, cmd, log, raw: None, tail, at_prompt, queue, tee, proc: None, viewers: Vec::new(), windows, sizes: HashMap::new(), size, number: 0, title: String::new() });
+        panes.insert(id, Pane { pty, keys, cmd, log, raw: None, tail, at_prompt, queue, tee, proc: None, viewers: Vec::new(), windows, sizes: HashMap::new(), size, owner: None, number: 0, title: String::new() });
     }
     // The shared workspaces, from a jot that shares them.
     let shared = (0..i.u32().unwrap_or(0)).map_while(|_| i.str().ok()).filter_map(|t| toml::from_str::<crate::persist::WorkspaceSpec>(&t).ok()).collect();

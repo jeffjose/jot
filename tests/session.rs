@@ -702,3 +702,48 @@ fn a_window_from_afar_alone_sizes_the_terminal() {
     afar.resizes(t, 60, 14);
     assert_eq!(afar.told_size(t, Duration::from_secs(2)), Some((60, 14)));
 }
+
+const INPUT: u8 = 2;
+
+impl Window {
+    /// Typed into its pane: `text`.
+    fn types(&mut self, pane: u64, text: &str) {
+        let mut o = vec![INPUT];
+        o.extend(pane.to_le_bytes());
+        o.extend((text.len() as u32).to_le_bytes());
+        o.extend(text.as_bytes());
+        send(&mut self.s, &o);
+    }
+}
+
+/// Asked for: each window shows a terminal filling its own pane, and the
+/// one typed into gives it its size, on this machine or another. Typed
+/// into from afar, it takes the size from afar, and a window here resized
+/// is told that size (to fill its pane with it) until typed into here.
+#[test]
+fn the_window_typed_into_last_gives_the_size_from_afar_too() {
+    let s = Session::start();
+    let mut here = s.window(1, true);
+    let t = here.spawn();
+    here.says(&ws("w1", 10, 0, &one(t)));
+    here.settles(A_WHILE);
+    here.resizes(t, 100, 30);
+    assert_eq!(here.told_size(t, Duration::from_secs(2)), Some((100, 30)));
+    let mut afar = Window::hello(&s.socket(), 2, false, CAN_SHARE | FROM_AFAR);
+    afar.settles(A_WHILE);
+    afar.resizes(t, 60, 14);
+    assert_eq!(afar.told_size(t, Duration::from_secs(2)), Some((100, 30)), "not typed into there yet");
+    afar.types(t, " ");
+    assert_eq!(here.told_size(t, Duration::from_secs(2)), Some((60, 14)), "typed into from afar: its size");
+    assert_eq!(afar.told_size(t, Duration::from_secs(2)), Some((60, 14)), "and so told afar too");
+    // Resized here, not typed into: told the size from afar.
+    here.resizes(t, 90, 28);
+    assert_eq!(here.told_size(t, Duration::from_secs(2)), Some((60, 14)));
+    // Resized afar, still the one typed into: its new size.
+    afar.resizes(t, 70, 20);
+    assert_eq!(here.told_size(t, Duration::from_secs(2)), Some((70, 20)));
+    assert_eq!(afar.told_size(t, Duration::from_secs(2)), Some((70, 20)));
+    // Typed into here: its size back.
+    here.types(t, " ");
+    assert_eq!(afar.told_size(t, Duration::from_secs(2)), Some((90, 28)));
+}

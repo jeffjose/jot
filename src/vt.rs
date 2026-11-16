@@ -913,3 +913,65 @@ impl Terminal {
         s == GHOSTTY_TERMINAL_SCREEN_ALTERNATE
     }
 }
+
+impl Terminal {
+    /// Row `y` of the scrollback and screen together (as scrollbar counts
+    /// them), its cells filled into `row` as rows gives them: for a pane
+    /// taller than its terminal, which shows rows from over its top there.
+    pub fn screen_row(&self, y: u64, cols: u16, row: &mut Vec<Cell>) {
+        row.clear();
+        unsafe {
+            let mut palette = [GhosttyColorRgb { r: 0, g: 0, b: 0 }; 256];
+            ghostty_terminal_get(self.raw, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE, palette.as_mut_ptr() as *mut c_void);
+            let color = |c: &GhosttyStyleColor| match c.tag as u32 {
+                GHOSTTY_STYLE_COLOR_PALETTE => Some(rgb(palette[c.value.palette as usize])),
+                GHOSTTY_STYLE_COLOR_RGB => Some(rgb(c.value.rgb)),
+                _ => None,
+            };
+            let mut codepoints = [0u32; 16];
+            for x in 0..cols {
+                let point = GhosttyPoint { tag: GHOSTTY_POINT_TAG_SCREEN, value: GhosttyPointValue { coordinate: GhosttyPointCoordinate { x, y: y as u32 } } };
+                let mut r: GhosttyGridRef = std::mem::zeroed();
+                if ghostty_terminal_grid_ref(self.raw, point, &mut r) != GHOSTTY_SUCCESS {
+                    break;
+                }
+                let mut cell = Cell::default();
+                let mut n = 0usize;
+                if ghostty_grid_ref_graphemes(&r, codepoints.as_mut_ptr(), codepoints.len(), &mut n) == GHOSTTY_SUCCESS && n > 0 {
+                    cell.ch = char::from_u32(codepoints[0]).unwrap_or('\0');
+                    let rest = &codepoints[1..n.min(codepoints.len())];
+                    cell.vs = if rest.contains(&0xFE0F) { EMOJI } else if rest.contains(&0xFE0E) { TEXT } else { 0 };
+                }
+                let mut style: GhosttyStyle = std::mem::zeroed();
+                if ghostty_grid_ref_style(&r, &mut style) == GHOSTTY_SUCCESS {
+                    cell.flags = style.flags;
+                    cell.fg = color(&style.fg_color);
+                    cell.bg = color(&style.bg_color);
+                    if self.bold_bright && style.flags & BOLD != 0 && style.fg_color.tag as u32 == GHOSTTY_STYLE_COLOR_PALETTE {
+                        let i = style.fg_color.value.palette as usize;
+                        if i < 8 {
+                            cell.fg = Some(rgb(palette[i + 8]));
+                        }
+                    }
+                }
+                // A cell with only a ground (erased in a color) holds it in
+                // the cell, not its style.
+                let mut raw: GhosttyCell = 0;
+                if ghostty_grid_ref_cell(&r, &mut raw) == GHOSTTY_SUCCESS {
+                    let mut tag: GhosttyCellContentTag = 0;
+                    ghostty_cell_get(raw, GHOSTTY_CELL_DATA_CONTENT_TAG, &mut tag as *mut _ as *mut c_void);
+                    if tag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE {
+                        let mut i: GhosttyColorPaletteIndex = 0;
+                        ghostty_cell_get(raw, GHOSTTY_CELL_DATA_COLOR_PALETTE, &mut i as *mut _ as *mut c_void);
+                        cell.bg = Some(rgb(palette[i as usize]));
+                    } else if tag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB {
+                        let mut c = GhosttyColorRgb { r: 0, g: 0, b: 0 };
+                        ghostty_cell_get(raw, GHOSTTY_CELL_DATA_COLOR_RGB, &mut c as *mut _ as *mut c_void);
+                        cell.bg = Some(rgb(c));
+                    }
+                }
+                row.push(cell);
+            }
+        }
+    }
+}

@@ -84,8 +84,14 @@ pub struct Pane {
     pty: Pty,
     /// The command it was started with, "" for the shell: what is saved.
     cmd: String,
-    /// Where its text goes, inside its rectangle.
+    /// Where its text goes: its grid's top left cell at its top left. As
+    /// `view` when the terminal is the pane's size; when it is another
+    /// window's, moved down under rows from its scrollback (the pane taller)
+    /// or up and left past `view` so that its cursor and last rows are in it
+    /// (the pane smaller). See draw_pane.
     content: Rect,
+    /// The room inside its rectangle its text has.
+    view: Rect,
     rect: Rect,
     cols: u16,
     rows: u16,
@@ -900,7 +906,7 @@ impl App {
         let caption = folder_name(&pty.cwd().unwrap_or(start.cwd));
         self.panes.insert(
             id,
-            Pane { term, pty, cmd, content: Rect::default(), rect: Rect::default(), cols, rows, want: (cols, rows), full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), resized: Instant::now(), untold: None, lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0, program_title: None },
+            Pane { term, pty, cmd, content: Rect::default(), view: Rect::default(), rect: Rect::default(), cols, rows, want: (cols, rows), full: true, cursor_was: None, theme: self.theme, caption, activity: false, started: Instant::now(), resized: Instant::now(), untold: None, lines: Vec::new(), shell: commands::Shell::default(), has_images: false, print: None, tee: None, filter: None, last_line: String::new(), pins: Vec::new(), pins_scroll: 0, program_title: None },
         );
         // A tee and a queue the session kept going, shown again.
         if let (Some((tee, queue)), Some(p)) = (kept, self.panes.get_mut(&id)) {
@@ -1243,6 +1249,7 @@ impl App {
             if !on_screen.contains(&id) {
                 p.rect = rect;
                 p.content = content;
+                p.view = content;
                 continue;
             }
             // Only a change of rows or columns is told to the program: a
@@ -1272,6 +1279,7 @@ impl App {
             }
             p.rect = rect;
             p.content = content;
+            p.view = content;
             p.full = true;
         }
         self.full = true;
@@ -2514,8 +2522,12 @@ impl App {
                 Output::Size(id, cols, rows) => {
                     let (cw, ch) = (self.fonts.cell_w as u32, self.fonts.cell_h as u32);
                     // Answering for it while it is at this window's size.
-                    if let Some(p) = self.views(id).first().and_then(|v| self.panes.get(v)) {
-                        p.pty.speaks.set((cols, rows) == p.want);
+                    // Any of its views here: one in a workspace not shown
+                    // keeps an old size.
+                    let views = self.views(id);
+                    let ours = views.iter().filter_map(|v| self.panes.get(v)).any(|p| (cols, rows) == p.want);
+                    if let Some(p) = views.first().and_then(|v| self.panes.get(v)) {
+                        p.pty.speaks.set(ours);
                     }
                     for id in self.views(id) {
                         if let Some(p) = self.panes.get_mut(&id).filter(|p| (p.cols, p.rows) != (cols, rows)) {
@@ -2903,6 +2915,42 @@ impl App {
         }
     }
 
+    /// Where a pane's grid goes (its `content`), and how many rows from
+    /// its scrollback fill the pane over it. Its terminal is one size, the
+    /// one its program writes for, though windows on this machine and
+    /// others show it, each its own size (see mux server's size_for); each
+    /// fills its pane with it all the same, as if its own:
+    /// - taller: the rows over its top, from the scrollback, above it (not
+    ///   for a full-screen program, whose screen has none);
+    /// - shorter: the rows down to its last with text in it or its cursor,
+    ///   whichever is lower, its cursor kept in view;
+    /// - narrower: moved left only as far as its cursor needs, to be seen.
+    fn place(p: &Pane, cursor: &vt::Cursor, cw: i32, ch: i32) -> (Rect, i32) {
+        let view = p.view;
+        let (vcols, vrows) = ((view.w / cw.max(1)).max(1), (view.h / ch.max(1)).max(1));
+        let (cols, rows) = (p.cols as i32, p.rows as i32);
+        let (mut sx, mut sy, mut above) = (0, 0, 0);
+        if vrows > rows {
+            if !p.term.alt_screen() {
+                let (_, offset, _) = p.term.scrollbar();
+                above = (vrows - rows).min(offset.min(i32::MAX as u64) as i32);
+                sy = above;
+            }
+        } else if vrows < rows {
+            let last = p.lines.iter().rposition(|l| l.iter().any(|c| *c != ' ')).map_or(0, |i| i as i32 + 1);
+            let end = if cursor.visible { last.max(cursor.y as i32 + 1) } else { last };
+            let mut start = (end - vrows).clamp(0, rows - vrows);
+            if cursor.visible && (cursor.y as i32) < start {
+                start = cursor.y as i32;
+            }
+            sy = -start;
+        }
+        if vcols < cols && cursor.visible && cursor.x as i32 >= vcols {
+            sx = -(cursor.x as i32 - vcols + 1).min(cols - vcols);
+        }
+        (Rect { x: view.x + sx * cw, y: view.y + sy * ch, w: view.w - sx * cw, h: view.h - sy * ch }, above)
+    }
+
     fn draw_pane(&mut self, id: PaneId, n: usize, full: bool, focused: bool) {
         let (cw, ch) = (self.fonts.cell_w, self.fonts.cell_h);
         let cap_h = self.caption_h();
@@ -2913,19 +2961,26 @@ impl App {
         let (link_sp, link_color) = (self.link_spans(id), self.cur_accent);
         let copy_cur = self.copy_cursor(id);
         let Some(p) = self.panes.get_mut(&id) else { return };
-        let full = full || p.full;
+        let mut full = full || p.full;
         p.full = false;
         let dirty = p.term.update();
         // The cursor moved with nothing written, as a shell moves it back
         // a word with backspaces: its old row and its new are drawn again.
         let cursor = p.term.cursor();
         let cursor_now = cursor.visible.then_some((cursor.x, cursor.y));
+        // Where its grid goes in the pane: moved when its terminal is
+        // another window's size and that changed what of it is in view.
+        let (content, above) = Self::place(p, &cursor, cw, ch);
+        if content != p.content {
+            p.content = content;
+            full = true;
+        }
         if dirty == 0 && !full && cursor_now == p.cursor_was {
             return;
         }
         let (dfg, dbg) = p.term.colors();
         let rect = p.rect;
-        let content = p.content;
+        let view = p.view;
         if full {
             self.canvas.fill(Rect { x: rect.x, y: rect.y + cap_h, w: rect.w, h: rect.h - cap_h }, dbg);
         }
@@ -2947,20 +3002,21 @@ impl App {
         if lines.len() != p.rows as usize {
             lines.resize(p.rows as usize, Vec::new());
         }
-        p.term.rows(full || dirty == 2 || !placements.is_empty(), &extra, &mut row, |y, cells: &[Cell]| {
-            // The row's characters, one a column, for finding links in.
-            if let Some(l) = lines.get_mut(y as usize) {
-                l.clear();
-                l.extend(cells.iter().take(cols_n).map(|c| if c.ch == '\0' { ' ' } else { c.ch }));
-            }
-            let top = content.y + y as i32 * ch;
-            if top + ch > content.y + content.h + ch || top + ch > rect.y + rect.h {
+        // A row drawn with its top at `top`: row `y` of the grid, or one
+        // from the scrollback over it (y NOT_GRID: no cursor, link or match
+        // is on it).
+        const NOT_GRID: u16 = u16::MAX;
+        let mut paint = |top: i32, y: u16, cells: &[Cell]| {
+            if top < view.y || top + ch > view.y + view.h.max(ch) || top + ch > rect.y + rect.h {
                 return;
             }
             // The row across the whole pane, so its edges match.
             let line = Rect { x: rect.x, y: top, w: rect.w, h: ch };
             canvas.fill(line, dbg);
-            let clip = Rect { x: rect.x, y: top, w: rect.w, h: ch };
+            // Columns moved off its left (the pane narrower than its
+            // terminal) are not drawn over the room beside the text.
+            let left_edge = if content.x < view.x { view.x } else { rect.x };
+            let clip = Rect { x: left_edge, y: top, w: rect.x + rect.w - left_edge, h: ch };
             let colors = |c: &Cell, x: u16, y: u16| {
                 let (mut fg, mut bg) = (c.fg.unwrap_or(dfg), c.bg.unwrap_or(dbg));
                 if c.flags & vt::INVERSE != 0 {
@@ -2977,7 +3033,7 @@ impl App {
             };
             for (x, c) in cells.iter().enumerate() {
                 let (_, bg) = colors(c, x as u16, y);
-                if bg != dbg && content.x + (x as i32 + 1) * cw <= rect.x + rect.w {
+                if bg != dbg && content.x + x as i32 * cw >= left_edge && content.x + (x as i32 + 1) * cw <= rect.x + rect.w {
                     canvas.fill(Rect { x: content.x + x as i32 * cw, y: top, w: cw, h: ch }, bg);
                 }
             }
@@ -3014,6 +3070,9 @@ impl App {
             }
             for (x, c) in cells.iter().enumerate() {
                 let left = content.x + x as i32 * cw;
+                if left < left_edge {
+                    continue;
+                }
                 let (mut fg, bg) = colors(c, x as u16, y);
                 let on_cursor = cursor.visible && focused && cursor.y == y && cursor.x as usize == x && cursor.style == sys::GHOSTTY_CURSOR_STYLE_BLOCK;
                 if on_cursor {
@@ -3073,7 +3132,32 @@ impl App {
                 }
             }
             damage.push(line);
+        };
+        p.term.rows(full || dirty == 2 || !placements.is_empty(), &extra, &mut row, |y, cells: &[Cell]| {
+            // The row's characters, one a column, for finding links in.
+            if let Some(l) = lines.get_mut(y as usize) {
+                l.clear();
+                l.extend(cells.iter().take(cols_n).map(|c| if c.ch == '\0' { ' ' } else { c.ch }));
+            }
+            paint(content.y + y as i32 * ch, y, cells);
         });
+        // The pane taller than its terminal (another window's size): the
+        // rows from over its top, from the scrollback, fill it above.
+        if above > 0 && (full || dirty != 0) {
+            let (_, offset, _) = p.term.scrollbar();
+            let mut hist = Vec::new();
+            for i in 0..above {
+                p.term.screen_row(offset - (above - i) as u64, p.cols, &mut hist);
+                paint(view.y + i * ch, NOT_GRID, &hist);
+            }
+        }
+        // What of it is in view follows its last rows, as just drawn.
+        if Self::place(p, &cursor, cw, ch).0 != content {
+            p.full = true;
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+        }
         // Pictures, over the text, each scaled into the cells it covers.
         for pl in &placements {
             let key = (id, pl.image);
@@ -3086,7 +3170,7 @@ impl App {
             let Some((_, pic)) = self.pictures.get(&key).cloned() else { continue };
             let dest = Rect { x: content.x + pl.col * cw + pl.offset.0 as i32, y: content.y + pl.row * ch + pl.offset.1 as i32, w: pl.size.0 as i32, h: pl.size.1 as i32 };
             let src = if pl.source.2 == 0 { (0, 0, pic.width, pic.height) } else { pl.source };
-            self.canvas.picture(&pic.pixels, pic.width, src, dest, content);
+            self.canvas.picture(&pic.pixels, pic.width, src, dest, view);
             self.damage.push(dest);
         }
         // The caption: the name given to its terminal, if one was, over the

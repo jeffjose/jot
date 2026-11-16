@@ -223,7 +223,7 @@ impl App {
             return;
         }
         let (_, offset, len) = p.term.scrollbar();
-        let (content, rect, bg) = (p.content, p.rect, self.cur_theme.bg);
+        let (content, view, rect, bg) = (p.content, p.view, p.rect, self.cur_theme.bg);
         let cursor = Self::cursor_row(p).1;
         let mut bars: Vec<(u64, u64, u32, Option<String>)> = p
             .shell
@@ -247,13 +247,20 @@ impl App {
         for (row, end, color, label) in bars {
             let top = content.y + (row.max(offset) - offset) as i32 * ch;
             let bottom = content.y + ((end.min(offset + len - 1) - offset) as i32 + 1) * ch;
+            // Only what of it is in view (its grid moved past the pane's top
+            // when the pane is shorter than its terminal).
+            let row_top = top;
+            let (top, bottom) = (top.max(view.y), bottom.min(view.y + view.h));
+            if bottom <= top {
+                continue;
+            }
             let bar = Rect { x: rect.x + px(4.0), y: top + 1, w: px(3.0).max(2), h: (bottom - top - 2).max(1) };
             self.canvas.round_fill(bar, px(2.0), color, 255);
             self.damage.push(bar);
             // The label on the command's own row, at the right, on a chip.
-            if let (Some(text), true) = (label, row >= offset) {
+            if let (Some(text), true) = (label, row >= offset && row_top >= view.y) {
                 let w = ui.width(&text) + px(10.0);
-                let r = Rect { x: content.x + content.w - w, y: top + (ch - ui.height - px(4.0)) / 2, w, h: ui.height + px(4.0) };
+                let r = Rect { x: content.x + content.w - w, y: row_top + (ch - ui.height - px(4.0)) / 2, w, h: ui.height + px(4.0) };
                 self.canvas.round_fill(r, px(4.0), mix(bg, color, 60), 255);
                 self.canvas.text(ui, &text, (r.x + px(5.0)) as f32, r.y + px(2.0), mix(color, 0xFFFFFF, 90), r);
                 self.damage.push(r);

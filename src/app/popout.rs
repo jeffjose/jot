@@ -91,6 +91,7 @@ impl App {
             }
             p.rect = rect;
             p.content = content;
+            p.view = content;
             p.full = true;
             po.full = true;
             po.window.request_redraw();
