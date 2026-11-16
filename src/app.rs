@@ -3233,56 +3233,88 @@ impl App {
         if n > 0 {
             x = self.canvas.text(&mut self.fonts.ui, &format!("{n}"), x as f32, ty, num, bar) + self.px(8.0);
         }
-        // On another machine: its name outlined in amber (R1 on the "jot:
-        // workspace and project color" canvas), Solar's server in amber
-        // before it and the name in the caption's own ink, as readable as
-        // the rest; while it is being reached again, said.
+        // Its machine, when another, and its project: one badge (L1 on the
+        // "jot: pane header badge" canvas). Slim: 10px short of the
+        // caption, 5px of air above and below; the outer corners alone
+        // rounded, the parts butted. Each a mark on a deep shade and a name,
+        // dark, on the color itself: the machine in amber, Solar's server
+        // its mark, faded while it is being reached again, said; then the
+        // project in its color, a little lighter under the pointer, where a
+        // click opens the projects. A pane here has the project alone.
         let m = crate::mux::split_id(id).0;
-        if let Some(mach) = self.machines.get(m).filter(|_| m > 0) {
+        let host = self.machines.get(m).filter(|_| m > 0).map(|mach| {
             let host = mach.host.clone().unwrap_or_default();
-            let label = if mach.client.connected() { host } else { format!("{host} · reconnecting") };
-            let amber = 0xF0B43C;
-            let (ih, p5, p8) = (self.px(13.0), self.px(5.0), self.px(8.0));
-            let w = p5 + ih + p5 + self.fonts.ui.width(&label) + p8;
-            let pill = Rect { x, y: bar.y + (h - b) / 2, w: w.min((right - x) / 2).max(0), h: b };
-            self.canvas.ring(pill, self.px(5.0), 1, mix(bg, amber, 153));
-            let server = crate::canvas::icons::PROJECT[2];
-            self.canvas.icon_in(server, Rect { x: pill.x + p5, y: pill.y + (b - ih) / 2, w: ih, h: ih }, ih, amber);
-            let tx = pill.x + p5 + ih + p5;
-            self.canvas.text_fit(&mut self.fonts.ui, &label, tx, ty, (pill.x + pill.w - p8 - tx).max(0), fg, pill);
-            x = pill.x + pill.w + self.px(6.0);
-        }
-        // Its project's badge, as tall as the caption allows, then the
-        // pane's own name, without the project's in front of it.
+            if mach.client.connected() { (host, true) } else { (format!("{host} · reconnecting"), false) }
+        });
+        let project = self.badge_of(id);
         let mut caption = caption.to_string();
-        if let Some((pr, own)) = self.badge_of(id) {
-            let differs = own;
-            // Two shades of its color (B2 on the "jot: workspace and project
-            // color" canvas): its mark on a deep shade, then its name, dark,
-            // on the color itself. Under the pointer a little lighter: a
-            // click opens the projects.
-            let (bh, ih, r5) = (b, self.px(14.0), self.px(5.0));
-            let blk = ih + self.px(8.0);
-            let name_w = self.fonts.ui.width(&pr.name);
-            let w = (blk + self.px(7.0) + name_w + self.px(9.0)).min((right - x) / 2).max(0);
-            let badge = Rect { x, y: bar.y + (h - bh) / 2, w, h: bh };
+        if host.is_some() || project.is_some() {
+            enum Part {
+                Mark(char),
+                Name(String),
+            }
+            let (bh, r, ih, blk) = (h - self.px(10.0), self.px(4.0), self.px(12.0), self.px(18.0));
+            let (p6, p7) = (self.px(6.0), self.px(7.0));
+            // Each part: its width, fill, mark or name, ink; and whether it is
+            // the project's.
+            let mut parts: Vec<(i32, u32, Part, u32, bool)> = Vec::new();
+            if let Some((name, connected)) = &host {
+                let amber = 0xF0B43C;
+                parts.push((blk, mix(amber, black, 97), Part::Mark(crate::canvas::icons::PROJECT[2]), mix(amber, white, 140), false));
+                let fill = if *connected { amber } else { mix(amber, bg, 110) };
+                parts.push((p6 + self.fonts.ui.width(name) + p7, fill, Part::Name(name.clone()), mix(amber, black, 215), false));
+            }
             let lit = self.multi_lit == Some((id, watch::Tag::Project));
-            let solid = if lit { mix(pr.color, white, 36) } else { pr.color };
-            let deep = mix(pr.color, black, 97);
-            self.canvas.round_fill(badge, r5, solid, 255);
-            let block = Rect { x: badge.x, y: badge.y, w: blk.min(badge.w), h: bh };
-            self.canvas.round_fill(block, r5, deep, 255);
-            self.canvas.fill(Rect { x: block.x + block.w - r5, y: block.y, w: r5, h: bh }, deep);
-            self.multi_tags.push((badge, id, watch::Tag::Project));
-            self.canvas.icon_in(pr.icon, Rect { x: block.x + (blk - ih) / 2, y: badge.y + (bh - ih) / 2, w: ih, h: ih }, ih, mix(pr.color, white, 140));
-            let nx = block.x + blk + self.px(7.0);
-            self.canvas.text_fit(&mut self.fonts.ui, &pr.name, nx, ty, (badge.x + badge.w - nx).max(0), mix(pr.color, black, 215), badge);
-            x = badge.x + badge.w + self.px(6.0);
+            if let Some((pr, _)) = &project {
+                parts.push((blk, mix(pr.color, black, 97), Part::Mark(pr.icon), mix(pr.color, white, 140), true));
+                let solid = if lit { mix(pr.color, white, 36) } else { pr.color };
+                parts.push((p6 + self.fonts.ui.width(&pr.name) + p7, solid, Part::Name(pr.name.clone()), mix(pr.color, black, 215), true));
+            }
+            let total: i32 = parts.iter().map(|p| p.0).sum();
+            let badge = Rect { x, y: bar.y + (h - bh) / 2, w: total.min((right - x) / 2).max(0), h: bh };
+            let end = badge.x + badge.w;
+            // The last part's fill under it all, rounded; the others over it,
+            // the first rounded at its left only.
+            if let Some(last) = parts.last() {
+                self.canvas.round_fill(badge, r, last.1, 255);
+            }
+            let (count, mut px_, mut theirs) = (parts.len(), badge.x, None::<i32>);
+            for (i, (w, fill, part, ink, its)) in parts.into_iter().enumerate() {
+                let seg = Rect { x: px_, y: badge.y, w: w.min(end - px_).max(0), h: bh };
+                if seg.w == 0 {
+                    break;
+                }
+                if i + 1 < count {
+                    if i == 0 && seg.w > r {
+                        self.canvas.round_fill(seg, r, fill, 255);
+                        self.canvas.fill(Rect { x: seg.x + seg.w - r, w: r, ..seg }, fill);
+                    } else {
+                        self.canvas.fill(seg, fill);
+                    }
+                }
+                match part {
+                    Part::Mark(glyph) => self.canvas.icon_in(glyph, Rect { x: seg.x + (blk - ih) / 2, y: badge.y + (bh - ih) / 2, w: ih, h: ih }, ih, ink),
+                    Part::Name(name) => {
+                        self.canvas.text_fit(&mut self.fonts.ui, &name, seg.x + p6, ty, (seg.w - p6 - p7).max(0), ink, seg);
+                    }
+                }
+                if its && theirs.is_none() {
+                    theirs = Some(seg.x);
+                }
+                px_ += seg.w;
+            }
+            if let Some(from) = theirs {
+                self.multi_tags.push((Rect { x: from, w: end - from, ..badge }, id, watch::Tag::Project));
+            }
+            x = end + self.px(6.0);
+        }
+        if let Some((pr, differs)) = project {
             // A pane with a look of its own (not its project's): a dot of
-            // its color after the badge, as Settings › Projects says.
+            // its color at the badge's end, as Settings › Projects says.
             if differs {
-                let d = self.px(5.0);
-                self.canvas.disc((badge.x + badge.w + self.px(1.0)) as f32 - d as f32 / 2.0, (badge.y + self.px(3.0)) as f32, d as f32 / 2.0 + 0.5, mix(pr.color, white, 150));
+                let (d, end) = (self.px(5.0), x - self.px(6.0));
+                let top = bar.y + (h - (h - self.px(10.0))) / 2;
+                self.canvas.disc((end + self.px(1.0)) as f32 - d as f32 / 2.0, (top + self.px(1.0)) as f32, d as f32 / 2.0 + 0.5, mix(pr.color, white, 150));
             }
             // A name that is only the project's says nothing more.
             let rest = projects::without_project(&caption, &pr.name).to_string();
