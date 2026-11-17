@@ -187,7 +187,9 @@ impl App {
                     match self.workspaces.iter().position(|w| w.name == name) {
                         Some(wi) => self.go_to(wi),
                         None => {
-                            self.add_workspace(&WorkspaceSpec { cwd: Some(dir.display().to_string()), ..Default::default() });
+                            // Named for its folder, as it is looked for above:
+                            // `jot open` again goes to it.
+                            self.add_workspace(&WorkspaceSpec { name: name.clone(), cwd: Some(dir.display().to_string()), ..Default::default() });
                             self.go_to(self.workspaces.len() - 1);
                         }
                     }
