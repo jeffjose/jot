@@ -57,7 +57,8 @@ pub enum ToServer {
     /// `caps`, added after that: what the window can do (CAN_SHARE).
     Hello { proto: u32, window: u64, again: bool, want: Vec<u64>, about: String, caps: u32 },
     /// A new pane; the session names it, in Spawned.
-    Spawn { cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32) },
+    /// `key`, after the rest: its name for good (see Spec::Pane), empty for a new one.
+    Spawn { cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32), key: String },
     Input { pane: u64, bytes: Vec<u8> },
     Resize { pane: u64, cols: u16, rows: u16, px: (u32, u32) },
     Close { pane: u64 },
@@ -311,7 +312,7 @@ impl ToServer {
                 }
                 o.str(about).u32(*caps)
             }
-            ToServer::Spawn { cmd, cwd, cols, rows, px } => o.u8(1).str(cmd).str(cwd).u16(*cols).u16(*rows).u32(px.0).u32(px.1),
+            ToServer::Spawn { cmd, cwd, cols, rows, px, key } => o.u8(1).str(cmd).str(cwd).u16(*cols).u16(*rows).u32(px.0).u32(px.1).str(key),
             ToServer::Input { pane, bytes } => o.u8(2).u64(*pane).bytes(bytes),
             ToServer::Resize { pane, cols, rows, px } => o.u8(3).u64(*pane).u16(*cols).u16(*rows).u32(px.0).u32(px.1),
             ToServer::Close { pane } => o.u8(4).u64(*pane),
@@ -354,7 +355,7 @@ impl ToServer {
                 let about = i.str().unwrap_or_default();
                 ToServer::Hello { proto, window, again, want, about, caps: i.u32().unwrap_or(0) }
             }
-            1 => ToServer::Spawn { cmd: i.str()?, cwd: i.str()?, cols: i.u16()?, rows: i.u16()?, px: (i.u32()?, i.u32()?) },
+            1 => ToServer::Spawn { cmd: i.str()?, cwd: i.str()?, cols: i.u16()?, rows: i.u16()?, px: (i.u32()?, i.u32()?), key: i.str().unwrap_or_default() },
             2 => ToServer::Input { pane: i.u64()?, bytes: i.bytes()? },
             3 => ToServer::Resize { pane: i.u64()?, cols: i.u16()?, rows: i.u16()?, px: (i.u32()?, i.u32()?) },
             4 => ToServer::Close { pane: i.u64()? },
@@ -777,9 +778,9 @@ impl Client {
 
     /// A pane started in the session: the name it gave it, and its
     /// shell's process id.
-    pub fn spawn(&self, cmd: &str, cwd: &std::path::Path, cols: u16, rows: u16, px: (u32, u32)) -> io::Result<(u64, i32)> {
+    pub fn spawn(&self, cmd: &str, cwd: &std::path::Path, cols: u16, rows: u16, px: (u32, u32), key: &str) -> io::Result<(u64, i32)> {
         let rx = self.spawned.lock().map_err(|_| io::Error::other("poisoned"))?;
-        self.send(ToServer::Spawn { cmd: cmd.into(), cwd: cwd.display().to_string(), cols, rows, px });
+        self.send(ToServer::Spawn { cmd: cmd.into(), cwd: cwd.display().to_string(), cols, rows, px, key: key.into() });
         match rx.recv_timeout(Duration::from_secs(5)) {
             Ok((pane, pid)) if pid > 0 => Ok((pane, pid)),
             Ok(_) => Err(io::Error::other("could not start a shell")),

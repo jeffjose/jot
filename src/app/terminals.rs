@@ -107,7 +107,7 @@ impl App {
         if !self.machines.get(k).is_some_and(|m| m.client.connected()) {
             return;
         }
-        let layout = persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(sid), host: None };
+        let layout = persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(sid), host: None, key: None };
         // Its row as it is now, to stay so until a pane shows it.
         if !self.term_seen.contains_key(&(k, sid)) {
             if let Some(t) = self.side_terminals().into_iter().find(|t| (t.k, t.sid) == (k, sid)) {
@@ -268,7 +268,7 @@ impl App {
         let at = self.ws().focus;
         let cwd = if k > 0 { PathBuf::from("~") } else { self.panes.get(&at).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home) };
         self.target = k;
-        let id = self.spawn(Start { cmd: String::new(), cwd, pane: None, host: None });
+        let id = self.spawn(Start { cmd: String::new(), cwd, pane: None, host: None, key: None });
         let ws = self.ws_mut();
         ws.zoom = None;
         ws.root.split_beside(at, id, Dir::Across, false);
@@ -504,7 +504,7 @@ impl App {
             _ => PathBuf::from("~"),
         };
         self.target = k;
-        let new = self.spawn(Start { cmd: String::new(), cwd, pane: None, host: None });
+        let new = self.spawn(Start { cmd: String::new(), cwd, pane: None, host: None, key: None });
         let wi = self.current;
         self.stand_in(wi, at, new, true);
         self.changed();

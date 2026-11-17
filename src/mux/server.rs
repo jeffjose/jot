@@ -722,7 +722,7 @@ impl Server {
             let Some(p) = self.panes.get(&id) else { continue };
             let proc = p.pty.proc();
             let label = if proc.busy && !proc.fg.is_empty() { proc.fg.clone() } else { crate::persist::shorten(std::path::Path::new(&proc.cwd)) };
-            let spec = Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(id), host: None };
+            let spec = Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(id), host: None, key: None };
             let ws = WorkspaceSpec { layout: Some(spec), ..Default::default() };
             workspaces.push(Listed { spec: toml::to_string(&ws).unwrap_or_default(), panes: vec![id], elsewhere: false, label, running: proc.busy });
         }
@@ -767,8 +767,41 @@ impl Server {
     /// machine restarts, each window as it was. The quake window's go with
     /// the first window's (it is placed by its settings).
     fn save(&self) {
-        if let Some(s) = self.saved() {
+        if let Some(mut s) = self.saved() {
+            self.add_keys(&mut s);
             crate::persist::save_session(&s);
+        }
+    }
+
+    /// Each of this machine's panes in it with its name for good, as its
+    /// shell has it: a window does not know them.
+    fn add_keys(&self, s: &mut crate::persist::Session) {
+        use crate::persist::Spec;
+        fn walk(spec: &mut Spec, key: &impl Fn(u64) -> Option<String>) {
+            match spec {
+                Spec::Pane { id: Some(id), host: None, key: k, .. } => {
+                    if let Some(found) = key(*id) {
+                        *k = Some(found);
+                    }
+                }
+                Spec::Across { v: kids, .. } | Spec::Down { h: kids, .. } => kids.iter_mut().for_each(|c| walk(c, key)),
+                _ => {}
+            }
+        }
+        let key = |id: u64| self.panes.get(&id).and_then(|p| pane_key(p.pty.pid));
+        let one = |s: &mut crate::persist::Session| {
+            for w in s.workspaces.iter_mut() {
+                if let Some(l) = w.layout.as_mut() {
+                    walk(l, &key);
+                }
+            }
+            for p in s.popouts.iter_mut() {
+                walk(p, &key);
+            }
+        };
+        one(s);
+        for w in s.windows.iter_mut() {
+            one(w);
         }
     }
 
@@ -881,10 +914,17 @@ impl Server {
 
     /// A new pane for window `c`: its name and its shell's process id (-1 if
     /// it could not start).
-    fn spawn(&mut self, tx: &Sender<Ev>, c: u64, cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32)) -> (u64, i32) {
+    fn spawn(&mut self, tx: &Sender<Ev>, c: u64, cmd: String, cwd: String, cols: u16, rows: u16, px: (u32, u32), key: String) -> (u64, i32) {
         let pane = self.next_pane;
         self.next_pane += 1;
-        let desktop = self.desktop(c);
+        let mut desktop = self.desktop(c);
+        // Its name for good, in its shell's environment: the one it had
+        // before a restart, else a new one. Read back from there to be
+        // saved (see pane_key), so nothing else has to keep it.
+        let key = if valid_key(&key) { key } else { new_key() };
+        if let Ok(k) = std::ffi::CString::new(key) {
+            desktop.push((std::ffi::CString::from(c"JOT_PANE_KEY"), Some(k)));
+        }
         let number = self.free_number();
         let pid = match Local::spawn(&cmd, Path::new(&cwd), cols, rows, px, &desktop) {
             Ok(pty) => {
@@ -1055,8 +1095,8 @@ pub fn run(path: &Path, handover: Option<&Path>) {
                 s.tell_numbers(Some(c));
             }
             Ev::Said(c, m) if s.windows.contains(&c) => match m {
-                ToServer::Spawn { cmd, cwd, cols, rows, px } => {
-                    let (pane, pid) = s.spawn(&tx, c, cmd, cwd, cols, rows, px);
+                ToServer::Spawn { cmd, cwd, cols, rows, px, key } => {
+                    let (pane, pid) = s.spawn(&tx, c, cmd, cwd, cols, rows, px, key);
                     s.send(c, ToClient::Spawned { pane, pid });
                     s.tell_numbers(None);
                 }
@@ -1279,6 +1319,31 @@ fn merge<'a>(texts: impl Iterator<Item = &'a str>) -> Option<crate::persist::Ses
 const DESKTOP: [&str; 8] = ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DESKTOP_SESSION", "DBUS_SESSION_BUS_ADDRESS"];
 
 type Env = Vec<(std::ffi::CString, Option<std::ffi::CString>)>;
+
+/// A pane's name for good: 16 hex digits (anything else asked for is not
+/// taken, and a new one given).
+fn valid_key(key: &str) -> bool {
+    key.len() == 16 && key.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn new_key() -> String {
+    let mut b = [0u8; 8];
+    let got = unsafe { libc::getrandom(b.as_mut_ptr().cast(), b.len(), 0) };
+    if got != b.len() as isize {
+        // No randomness to be had: the time and a count will do.
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+        b = (t ^ N.fetch_add(1, std::sync::atomic::Ordering::Relaxed).rotate_left(48) ^ std::process::id() as u64).to_le_bytes();
+    }
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// The name for good a pane's shell was started with (JOT_PANE_KEY), read
+/// from its environment: a jot restarted (`jot restart`) knows it as well.
+fn pane_key(pid: i32) -> Option<String> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    raw.split(|b| *b == 0).find_map(|kv| kv.strip_prefix(b"JOT_PANE_KEY=")).map(|v| String::from_utf8_lossy(v).into_owned()).filter(|k| valid_key(k))
+}
 
 /// A desktop, as a process's environment has it: whether it came over
 /// SSH (`ssh -X`), and the names above, set or not. None off a desktop.
@@ -1591,11 +1656,11 @@ mod tests {
     }
 
     fn pane(id: u64) -> Spec {
-        Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(id), host: None }
+        Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(id), host: None, key: None }
     }
 
     fn remote(host: &str, id: u64) -> Spec {
-        Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(id), host: Some(host.into()) }
+        Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(id), host: Some(host.into()), key: None }
     }
 
     fn across(kids: Vec<Spec>, sizes: Vec<f32>) -> Spec {

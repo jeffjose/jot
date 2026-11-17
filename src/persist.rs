@@ -45,6 +45,11 @@ pub enum Spec {
         /// The machine it runs on, if not the one whose session this is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         host: Option<String>,
+        /// Its name for good (JOT_PANE_KEY in its shell): the same after
+        /// a restart, so a script can tell the pane it was in. Written by
+        /// the session, which knows it; a window leaves it out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
     },
 }
 
@@ -98,6 +103,8 @@ pub struct Start {
     pub pane: Option<u64>,
     /// The machine to start it on, if not the window's choice.
     pub host: Option<String>,
+    /// Its name for good, as it was before a restart (see Spec::Pane).
+    pub key: Option<String>,
 }
 
 impl WorkspaceSpec {
@@ -138,10 +145,10 @@ fn build(spec: &Spec, cwd: &Path, start: &mut impl FnMut(Start) -> PaneId) -> No
         Some(if n == 1 { children.into_iter().next().unwrap() } else { Node::Split { dir, children, sizes } })
     };
     match spec {
-        Spec::Command(cmd) => Node::Pane(start(Start { cmd: cmd.clone(), cwd: cwd.to_path_buf(), pane: None, host: None })),
-        Spec::Pane { cmd, cwd: dir, id, host, .. } => {
+        Spec::Command(cmd) => Node::Pane(start(Start { cmd: cmd.clone(), cwd: cwd.to_path_buf(), pane: None, host: None, key: None })),
+        Spec::Pane { cmd, cwd: dir, id, host, key, .. } => {
             let cwd = dir.as_deref().map(expand).unwrap_or_else(|| cwd.to_path_buf());
-            Node::Pane(start(Start { cmd: cmd.clone(), cwd, pane: *id, host: host.clone() }))
+            Node::Pane(start(Start { cmd: cmd.clone(), cwd, pane: *id, host: host.clone(), key: key.clone() }))
         }
         Spec::Across { v, sizes } => split(Dir::Across, v, sizes, &mut |k| build(k, cwd, start)).unwrap_or_else(|| build(&Spec::Command(String::new()), cwd, start)),
         Spec::Down { h, sizes } => split(Dir::Down, h, sizes, &mut |k| build(k, cwd, start)).unwrap_or_else(|| build(&Spec::Command(String::new()), cwd, start)),
@@ -154,7 +161,7 @@ pub fn spec(node: &Node, pane: &impl Fn(PaneId) -> (String, Option<PathBuf>, Vec
     match node {
         Node::Pane(id) => {
             let (cmd, cwd, pins, empty, host) = pane(*id);
-            Spec::Pane { cmd, cwd: cwd.map(|p| shorten(&p)), pins, empty, id: Some(crate::mux::split_id(*id).1), host }
+            Spec::Pane { cmd, cwd: cwd.map(|p| shorten(&p)), pins, empty, id: Some(crate::mux::split_id(*id).1), host, key: None }
         }
         Node::Split { dir, children, sizes } => {
             let kids = children.iter().map(|c| spec(c, pane)).collect();
@@ -804,7 +811,7 @@ mod sharing_tests {
     use super::*;
 
     fn pane(host: Option<&str>, id: u64) -> Spec {
-        Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(id), host: host.map(str::to_string) }
+        Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(id), host: host.map(str::to_string), key: None }
     }
 
     #[test]
@@ -844,6 +851,18 @@ mod sharing_tests {
         let old = "name = \"w\"\n[layout]\ncmd = \"\"\nid = 3\n";
         let w: WorkspaceSpec = toml::from_str(old).unwrap();
         assert_eq!((w.id, w.rev, w.home), (None, None, None));
+    }
+
+    #[test]
+    fn a_saved_pane_s_key_starts_it_again() {
+        let text = "name = \"w\"\n[layout]\nv = [ { cmd = \"\", id = 3, key = \"0123456789abcdef\" }, { cmd = \"\", id = 4 } ]\n";
+        let w: WorkspaceSpec = toml::from_str(text).unwrap();
+        let mut keys = Vec::new();
+        w.build(&mut |s: Start| {
+            keys.push(s.key);
+            keys.len() as PaneId
+        });
+        assert_eq!(keys, vec![Some("0123456789abcdef".to_string()), None]);
     }
 }
 

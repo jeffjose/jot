@@ -309,7 +309,7 @@ impl App {
                 }
                 if self.held.contains_key(&base) {
                     self.target = m;
-                    let v = self.spawn(Start { cmd: String::new(), cwd: pty::home(), pane: Some(*sid), host: None });
+                    let v = self.spawn(Start { cmd: String::new(), cwd: pty::home(), pane: Some(*sid), host: None, key: None });
                     used.push(v);
                     return Some(Node::Pane(v));
                 }

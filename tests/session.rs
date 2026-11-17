@@ -747,3 +747,73 @@ fn the_window_typed_into_last_gives_the_size_from_afar_too() {
     here.types(t, " ");
     assert_eq!(afar.told_size(t, Duration::from_secs(2)), Some((90, 28)));
 }
+
+impl Window {
+    /// A terminal started with its name for good (JOT_PANE_KEY), as a window
+    /// bringing back a session after a restart starts it.
+    fn spawn_keyed(&mut self, key: &str) -> u64 {
+        let mut o = vec![SPAWN];
+        put_str(&mut o, "");
+        put_str(&mut o, "/tmp");
+        o.extend(80u16.to_le_bytes());
+        o.extend(24u16.to_le_bytes());
+        o.extend(0u32.to_le_bytes());
+        o.extend(0u32.to_le_bytes());
+        put_str(&mut o, key);
+        send(&mut self.s, &o);
+        let f = self.expect(SPAWNED, Duration::from_secs(5)).expect("spawned");
+        In(&f[1..]).u64()
+    }
+}
+
+impl Session {
+    /// The session file, once it has `want` in it (None in a few seconds).
+    fn saved_with(&self, want: &str) -> Option<String> {
+        let path = self.dir.join("state").join("jot").join("session.toml");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                if text.contains(want) {
+                    return Some(text);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        None
+    }
+}
+
+/// The key written for pane `id` in a session file: `key = "..."` in its table.
+fn key_of(saved: &str, id: u64) -> Option<String> {
+    let at = saved.find(&format!("id = {id}\n"))?;
+    let rest = &saved[at..];
+    let end = rest.find("\n[").unwrap_or(rest.len());
+    rest[..end].lines().find_map(|l| l.strip_prefix("key = \"")).map(|k| k.trim_end_matches('"').to_string())
+}
+
+#[test]
+fn a_pane_keeps_its_key_in_the_saved_session() {
+    let s = Session::start();
+    let mut a = s.window(1, true);
+    let kept = a.spawn_keyed("0123456789abcdef");
+    let new = a.spawn();
+    a.says(&ws("w1", 10, 0, &side_by_side(&[(None, kept), (None, new)])));
+    let saved = s.saved_with("0123456789abcdef").expect("saved with the key it was given");
+    let fresh = key_of(&saved, new).expect("a new pane given a key");
+    assert!(fresh.len() == 16 && fresh.bytes().all(|b| b.is_ascii_hexdigit()) && fresh != "0123456789abcdef", "{saved}");
+}
+
+#[test]
+fn a_pane_s_key_goes_over_jot_restart() {
+    let s = Session::start();
+    let mut a = s.window(1, true);
+    let t = a.spawn_keyed("fedcba9876543210");
+    a.says(&ws("w1", 10, 0, &one(t)));
+    s.saved_with("fedcba9876543210").expect("saved");
+    std::fs::remove_file(s.dir.join("state").join("jot").join("session.toml")).unwrap();
+    let out = s.jot(&["restart"]);
+    assert!(out.contains("now"), "{out}");
+    let mut again = Window::hello(&s.socket(), a.name, true, CAN_SHARE);
+    again.says(&ws("w1", 10, 1, &one(t)));
+    assert!(s.saved_with("fedcba9876543210").is_some(), "the key read back from the shell after the restart");
+}

@@ -855,7 +855,7 @@ impl App {
                 (pane, 0, start.cmd)
             }
             None => {
-                match client.spawn(&start.cmd, &start.cwd, cols, rows, (0, 0)) {
+                match client.spawn(&start.cmd, &start.cwd, cols, rows, (0, 0), start.key.as_deref().unwrap_or("")) {
                     Ok((pane, pid)) => (pane, pid, start.cmd),
                     // Another machine failing: the shell here instead.
                     Err(e) if m > 0 => {
@@ -1305,7 +1305,7 @@ impl App {
     fn split_side(&mut self, dir: Dir, before: bool) {
         let at = self.focused().unwrap_or(0);
         let cwd = self.panes.get(&at).and_then(|p| p.pty.cwd()).unwrap_or_else(pty::home);
-        self.split_at(dir, before, Start { cmd: String::new(), cwd, pane: None, host: None });
+        self.split_at(dir, before, Start { cmd: String::new(), cwd, pane: None, host: None, key: None });
     }
 
     /// Splits the pane you are in, the new one running `start`.
@@ -1377,7 +1377,7 @@ impl App {
             return;
         }
         self.target = self.focused().map_or(0, |f| self.machine_of(f));
-        let id = self.spawn(Start { cmd: c.cmd, cwd: c.cwd, pane: None, host: None });
+        let id = self.spawn(Start { cmd: c.cmd, cwd: c.cwd, pane: None, host: None, key: None });
         let wi = self.workspaces.iter().position(|w| w.name == c.workspace);
         match wi {
             Some(wi) => {
@@ -1518,7 +1518,7 @@ impl App {
         if self.roam.is_none() {
             let cwd = self.roam_cwd.clone().unwrap_or_else(pty::home);
             self.target = 0;
-            self.roam = Some(self.spawn(Start { cmd: String::new(), cwd, pane: None, host: None }));
+            self.roam = Some(self.spawn(Start { cmd: String::new(), cwd, pane: None, host: None, key: None }));
         }
         self.roam_shown = !self.roam_shown;
         self.unsaved = true;
@@ -3975,14 +3975,14 @@ impl App {
     /// The panes that were in windows of their own, in them again.
     pub(super) fn open_pending_popouts(&mut self, event_loop: &ActiveEventLoop) {
         for (i, spec) in std::mem::take(&mut self.pending_popouts).into_iter().enumerate() {
-            let (cmd, cwd, pane) = match spec {
-                persist::Spec::Pane { cmd, cwd, id, .. } => (cmd, cwd.map(|c| persist::expand(&c)).unwrap_or_else(pty::home), id),
-                persist::Spec::Command(cmd) => (cmd, pty::home(), None),
+            let (cmd, cwd, pane, key) = match spec {
+                persist::Spec::Pane { cmd, cwd, id, key, .. } => (cmd, cwd.map(|c| persist::expand(&c)).unwrap_or_else(pty::home), id, key),
+                persist::Spec::Command(cmd) => (cmd, pty::home(), None, None),
                 _ => continue,
             };
             let held = pane.is_some_and(|p| self.held.contains_key(&p));
             self.target = 0;
-            let id = self.spawn(Start { cmd, cwd, pane, host: None });
+            let id = self.spawn(Start { cmd, cwd, pane, host: None, key });
             if !held {
                 restore_scrollback(self.panes.get_mut(&id), &format!("p{}", i + 1));
             }
@@ -4112,7 +4112,7 @@ impl App {
             new
         };
         if !new.is_empty() {
-            let panes: Vec<persist::Spec> = new.iter().map(|id| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*id), host: None }).collect();
+            let panes: Vec<persist::Spec> = new.iter().map(|id| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*id), host: None, key: None }).collect();
             let layout = if panes.len() == 1 { panes.into_iter().next() } else { Some(persist::Spec::Across { v: panes, sizes: Vec::new() }) };
             let host = self.machines.get(k).and_then(|m| m.host.clone()).filter(|_| k > 0);
             let name = if crate::quake_mode() { quake::QUAKE_WORKSPACE.to_string() } else { sidebar::random_name() };
@@ -4247,7 +4247,7 @@ impl App {
         }
         for (m, mut left) in by_machine {
             left.sort();
-            let panes: Vec<persist::Spec> = left.iter().map(|p| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*p), host: None }).collect();
+            let panes: Vec<persist::Spec> = left.iter().map(|p| persist::Spec::Pane { cmd: String::new(), cwd: None, pins: Vec::new(), empty: false, id: Some(*p), host: None, key: None }).collect();
             let layout = if panes.len() == 1 { panes.into_iter().next() } else { Some(persist::Spec::Across { v: panes, sizes: Vec::new() }) };
             let host = (m > 0).then(|| self.machines.get(m).and_then(|x| x.host.clone())).flatten();
             let name = if crate::quake_mode() { quake::QUAKE_WORKSPACE.to_string() } else { sidebar::random_name() };
@@ -4291,7 +4291,7 @@ impl App {
         for (_, at) in now {
             let Some(wi) = self.workspaces.iter().position(|w| w.root.contains(at)) else { continue };
             self.target = k;
-            let new = self.spawn(Start { cmd: String::new(), cwd: PathBuf::from("~"), pane: None, host: None });
+            let new = self.spawn(Start { cmd: String::new(), cwd: PathBuf::from("~"), pane: None, host: None, key: None });
             let ws = &mut self.workspaces[wi];
             ws.root.replace(at, new);
             if ws.focus == at {
@@ -4387,7 +4387,7 @@ impl App {
         let placed = !self.workspaces.is_empty() && place != terminals::Place::Workspace;
         if placed {
             self.target = k;
-            let new = self.spawn(Start { cmd: String::new(), cwd: pty::home(), pane: first, host: None });
+            let new = self.spawn(Start { cmd: String::new(), cwd: pty::home(), pane: first, host: None, key: None });
             match (place, at) {
                 // In place of what the pane showed, which runs on.
                 (terminals::Place::Into(_) | terminals::Place::Back(_), Some((wi, old))) => {
