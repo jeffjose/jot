@@ -21,7 +21,7 @@ time, and the reader always knows what it means.
 - **Where you are is neutral**: a lighter step behind a row or a caption, a
   thin light ring with a gap around a dot or a picture. Focus never tints.
 - **The workspace's color is the one hue that identifies.** It lives on
-  its square, its dot, the title bar's mark; nowhere else. jot itself has
+  its square, its dot, the foot bar; nowhere else. jot itself has
   one too, its red (`#E54D2E`), for the quake window's square.
 - **No status colors.** No green for done, red for failed, blue for
   running, amber for news. They read as another workspace's color, and
@@ -84,8 +84,8 @@ time, and the reader always knows what it means.
 
 ## Words
 
-- **Say it once.** The workspace's name is in the title bar or the foot
-  bar's square; a thing's state is shown, not labelled.
+- **Say it once.** The workspace is said at the foot bar alone (the title
+  bar says the pane you are in); a thing's state is shown, not labelled.
 - **No state labels.** Never "closed", "not open", "not saved", "(not
   shown)". A terminal is always running; we are only not looking at it.
 - **No cribs.** Keys go in tooltips ("Close pane · Alt X"), not in a line

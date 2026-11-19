@@ -59,7 +59,13 @@ impl App {
         let accent = self.cur_accent;
         let mark = self.cur_mark();
         let open_down = self.switcher.as_ref().is_some_and(|s| !s.up);
-        let said = format!("{name}\0{folder}\0{accent}\0{mark:?}\0{maximized}\0{:?}\0{}\0{open_down}", self.title.lit, self.canvas.width);
+        // The workspace said once (5 on the "jot: pane header badge"
+        // canvas, Workspaces page): at the foot. Here instead, what you are
+        // looking at: the pane you are in, its project and its name. With no
+        // foot bar, the workspace is said here after all.
+        let once = self.foot_h() > 0;
+        let looking = if once { self.title_looking() } else { None };
+        let said = format!("{name}\0{folder}\0{accent}\0{mark:?}\0{maximized}\0{:?}\0{}\0{open_down}\0{looking:?}", self.title.lit, self.canvas.width);
         if !full && said == self.title.said {
             return;
         }
@@ -104,11 +110,30 @@ impl App {
         }
         self.canvas.icon_in(icons::SIDEBAR, side, px(14.0), if side_lit { c.text } else { c.dim });
         self.title.hits.push((side, TitleHit::Sidebar));
+        let uh = self.fonts.ui.height;
+        let ty = (h - uh) / 2;
+        if once {
+            // Its project in the bar's ink, then › and the rest of its name
+            // dimmer; nothing to click: the bar drags the window there.
+            if let Some((project, rest)) = looking {
+                let room = (right - px(12.0)).max(0);
+                let mut x = side.x + side.w + px(8.0);
+                if !project.is_empty() {
+                    x = self.canvas.text_fit(&mut self.fonts.ui, &project, x, ty, (room - x).max(0), c.text, bar);
+                    if !rest.is_empty() {
+                        x = self.canvas.text(&mut self.fonts.ui, "›", (x + px(6.0)) as f32, ty, c.dim, bar) + px(6.0);
+                    }
+                }
+                if !rest.is_empty() {
+                    self.canvas.text_fit(&mut self.fonts.ui, &rest, x, ty, (room - x).max(0), if project.is_empty() { c.text } else { c.dim }, bar);
+                }
+            }
+            self.damage.push(bar);
+            return;
+        }
         // Then the workspace as the foot bar has it at its left: its mark
         // on a square of its color, its name, the folder and a chevron, one
         // thing, which a click opens the switcher down from.
-        let uh = self.fonts.ui.height;
-        let ty = (h - uh) / 2;
         let room = Rect { x: 0, y: 0, w: (right - px(12.0)).max(0), h };
         let ts = (bh - px(2.0)).max(uh);
         let x0 = side.x + side.w + px(4.0);
@@ -132,6 +157,25 @@ impl App {
         self.canvas.icon_in(icons::CHEVRON_DOWN, Rect { x: cx, y: (h - cih) / 2, w: cih, h: cih }, cih, c.dim);
         self.title.hits.push((area, TitleHit::Workspace));
         self.damage.push(bar);
+    }
+
+    /// What the pane you are in is, as the title bar says it: its
+    /// project's name, and the rest of its own name (the name given to its
+    /// terminal, else the title its program sets), without the project's
+    /// in front. Either may be empty; None with no pane.
+    fn title_looking(&self) -> Option<(String, String)> {
+        let id = self.ws().focus;
+        let p = self.panes.get(&id)?;
+        let (k, sid) = crate::mux::split_id(id);
+        let caption = self.given_name(k, sid).unwrap_or_else(|| p.caption.clone());
+        Some(match self.badge_of(id) {
+            Some((pr, _)) => {
+                let rest = super::projects::without_project(&caption, &pr.name);
+                let rest = if rest == pr.name { String::new() } else { rest.to_string() };
+                (pr.name, rest)
+            }
+            None => (String::new(), caption),
+        })
     }
 
     /// The pointer over the bar: its button lit; the arrow, the hand on a
