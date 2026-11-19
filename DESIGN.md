@@ -63,6 +63,16 @@ time, and the reader always knows what it means.
   for each of the machine's workspaces (the one you are in ringed), and at
   the right the machine as a button and the clock. One machine's set at a
   time.
+- **The sidebar**: the workspaces first (the machine the foot bar shows),
+  a row each: its mark on its color, its name, its folder dim, its Alt key
+  at the right; the one you are in a neutral step lighter. Under a line,
+  the terminals machine by machine, each its project's mark and name, the
+  rest of its name dim, its number at the right.
+- **Workspaces are saved, a change a draft.** A workspace's terminals and
+  splits are what it was saved as; a click in the sidebar, a split or a
+  pane closed makes a draft: a dot after its name, Revert and Save in its
+  row. Leaving it, or a restart, puts it back as saved. Its name and look
+  are not part of it: they change at once.
 - **Menus**: words only, keys dim at the right, `›` for a submenu, `✓` for
   what is in use, hairlines between groups. Right click gives one wherever
   something can be acted on (a bar, a pin, a tag). Verbs as Chrome and

@@ -29,6 +29,12 @@ pub enum SideHit {
     /// The list as it is (false), or by project (true).
     View(bool),
     Settings,
+    /// A workspace's row in the list at the top (its menu on a right
+    /// click); its draft's Save and Revert; + for a new one.
+    Workspace(super::foot::FootDot),
+    WsSave(usize),
+    WsRevert(usize),
+    NewWorkspace,
 }
 
 /// Its width when opened, in points, unless dragged otherwise.
@@ -162,8 +168,10 @@ impl App {
             }
             app.side_hits.push((r, hit));
         };
-        // The top: the button, Machines, and + to add one.
-        let top = y0 + px(6.0);
+        // The top: the workspaces, each a row (option A on the "jot: pane
+        // header badge" canvas); then, after a line, the terminals.
+        let top = self.draw_side_workspaces(y0 + px(6.0), w, clip, focus_fill, hover);
+        // Then the button, List | Projects, and + to add a machine.
         // With jot's own title bar the button is there (see titlebar), not here.
         let mx = if self.title_h() > 0 {
             pad + px(4.0)
@@ -369,6 +377,20 @@ impl App {
             // A machine's heading: its terminals folded away, or back; its
             // menu is on a right click.
             Some(SideHit::Machine(k)) => self.fold_machine(k),
+            // A workspace: gone to (a draft left behind put back as saved);
+            // its name clicked twice, renamed there.
+            Some(SideHit::Workspace(d)) => {
+                if let super::foot::FootDot::Here(wi) = d {
+                    let id = self.workspaces[wi].id;
+                    if self.inline_click(super::inline::Target::Workspace(id)) {
+                        return true;
+                    }
+                }
+                self.go_dot(d);
+            }
+            Some(SideHit::WsSave(wi)) => self.save_workspace(wi),
+            Some(SideHit::WsRevert(wi)) => self.revert_workspace(wi),
+            Some(SideHit::NewWorkspace) => self.new_workspace(),
             None => {}
         }
         true
@@ -416,6 +438,154 @@ impl App {
             SideHit::NewTerminal(k) if y >= r.y - slack && y < r.y + r.h + slack => Some(*k),
             _ => None,
         })
+    }
+}
+
+impl App {
+    /// The workspaces at the sidebar's top, from `top` (option A on the
+    /// "jot: pane header badge" canvas, Workspaces page): a heading with +,
+    /// then one row each of the machine the foot bar shows, as the switcher
+    /// has them: its mark on a square of its color, its name, its folder
+    /// dim, and its Alt key at the right. The one you are in a neutral step
+    /// lighter. One not as it was saved (draft.rs) says so with a dot after
+    /// its name, and Revert and Save in place of its folder and key. Where
+    /// the terminals begin, under a line, returned.
+    fn draw_side_workspaces(&mut self, top: i32, w: i32, clip: Rect, focus_fill: u32, hover: u32) -> i32 {
+        use super::foot::FootDot;
+        let c = self.cur_theme.chrome();
+        let scale = self.scale;
+        let px = |v: f32| (v * scale).round() as i32;
+        let (nh, dh) = (self.fonts.side.height, self.fonts.side_small.height);
+        let pad = px(8.0);
+        let inner_w = w - 2 * pad;
+        let lit = self.side_lit;
+        // Its heading, and + for a new workspace.
+        let head_h = dh + px(14.0);
+        self.canvas.text(&mut self.fonts.side_small, "Workspaces", (pad + px(6.0)) as f32, top + (head_h - dh) / 2, c.faint, clip);
+        let b = px(24.0);
+        let plus = Rect { x: w - pad - b - px(2.0), y: top + (head_h - b) / 2, w: b, h: b };
+        if lit == Some(SideHit::NewWorkspace) {
+            self.canvas.round_fill(plus, px(6.0), hover, 255);
+        }
+        self.canvas.icon_in(icons::PLUS, plus, px(13.0), if lit == Some(SideHit::NewWorkspace) { c.text } else { c.dim });
+        self.side_hits.push((plus, SideHit::NewWorkspace));
+        let mut y = top + head_h;
+        let set = self.machine_set(self.foot_machine());
+        let names: Vec<&str> = set.iter().map(|(_, n, _)| n.as_str()).collect();
+        let marks = super::projects::workspace_marks(&names);
+        let row_h = nh + px(12.0);
+        for (i, (d, name, color)) in set.iter().enumerate() {
+            let row = Rect { x: pad, y, w: inner_w, h: row_h };
+            let hit = SideHit::Workspace(*d);
+            let here = *d == FootDot::Here(self.current);
+            let wi = match d {
+                FootDot::Here(wi) => Some(*wi),
+                FootDot::There(..) => None,
+            };
+            let draft = wi.is_some_and(|wi| self.is_draft(wi));
+            if here {
+                self.canvas.round_fill(row, px(6.0), if lit == Some(hit) { mix(c.side, c.text, 16) } else { focus_fill }, 255);
+            } else if lit == Some(hit) {
+                self.canvas.round_fill(row, px(6.0), hover, 255);
+            }
+            // Its mark, dark on its color.
+            let t = px(18.0);
+            let tile = Rect { x: row.x + px(8.0), y: y + (row_h - t) / 2, w: t, h: t };
+            self.canvas.round_fill(tile, px(4.0), *color, 255);
+            if let Some(m) = marks.get(i).copied() {
+                let g = px(12.0);
+                self.canvas.icon_in(m, Rect { x: tile.x + (t - g) / 2, y: tile.y + (t - g) / 2, w: g, h: g }, g, mix(*color, 0x000000, 215));
+            }
+            let nx = tile.x + t + px(9.0);
+            let mut right = row.x + row.w - px(6.0);
+            self.side_hits.push((row, hit));
+            // At the right: a draft's Save and Revert, else its Alt key.
+            if let (true, Some(wi)) = (draft, wi) {
+                let bh = px(22.0);
+                let label = "Save";
+                let sw = self.fonts.side_small.width(label) + px(16.0);
+                let save = Rect { x: right - sw, y: y + (row_h - bh) / 2, w: sw, h: bh };
+                let save_lit = lit == Some(SideHit::WsSave(wi));
+                self.canvas.round_fill(save, px(5.0), if save_lit { mix(c.text, 0xFFFFFF, 60) } else { c.text }, 255);
+                self.canvas.text(&mut self.fonts.side_small, label, (save.x + px(8.0)) as f32, save.y + (bh - dh) / 2, c.side, save);
+                self.side_hits.push((save, SideHit::WsSave(wi)));
+                let rv = Rect { x: save.x - px(4.0) - bh, y: save.y, w: bh, h: bh };
+                let rv_lit = lit == Some(SideHit::WsRevert(wi));
+                if rv_lit {
+                    self.canvas.round_fill(rv, px(5.0), mix(c.side, c.text, 30), 255);
+                }
+                self.canvas.ring(rv, px(5.0), 1, c.edge);
+                self.canvas.icon_in(icons::RESTART, rv, px(12.0), if rv_lit { c.text } else { c.dim });
+                self.side_hits.push((rv, SideHit::WsRevert(wi)));
+                right = rv.x - px(8.0);
+            } else if i < 9 {
+                let label = format!("Alt {}", i + 1);
+                let lw = self.fonts.side_small.width(&label) + px(10.0);
+                let chip = Rect { x: right - lw, y: y + (row_h - dh - px(4.0)) / 2, w: lw, h: dh + px(4.0) };
+                self.canvas.ring(chip, px(4.0), 1, c.edge);
+                self.canvas.text(&mut self.fonts.side_small, &label, (chip.x + px(5.0)) as f32, chip.y + px(2.0), if here { c.dim } else { c.faint }, chip);
+                right = chip.x - px(8.0);
+            }
+            // Being renamed here: the field where its name is.
+            let renaming = wi.and_then(|wi| self.workspaces.get(wi)).map(|ws| super::inline::Target::Workspace(ws.id)).filter(|t| self.inline.as_ref().is_some_and(|i| i.target == *t && i.side));
+            if let Some(target) = renaming {
+                self.draw_inline(target, nx, y + (row_h - nh) / 2, (right - nx).max(0), true, clip);
+                y += row_h + px(2.0);
+                continue;
+            }
+            // Its name, a draft's dot after it; then its folder, dim.
+            let ink = if here { c.text } else { c.dim };
+            let dot_room = if draft { px(14.0) } else { 0 };
+            let nw = self.fonts.side.width(name).min((right - nx - dot_room).max(0));
+            let after = self.canvas.text_fit(&mut self.fonts.side, name, nx, y + (row_h - nh) / 2, nw, ink, clip);
+            if draft {
+                let dd = px(6.0);
+                self.canvas.round_fill(Rect { x: after + px(6.0), y: y + (row_h - dd) / 2, w: dd, h: dd }, dd / 2, c.text, 255);
+            } else {
+                let folder = match d {
+                    FootDot::Here(wi) => {
+                        let ws = &self.workspaces[*wi];
+                        self.panes.get(&ws.focus).and_then(|p| p.pty.cwd()).and_then(|c| c.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default()
+                    }
+                    FootDot::There(..) => self.dot_cwds(*d).first().and_then(|c| std::path::Path::new(c).file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default(),
+                };
+                let fx = after + px(8.0);
+                if !folder.is_empty() && fx < right {
+                    self.canvas.text_fit(&mut self.fonts.side_small, &folder, fx, y + (row_h - dh) / 2, (right - fx).max(0), c.faint, clip);
+                }
+            }
+            y += row_h + px(2.0);
+        }
+        // A line, and the terminals under it.
+        y += px(6.0);
+        self.canvas.fill(Rect { x: pad + px(6.0), y, w: inner_w - px(12.0), h: 1 }, c.edge);
+        y + px(6.0)
+    }
+
+    /// A right click on a workspace's row: what can be done with it. Its
+    /// name, mark and colors change at once; its layout is saved or put
+    /// back here.
+    pub(super) fn workspace_menu(&mut self, wi: usize) {
+        use crate::palette::{Action, Item};
+        let k = self.ws_machine(wi);
+        let same: Vec<usize> = (0..self.workspaces.len()).filter(|&i| self.ws_machine(i) == k).collect();
+        let at = same.iter().position(|&i| i == wi).unwrap_or(0);
+        let draft = self.is_draft(wi);
+        let c = |label: &str, hint: &str, action| Some(Item { label: label.into(), hint: hint.into(), action });
+        // Words only, as every menu (DESIGN.md).
+        let mut items = vec![c("Rename…", "", Action::WorkspaceRename(wi)), c("Icon and color…", "", Action::WorkspaceLook(wi)), None];
+        if draft {
+            items.extend([c("Save", "Ctrl Shift S", Action::WorkspaceSave(wi)), c("Revert to saved", "", Action::WorkspaceRevert(wi)), c("Save as new workspace", "", Action::WorkspaceSaveAsNew(wi)), None]);
+        }
+        items.push(c("Duplicate", "", Action::WorkspaceDuplicate(wi)));
+        if at > 0 {
+            items.push(c("Move up", "", Action::WorkspaceMove(wi, -1)));
+        }
+        if at + 1 < same.len() {
+            items.push(c("Move down", "", Action::WorkspaceMove(wi, 1)));
+        }
+        items.extend([None, c("Delete workspace", "", Action::WorkspaceDelete(wi))]);
+        self.open_items_menu(items);
     }
 }
 
@@ -678,21 +848,23 @@ impl App {
         let shown = t.pane.is_some();
         let name_color = if focused { c.text } else if shown { c.dim } else { mix(c.side, c.dim, 200) };
         let room = right - x;
-        // project › name, the name without the project's in front of it
-        // (or the project alone, when that is all its name is).
-        let label = match &t.project {
+        // Its project's name first, then the rest of its own name dim (the
+        // name without the project's in front of it; nothing more when that
+        // is all its name is). What it runs is not said: what a terminal is,
+        // is its project.
+        let (lead, rest) = match &t.project {
             Some(pr) => {
                 let rest = super::projects::without_project(&t.label, &pr.name);
-                if rest == pr.name { pr.name.clone() } else { format!("{} › {rest}", pr.name) }
+                (pr.name.clone(), if rest == pr.name { String::new() } else { rest.to_string() })
             }
-            None => t.label.clone(),
+            None => (t.label.clone(), String::new()),
         };
-        let nw = self.fonts.side.width(&label).min(if t.cmd.is_some() { room * 6 / 10 } else { room });
-        let after = self.canvas.text_fit(&mut self.fonts.side, &label, x, y + (h - nh) / 2, nw.max(0), name_color, clip);
-        if let Some(cmd) = &t.cmd {
-            let mh = self.fonts.mono.height;
+        let nw = self.fonts.side.width(&lead).min(room.max(0));
+        let after = self.canvas.text_fit(&mut self.fonts.side, &lead, x, y + (h - nh) / 2, nw, name_color, clip);
+        if !rest.is_empty() {
+            let dh = self.fonts.side_small.height;
             let x2 = after + px(8.0);
-            self.canvas.text_fit(&mut self.fonts.mono, cmd, x2, y + (h - mh) / 2, (right - x2).max(0), c.faint, clip);
+            self.canvas.text_fit(&mut self.fonts.side_small, &rest, x2, y + (h - dh) / 2, (right - x2).max(0), c.faint, clip);
         }
         self.side_hits.push((row, hit));
         y + h
@@ -711,6 +883,10 @@ impl App {
         match self.side_hit_at(x, y) {
             Some(hit @ (SideHit::Free(..) | SideHit::Pane(_))) => {
                 self.terminal_menu(hit);
+                true
+            }
+            Some(SideHit::Workspace(super::foot::FootDot::Here(wi)) | SideHit::WsSave(wi) | SideHit::WsRevert(wi)) => {
+                self.workspace_menu(wi);
                 true
             }
             // A machine: a new terminal on it; reached again, or taken out
