@@ -1,8 +1,11 @@
 //! A pane's own command line, on Alt ;: a slim box at the bottom of the
 //! pane, pushing its text up, that works whatever the pane is running.
 //! A command typed in it runs at the prompt when the shell is waiting,
-//! or waits its turn behind the command running; each in the queue can
-//! be taken out (×) or run now (▶), beside the shell rather than in it,
+//! or waits its turn behind the command running, and runs at the prompt
+//! once that ends: done, or stopped (Ctrl C, a signal); a failure holds
+//! it. Ctrl Enter, or ▶ on one in the queue, sends it now: the command
+//! running is stopped and it runs next. Each can be taken out (×); with
+//! Shift, ▶ runs it beside the shell instead, leaving the command running,
 //! in the pane's folder, with $JOB the running job's process group. A
 //! `/` opens the slash commands, these among them: /stop and /kill, for
 //! the job running.
@@ -256,9 +259,15 @@ impl App {
             self.bar = None;
         } else {
             p.shell.queue.push(cmd);
+            let last = p.shell.queue.len() - 1;
             if let Some(b) = &mut self.bar {
                 b.field = TextField::default();
                 b.back = None;
+            }
+            // Ctrl Enter: not behind the command running, but now, as a
+            // message sent while one is being answered.
+            if self.mods.control_key() {
+                return self.send_now(id, last);
             }
         }
         self.bar_changed();
@@ -359,9 +368,46 @@ impl App {
 
     /// Ctrl C to the pane, as pressing it there does.
     pub(super) fn stop_job(&mut self, id: PaneId) {
+        self.meant_end(id);
         if let Some(p) = self.panes.get(&id) {
             p.pty.write(&[0x03]);
         }
+    }
+
+    /// The command running is being stopped by hand (Ctrl C pressed in the
+    /// pane, /stop, /kill, a queued one sent now): its end is meant, and
+    /// what is queued behind it goes on however it ends, as after its
+    /// finishing. Told to the session before the key is, so that it knows
+    /// by the time the shell says the command ended.
+    pub(super) fn meant_end(&mut self, id: PaneId) {
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        if p.shell.at_prompt || p.shell.running.is_none() || p.shell.restarting {
+            return;
+        }
+        p.shell.restarting = true;
+        p.shell.paused = false;
+        self.sync_queue(id);
+    }
+
+    /// A queued command sent now (▶, or Ctrl Enter in the bar): to the
+    /// front of the queue, and the command running stopped (Ctrl C), so
+    /// that it runs next, at the prompt, as any queued one does. With the
+    /// shell waiting already, it runs at once.
+    pub(super) fn send_now(&mut self, id: PaneId, i: usize) {
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        if i >= p.shell.queue.len() {
+            return;
+        }
+        let cmd = p.shell.queue.remove(i);
+        p.shell.queue.insert(0, cmd);
+        p.shell.paused = false;
+        if self.pane_waiting(id) {
+            self.sync_queue(id);
+        } else {
+            self.stop_job(id);
+        }
+        self.bar_changed();
+        self.relayout();
     }
 
     /// The running job killed: SIGTERM, and SIGKILL if asked again within
@@ -370,6 +416,7 @@ impl App {
         if self.job(id).is_none() {
             return self.toast("Nothing running", "The shell has the pane to itself", None, Some(id));
         }
+        self.meant_end(id);
         let Some(p) = self.panes.get_mut(&id) else { return };
         let hard = p.shell.killed_at.is_some_and(|t| t.elapsed() < Duration::from_secs(10));
         let signal = if hard { libc::SIGKILL } else { libc::SIGTERM };
@@ -445,7 +492,10 @@ impl App {
                 self.bar_changed();
                 self.relayout();
             }
-            BarHit::RunNow(i) => self.run_now(id, i),
+            // ▶: sent now, in the shell, the command running stopped; with
+            // Shift, run beside the shell instead, leaving it running.
+            BarHit::RunNow(i) if self.mods.shift_key() => self.run_now(id, i),
+            BarHit::RunNow(i) => self.send_now(id, i),
             BarHit::RemoveAfter(i) => {
                 if let Some(p) = self.panes.get_mut(&id) {
                     if i < p.shell.after.len() {
@@ -592,7 +642,7 @@ impl App {
         let (field, selected) = (b.field.clone(), b.selected);
         let ty = y + (row_h - uh) / 2;
         let gx = self.canvas.text(&mut self.fonts.ui, "›", (area.x + pad) as f32, ty, accent, area) + px(8.0);
-        let hint = if busy { "Enter queues" } else { "Enter runs" };
+        let hint = if busy { "Enter queues · Ctrl Enter now" } else { "Enter runs" };
         let hw = self.fonts.small.width(hint);
         let field_clip = Rect { x: gx, y, w: area.x + area.w - pad - hw - px(12.0) - gx, h: row_h };
         if field.text.is_empty() {

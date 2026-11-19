@@ -1945,6 +1945,12 @@ impl App {
         for target in self.input_targets(id) {
             let Some(p) = self.panes.get_mut(&target) else { continue };
             let bytes = if word_back && p.shell.at_prompt { b"\x1b\x7f".to_vec() } else { p.term.encode_key(crate::keys::ghostty(code), mods, action, text, unshifted) };
+            // Ctrl C to a command running: stopped by hand, so what is
+            // queued behind it goes on (told to the session first).
+            if bytes == [0x03] {
+                self.meant_end(target);
+            }
+            let Some(p) = self.panes.get_mut(&target) else { continue };
             if crate::debug() && event.state == ElementState::Pressed && target == id {
                 eprintln!("key {code:?} mods {m:?} text {:?} logical {logical:?} unshifted {unshifted:#x} -> {bytes:?}", event.text.as_deref());
             }

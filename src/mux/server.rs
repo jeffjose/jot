@@ -461,7 +461,7 @@ impl Server {
         // A failed command holds the queue behind it (as the window does,
         // but before the next is typed), unless it was being restarted.
         if let Some(exit) = ended {
-            let failed = exit.is_some_and(|e| e != 0);
+            let failed = super::holds_queue(exit);
             if let Some(p) = self.panes.get_mut(&id) {
                 if failed && !p.queue.items.is_empty() && !p.queue.restarting {
                     p.queue.paused = true;
@@ -471,7 +471,7 @@ impl Server {
         }
         // Commands waiting on this one, in panes no window has, go on.
         if let Some(exit) = ended {
-            let failed = exit.is_some_and(|e| e != 0);
+            let failed = super::holds_queue(exit);
             for (_, other) in self.panes.iter_mut().filter(|(_, o)| o.viewers.is_empty()) {
                 let (go, stay): (Vec<_>, Vec<_>) = std::mem::take(&mut other.queue.after).into_iter().partition(|(t, _)| *t == id);
                 other.queue.after = stay;

@@ -34,9 +34,18 @@ pub struct Queue {
     pub items: Vec<String>,
     pub paused: bool,
     pub after: Vec<(u64, String)>,
-    /// Its command is being restarted (Ctrl R): its failing then is
-    /// meant, and holds nothing.
+    /// Its command's end is meant: it is being restarted (Ctrl R), or was
+    /// stopped by hand (Ctrl C in the pane, /stop, /kill, a queued one sent
+    /// now). Its failing then holds nothing.
     pub restarting: bool,
+}
+
+/// Whether a command's end holds the queue behind it: it failed, as a
+/// build does (exit 1 to 127). Stopped by a signal (128 and over: Ctrl C
+/// is 130, SIGTERM 143, SIGKILL 137) it was meant to end, and the queue
+/// goes on, as it does after Ctrl C pressed in the pane (`Queue::restarting`).
+pub fn holds_queue(exit: Option<i32>) -> bool {
+    exit.is_some_and(|e| e > 0 && e < 128)
 }
 
 /// A pane's /tee as the session has it.

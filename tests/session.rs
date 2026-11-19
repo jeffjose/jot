@@ -858,3 +858,83 @@ fn a_session_the_bridge_starts_is_not_under_it() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(parent.is_some() && parent != Some(bridge.id()), "the session's parent is the bridge ({parent:?})");
 }
+
+const OUTPUT: u8 = 3;
+const QUEUE: u8 = 8;
+
+impl Window {
+    /// Its pane's queue, said: `items` waiting for the prompt, not held.
+    fn queues(&mut self, pane: u64, items: &[&str]) {
+        let mut o = vec![QUEUE];
+        o.extend(pane.to_le_bytes());
+        o.extend((items.len() as u32).to_le_bytes());
+        for i in items {
+            put_str(&mut o, i);
+        }
+        o.push(0); // not held
+        o.extend(0u32.to_le_bytes()); // nothing waiting on another pane
+        o.push(0); // its end not meant
+        send(&mut self.s, &o);
+    }
+
+    /// What `pane` printed, read until `needle` is in it; false if it is not
+    /// in `wait`.
+    fn prints(&mut self, pane: u64, needle: &str, wait: Duration) -> bool {
+        let deadline = Instant::now() + wait;
+        let mut seen = Vec::new();
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            let Some(f) = self.expect(OUTPUT, left) else { return false };
+            let mut i = In(&f[1..]);
+            if i.u64() == pane {
+                seen.extend(i.bytes());
+                if String::from_utf8_lossy(&seen).contains(needle) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+/// A bash in `pane` that marks its prompts and commands' ends as jot's
+/// shell integration does (OSC 133 A, and D with the exit status).
+fn marking_bash(w: &mut Window, pane: u64) {
+    w.types(pane, "exec bash --norc --noprofile\r");
+    std::thread::sleep(Duration::from_millis(400));
+    w.types(pane, "PROMPT_COMMAND='printf \"\\033]133;D;%s\\007\\033]133;A\\007\" $?'; echo MARK''ING\r");
+    assert!(w.prints(pane, "MARKING", Duration::from_secs(5)), "bash came up");
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+/// Reported: a command queued behind `sleep` stayed waiting when the sleep
+/// was stopped with Ctrl C (it ended "failed", exit 130, which held the
+/// queue). Stopped is not failed: the queued one runs at the next prompt.
+#[test]
+fn a_command_queued_behind_one_stopped_with_ctrl_c_runs_next() {
+    let s = Session::start();
+    let mut a = s.window(1, true);
+    let t = a.spawn();
+    a.says(&ws("w1", 10, 0, &one(t)));
+    marking_bash(&mut a, t);
+    a.types(t, "sleep 30\r");
+    std::thread::sleep(Duration::from_millis(400));
+    a.queues(t, &["echo QUEUED''RAN"]);
+    std::thread::sleep(Duration::from_millis(200));
+    a.types(t, "\x03");
+    assert!(a.prints(t, "QUEUEDRAN", Duration::from_secs(5)), "the queued command ran after Ctrl C");
+}
+
+/// A command that fails (exit 1 to 127) still holds what is queued behind
+/// it, as before.
+#[test]
+fn a_command_queued_behind_one_that_fails_waits() {
+    let s = Session::start();
+    let mut a = s.window(1, true);
+    let t = a.spawn();
+    a.says(&ws("w1", 10, 0, &one(t)));
+    marking_bash(&mut a, t);
+    a.types(t, "sleep 1; false\r");
+    std::thread::sleep(Duration::from_millis(300));
+    a.queues(t, &["echo QUEUED''RAN"]);
+    assert!(!a.prints(t, "QUEUEDRAN", Duration::from_secs(3)), "a failure holds the queue");
+}

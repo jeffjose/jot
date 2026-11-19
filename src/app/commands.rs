@@ -54,7 +54,8 @@ pub struct Shell {
     pub killed_at: Option<Instant>,
     /// /notify: the command running, or the next, told of when it ends.
     pub notify: bool,
-    /// /restart sent Ctrl C: the command's failing that way holds nothing.
+    /// The command's end is meant (/restart, Ctrl C pressed in the pane,
+    /// /stop, /kill, a queued one sent now): its failing holds nothing.
     pub restarting: bool,
     /// Commands waiting for another pane's command to end (@2 cmd): then
     /// they join this pane's queue.
@@ -125,10 +126,15 @@ impl App {
                         told.push((place.clone(), format!("{} · {how} in {}", line.trim(), human(took)), color));
                         p.full = true;
                     }
-                    ended = Some(exit.is_some_and(|e| e != 0));
-                    // A failed command holds what is queued behind it.
+                    ended = Some(crate::mux::holds_queue(exit));
+                    // A failed command holds what is queued behind it; one
+                    // stopped (Ctrl C, a signal) does not: what is queued goes.
                     let restarting = std::mem::take(&mut p.shell.restarting);
-                    if exit.is_some_and(|e| e != 0) && !p.shell.queue.is_empty() && !restarting {
+                    // The session forgets it at the end too: not told again,
+                    // which would send it the queue as it was here, the
+                    // command it has typed by now still in it, to type twice.
+                    p.shell.synced.restarting = false;
+                    if crate::mux::holds_queue(exit) && !p.shell.queue.is_empty() && !restarting {
                         p.shell.paused = true;
                     }
                     // The new prompt is drawn by now: the command's rows end
