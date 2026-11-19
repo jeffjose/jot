@@ -87,6 +87,18 @@ pub enum Action {
     MoveToProject,
     NewProject,
     CloseWorkspace,
+    /// A workspace, by its place (draft.rs, from its sidebar row): saved as
+    /// it is; put back as saved; its layout as it is made a new workspace,
+    /// or as saved copied; moved up or down; deleted (its terminals run
+    /// on); renamed in place; its mark and colors.
+    WorkspaceSave(usize),
+    WorkspaceRevert(usize),
+    WorkspaceSaveAsNew(usize),
+    WorkspaceDuplicate(usize),
+    WorkspaceMove(usize, i32),
+    WorkspaceDelete(usize),
+    WorkspaceRename(usize),
+    WorkspaceLook(usize),
     Roam,
     Clear,
     Copy,
@@ -311,6 +323,8 @@ pub fn commands() -> Vec<Item> {
         c("Close other panes", "", Action::Only),
         c("New workspace", "Ctrl N", Action::NewWorkspace),
         c("Rename workspace…", "", Action::Rename),
+        c("Save workspace", "Ctrl Shift S", Action::WorkspaceSave(usize::MAX)),
+        c("Revert workspace to saved", "", Action::WorkspaceRevert(usize::MAX)),
         c("Close workspace", "", Action::CloseWorkspace),
         c("Toggle roaming terminal", "Alt `", Action::Roam),
         c("Clear terminal", "", Action::Clear),

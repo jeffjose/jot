@@ -394,6 +394,21 @@ impl App {
                     self.close(id, event_loop);
                 }
             }
+            // (usize::MAX from the palette: the one you are in.)
+            Action::WorkspaceSave(wi) => self.save_workspace(if wi == usize::MAX { self.current } else { wi }),
+            Action::WorkspaceRevert(wi) => self.revert_workspace(if wi == usize::MAX { self.current } else { wi }),
+            Action::WorkspaceSaveAsNew(wi) => self.copy_workspace(wi, true),
+            Action::WorkspaceDuplicate(wi) => self.copy_workspace(wi, false),
+            Action::WorkspaceMove(wi, by) => self.move_workspace(wi, by),
+            Action::WorkspaceDelete(wi) => self.delete_workspace(wi, event_loop),
+            Action::WorkspaceRename(wi) => self.rename_workspace_at(wi),
+            Action::WorkspaceLook(wi) => {
+                self.go_to(wi);
+                self.open_settings();
+                if let Some(s) = &mut self.settings {
+                    s.section = 1;
+                }
+            }
             Action::Roam => self.toggle_roam(),
             Action::Clear => {
                 if let Some(p) = self.focused().and_then(|f| self.panes.get_mut(&f)) {

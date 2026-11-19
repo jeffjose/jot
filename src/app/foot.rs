@@ -302,7 +302,7 @@ impl App {
         let tile = Rect { x: bar.x, y: bar.y, w: ts + self.px(6.0), h };
         let clip = Rect { x: tile.x + tile.w, y: bar.y, w: (right - self.px(24.0) - tile.x - tile.w).max(0), h };
         let ws_id = self.ws().id;
-        let renaming = self.inline.as_ref().is_some_and(|i| i.target == super::inline::Target::Workspace(ws_id));
+        let renaming = self.inline.as_ref().is_some_and(|i| i.target == super::inline::Target::Workspace(ws_id) && !i.side);
         let room = (self.fonts.ui.width(&name) + self.px(80.0)).min((clip.w - 2 * pad).max(0));
         let name_w = if renaming { room } else { self.fonts.ui.width(&name).min((clip.w - pad).max(0)) };
         let fx = clip.x + pad + name_w + self.px(10.0);
@@ -317,7 +317,7 @@ impl App {
         }
         self.mark_tile(Rect { x: bar.x + self.px(6.0), y: bar.y + 1 + (h - 1 - ts) / 2, w: ts, h: ts }, accent, mark, true);
         // Being renamed: the field where its name is (wide enough to type in).
-        match self.draw_inline(super::inline::Target::Workspace(ws_id), clip.x + pad, ty, room, false, clip) {
+        match if renaming { self.draw_inline(super::inline::Target::Workspace(ws_id), clip.x + pad, ty, room, false, clip) } else { None } {
             Some(_) => {}
             None => {
                 self.canvas.text_fit(&mut self.fonts.ui, &name, clip.x + pad, ty, (clip.w - pad).max(0), c.text, clip);

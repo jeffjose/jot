@@ -171,6 +171,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Alt ,  Alt .", "Previous / next terminal in this pane"),
     ("Alt 1–9", "Go to a workspace"),
     ("Ctrl N  Alt Shift N", "New workspace, in this pane's folder"),
+    ("Ctrl Shift S", "Save the workspace as it is (changed, it goes back to as saved when you leave it)"),
     ("Ctrl Shift N", "New window"),
     ("Alt Shift M", "Multi: type into every pane; click a MULTI tag to skip one"),
     ("Alt ;", "Pane command line: run now, or queue behind the running command"),

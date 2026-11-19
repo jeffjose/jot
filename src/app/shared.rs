@@ -172,12 +172,15 @@ impl App {
             let m = crate::mux::split_id(id).0;
             let host = self.host_for(m, k);
             let empty = ws.spaces.contains(&id);
-            match self.panes.get(&id) {
+            // (A saved layout names terminals by base id: any view of one.)
+            let pane = self.panes.get(&id).or_else(|| self.panes.iter().find(|(p, _)| crate::mux::base_id(**p) == crate::mux::base_id(id)).map(|(_, p)| p));
+            match pane {
                 Some(p) => (p.cmd.clone(), p.pty.cwd(), p.pins.iter().map(|pin| pin.cmd.clone()).collect(), empty, host),
                 None => (String::new(), None, Vec::new(), empty, host),
             }
         };
-        WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &describe)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), id: Some(ws.id), rev: Some(ws.rev), ..Default::default() }
+        let saved = ws.saved.as_ref().map(|n| persist::spec(n, &describe));
+        WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &describe)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), id: Some(ws.id), rev: Some(ws.rev), saved, ..Default::default() }
     }
 
     /// Remembered as said to the session: told back, it is this window's.
@@ -201,7 +204,9 @@ impl App {
         crate::debuglog::log(format!("shared: workspace {} made, on machine {k}, {} panes", spec.name, ids.len()));
         let id = spec.id.unwrap_or_else(new_ws_id);
         let name = if spec.name.is_empty() { sidebar::random_name() } else { spec.name.clone() };
-        self.workspaces.push(Workspace { id, rev: spec.rev.unwrap_or(0), home: k, name, focus: ids[0], root, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new(), open: true });
+        // As saved where it was made (a draft there is one here), else as it is.
+        let saved = spec.saved.as_ref().and_then(|s| self.saved_from_spec(s, k)).or_else(|| Some(super::draft::base_node(&root)));
+        self.workspaces.push(Workspace { id, rev: spec.rev.unwrap_or(0), home: k, name, focus: ids[0], root, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new(), open: true, saved });
     }
 
     /// Workspace `wi` made again as another window changed it: its name,
@@ -214,6 +219,11 @@ impl App {
             ws.name = if spec.name.is_empty() { ws.name.clone() } else { spec.name.clone() };
             ws.accent = spec.accent.clone();
             ws.theme = spec.theme.clone();
+        }
+        // Saved in another window: saved here too.
+        if let Some(saved) = spec.saved.as_ref().and_then(|s| self.saved_from_spec(s, k)) {
+            self.workspaces[wi].saved = Some(saved);
+            self.side_dirty = true;
         }
         let Some(layout) = &spec.layout else { return };
         let mut was = Vec::new();
@@ -278,7 +288,7 @@ impl App {
 
     /// Every pane the window's workspaces, pop-outs and roaming terminal
     /// show.
-    fn shown_ids(&self) -> Vec<PaneId> {
+    pub(super) fn shown_ids(&self) -> Vec<PaneId> {
         let mut ids = Vec::new();
         for ws in &self.workspaces {
             ws.root.panes(&mut ids);

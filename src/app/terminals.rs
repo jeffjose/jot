@@ -23,6 +23,9 @@ pub(super) enum Place {
     Split(PaneId, Dir, bool),
     /// A workspace of its own, laid out as it was where it was held.
     Workspace,
+    /// Back into the workspace of this id, put back as it was saved (see
+    /// draft.rs).
+    Revert(u64),
 }
 
 /// A terminal no pane in this window shows: its machine, its name in that

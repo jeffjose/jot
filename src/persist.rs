@@ -92,6 +92,12 @@ pub struct WorkspaceSpec {
     /// session, to be brought back; each is shared by its home's only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<String>,
+    /// Its layout as last saved (option A on the "jot: pane header badge"
+    /// canvas, Workspaces page): what Revert brings back, and what it
+    /// opens as after a restart. `layout` is how it is now, a draft when
+    /// the two differ. None from a jot before drafts: its layout is saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved: Option<Spec>,
 }
 
 /// A pane to be started: its command and folder.
@@ -784,9 +790,9 @@ pub fn shape(spec: &Spec) -> String {
 
 impl WorkspaceSpec {
     /// What windows sharing it keep the same (see shape): the layout's
-    /// shape, its name, accent and theme.
+    /// shape, its name, accent and theme, and the shape it was saved as.
     pub fn shared_shape(&self) -> String {
-        format!("{}|{:?}|{:?}|{}", self.name, self.accent, self.theme, self.layout.as_ref().map(shape).unwrap_or_default())
+        format!("{}|{:?}|{:?}|{}|{}", self.name, self.accent, self.theme, self.layout.as_ref().map(shape).unwrap_or_default(), self.saved.as_ref().map(shape).unwrap_or_default())
     }
 
     /// Whether the session it is written for shares it: its home (it was

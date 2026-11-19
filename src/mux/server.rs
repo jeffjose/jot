@@ -1741,6 +1741,38 @@ mod tests {
     }
 
     #[test]
+    fn a_save_is_a_change_and_the_session_keeps_what_was_saved() {
+        let mut s = server();
+        window(&mut s, 1);
+        let split = across(vec![pane(1), pane(2)], vec![0.5, 0.5]);
+        // A draft: split, saved as one pane.
+        let mut draft = ws("w1", 10, 0, split.clone());
+        draft.saved = Some(pane(1));
+        says(&mut s, 1, vec![draft]);
+        assert_eq!(rev(&s, 10), Some(1));
+        // Saved as it is: the layout the same, a change all the same, for the
+        // other windows to save it too.
+        let mut saved = ws("w1", 10, 1, split.clone());
+        saved.saved = Some(split);
+        says(&mut s, 1, vec![saved]);
+        assert_eq!(rev(&s, 10), Some(2));
+        let kept = s.shared.iter().find(|w| w.id == Some(10)).and_then(|w| w.saved.as_ref()).map(crate::persist::shape);
+        assert_eq!(kept.as_deref(), Some("a(p1,p2)"));
+        // And it is told to the windows as it was said.
+        let text = toml::to_string(&s.shared[0]).unwrap();
+        let back: WorkspaceSpec = toml::from_str(&text).unwrap();
+        assert_eq!(back.saved.as_ref().map(crate::persist::shape).as_deref(), Some("a(p1,p2)"));
+    }
+
+    #[test]
+    fn a_workspace_said_by_a_jot_before_drafts_has_no_saved_layout() {
+        let old = "name = \"w1\"\nid = 10\nrev = 1\n\n[layout]\ncmd = \"\"\nid = 1\n";
+        let ws: WorkspaceSpec = toml::from_str(old).unwrap();
+        assert!(ws.saved.is_none());
+        assert_eq!(ws.layout.as_ref().map(crate::persist::shape).as_deref(), Some("p1"));
+    }
+
+    #[test]
     fn another_window_s_stale_change_is_not_taken() {
         let mut s = server();
         window(&mut s, 1);

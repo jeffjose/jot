@@ -19,6 +19,8 @@ pub(super) struct Inline {
     pub field: crate::field::TextField,
     /// Where it is drawn, for a click in it.
     pub at: Option<Rect>,
+    /// A workspace renamed in its sidebar row, not on the project bar.
+    pub side: bool,
 }
 
 /// Two clicks on one name this close together: a double click.
@@ -48,10 +50,30 @@ impl App {
         true
     }
 
+    /// Workspace `wi` renamed in place in its sidebar row (F2, Rename from
+    /// its menu, or its name clicked twice there); on the project bar when
+    /// the sidebar is tucked away.
+    pub(super) fn rename_workspace_at(&mut self, wi: usize) {
+        let Some(ws) = self.workspaces.get(wi) else { return };
+        let (id, name) = (ws.id, ws.name.clone());
+        if !self.sidebar_open || crate::quake_mode() {
+            if wi != self.current {
+                self.go_to(wi);
+            }
+            self.rename_workspace();
+            return;
+        }
+        self.start_inline(Target::Workspace(id), &name);
+        if let Some(i) = &mut self.inline {
+            i.side = true;
+        }
+        self.side_dirty = true;
+    }
+
     fn start_inline(&mut self, target: Target, name: &str) {
         let mut field = crate::field::TextField::new(name);
         field.select_all();
-        self.inline = Some(Inline { target, field, at: None });
+        self.inline = Some(Inline { target, field, at: None, side: false });
         self.menu = None;
         self.full = true;
         self.foot_said.clear();
@@ -68,8 +90,10 @@ impl App {
         self.inline_clicked = None;
         match target {
             Target::Terminal(k, sid) => self.rename_terminal(k, sid),
-            Target::Workspace(_) => {
-                self.rename_workspace();
+            Target::Workspace(id) => {
+                if let Some(wi) = self.workspaces.iter().position(|w| w.id == id) {
+                    self.rename_workspace_at(wi);
+                }
             }
         }
         true

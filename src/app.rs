@@ -59,6 +59,7 @@ mod shared;
 mod terminals;
 mod tooltip;
 mod space;
+mod draft;
 mod toast;
 mod watch;
 
@@ -180,6 +181,10 @@ pub struct Workspace {
     /// the sidebar lists terminals flat now).
     #[allow(dead_code)]
     open: bool,
+    /// Its layout as last saved: the terminals (by base id, whatever view
+    /// shows them) and how they are split; sizes are each window's own.
+    /// What Revert brings back (see draft.rs). None until it is first set.
+    saved: Option<Node>,
 }
 
 enum Drag {
@@ -966,6 +971,15 @@ impl App {
     }
 
     fn add_workspace(&mut self, spec: &WorkspaceSpec) {
+        // Opened as it was saved, a draft it had left behind (see draft.rs).
+        let as_saved;
+        let spec = match &spec.saved {
+            Some(s) => {
+                as_saved = WorkspaceSpec { layout: Some(s.clone()), ..spec.clone() };
+                &as_saved
+            }
+            None => spec,
+        };
         // Each pane on the machine it was on (the workspace's, for one
         // written with a machine for all), reached in the background if it
         // is not already.
@@ -1013,7 +1027,9 @@ impl App {
             (None, Some(_)) => base,
             (None, None) => ids.first().map_or(0, |i| self.machine_of(*i)),
         };
-        self.workspaces.push(Workspace { id, rev: spec.rev.unwrap_or(0), home, name, root, focus, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces, open: true });
+        // Saved as it opens: a new one, one from before drafts, one as saved.
+        let saved = Some(draft::base_node(&root));
+        self.workspaces.push(Workspace { id, rev: spec.rev.unwrap_or(0), home, name, root, focus, zoom: None, accent: spec.accent.clone(), theme: spec.theme.clone(), on_open: spec.on_open.clone(), on_focus: spec.on_focus.clone(), broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces, open: true, saved });
         self.run_hook(self.workspaces.len() - 1, true);
     }
 
@@ -1393,7 +1409,7 @@ impl App {
             }
             // Its workspace was closed with it: it comes back as one.
             None => {
-                self.workspaces.push(Workspace { id: new_ws_id(), rev: 0, home: self.machine_of(id), name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new(), open: true });
+                self.workspaces.push(Workspace { id: new_ws_id(), rev: 0, home: self.machine_of(id), name: c.workspace, root: Node::Pane(id), focus: id, zoom: None, accent: None, theme: None, on_open: None, on_focus: None, broadcast: false, left_out: Vec::new(), minimized: Vec::new(), spaces: Vec::new(), open: true, saved: Some(Node::Pane(crate::mux::base_id(id))) });
                 self.go_to(self.workspaces.len() - 1);
             }
         }
@@ -1487,7 +1503,12 @@ impl App {
 
     fn go_to(&mut self, i: usize) {
         if i < self.workspaces.len() && i != self.current {
+            // Gone from with a draft: put back as it was saved (draft.rs).
+            let was = self.current;
             self.current = i;
+            if self.is_draft(was) {
+                self.revert_workspace(was);
+            }
             self.run_hook(i, false);
             self.roam_shown = false;
             let mut ids = Vec::new();
@@ -1786,6 +1807,9 @@ impl App {
                 KeyCode::ArrowUp => self.jump_prompt(-1),
                 KeyCode::ArrowDown => self.jump_prompt(1),
                 KeyCode::KeyE => self.open_editor(),
+                // The workspace saved as it is (draft.rs); not Ctrl S, which
+                // a terminal's programs have.
+                KeyCode::KeyS => self.save_workspace(self.current),
                 _ => return false,
             }
             return true;
@@ -3590,14 +3614,16 @@ impl App {
                     0 => Some(hostname()),
                     _ => machines.get(m).and_then(|x| x.host.clone()),
                 };
-                match panes.get(&id) {
+                // (A saved layout names terminals by base id: any view of one.)
+                let pane = panes.get(&id).or_else(|| panes.iter().find(|(p, _)| crate::mux::base_id(**p) == crate::mux::base_id(id)).map(|(_, p)| p));
+                match pane {
                     Some(p) => (p.cmd.clone(), p.pty.cwd(), p.pins.iter().map(|pin| pin.cmd.clone()).collect(), spaces.contains(&id), host),
                     None => (String::new(), None, Vec::new(), spaces.contains(&id), host),
                 }
             }
         };
         let describe = describe_for(0);
-        let spec_of = |ws: &Workspace, d: &dyn Fn(PaneId) -> (String, Option<PathBuf>, Vec<String>, bool, Option<String>)| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &d)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), id: Some(ws.id), rev: Some(ws.rev), ..Default::default() };
+        let spec_of = |ws: &Workspace, d: &dyn Fn(PaneId) -> (String, Option<PathBuf>, Vec<String>, bool, Option<String>)| WorkspaceSpec { name: ws.name.clone(), layout: Some(persist::spec(&ws.root, &d)), saved: ws.saved.as_ref().map(|n| persist::spec(n, &d)), accent: ws.accent.clone(), theme: ws.theme.clone(), on_open: ws.on_open.clone(), on_focus: ws.on_focus.clone(), id: Some(ws.id), rev: Some(ws.rev), ..Default::default() };
         // Every one, to be brought back; each marked with its home when it is
         // not this machine (its home's session shares it, not this one).
         let mut workspaces: Vec<WorkspaceSpec> = self
@@ -4380,6 +4406,13 @@ impl App {
         };
         let (_, spec, place) = self.taking.remove(i);
         crate::debuglog::log(format!("taken {k}: {:?} for {place:?}", spec.layout.as_ref().map(persist::ids_in_order).unwrap_or_default()));
+        // Taken back for a workspace put back as saved: it is, now.
+        if let terminals::Place::Revert(ws_id) = place {
+            self.revert_taken(ws_id);
+            self.replay_held();
+            self.listed_at = Instant::now() - Duration::from_secs(60);
+            return self.changed();
+        }
         // Where it was to go: a pane still there, a workspace to put it in.
         let at = match place {
             terminals::Place::Into(p) | terminals::Place::Back(p) | terminals::Place::Split(p, ..) => {
