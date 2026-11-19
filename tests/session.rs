@@ -817,3 +817,44 @@ fn a_pane_s_key_goes_over_jot_restart() {
     again.says(&ws("w1", 10, 1, &one(t)));
     assert!(s.saved_with("fedcba9876543210").is_some(), "the key read back from the shell after the restart");
 }
+
+/// A process's parent, from /proc.
+fn ppid(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat[stat.rfind(')')? + 2..].split_whitespace().nth(1)?.parse().ok()
+}
+
+/// The process `jot serve` at `sock`, by its command line.
+fn serve_at(sock: &Path) -> Option<u32> {
+    let want = format!("serve\0{}", sock.display());
+    std::fs::read_dir("/proc").ok()?.flatten().filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok()).find(|pid| std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| String::from_utf8_lossy(&c).contains(&want)))
+}
+
+/// A session `jot bridge` starts (a window on another machine reaching
+/// this one before anything here has) is not the bridge's: under it, it
+/// was under sshd, and a prompt that looks there (twig's) said "(ssh)" on
+/// this machine's own panes.
+#[test]
+fn a_session_the_bridge_starts_is_not_under_it() {
+    let dir = std::env::temp_dir().join(format!("jot-b{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let uid = unsafe { libc_getuid() };
+    let run = dir.join("run");
+    std::fs::create_dir_all(run.join(format!("jot-{uid}"))).unwrap();
+    let sock = run.join(format!("jot-{uid}")).join("session.sock");
+    let mut bridge = Command::new(env!("CARGO_BIN_EXE_jot")).arg("bridge").env("XDG_RUNTIME_DIR", &run).env("XDG_STATE_HOME", dir.join("state")).env("SHELL", "/bin/sh").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).spawn().expect("jot bridge");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let serve = loop {
+        if let Some(p) = serve_at(&sock).filter(|_| UnixStream::connect(&sock).is_ok()) {
+            break p;
+        }
+        assert!(Instant::now() < deadline, "the bridge did not start a session");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let parent = ppid(serve);
+    let _ = Command::new("kill").arg(serve.to_string()).status();
+    let _ = bridge.kill();
+    let _ = bridge.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(parent.is_some() && parent != Some(bridge.id()), "the session's parent is the bridge ({parent:?})");
+}

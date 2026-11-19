@@ -22,7 +22,12 @@ use std::time::Instant;
 const CAP: usize = 8 << 20;
 
 /// Starts a session's server for `path`, apart from this process: its
-/// own session (setsid), so that the window's ending does not end it.
+/// own session (setsid), so that the window's ending does not end it,
+/// and not this process's child (forked twice, the one between gone at
+/// once), so that it is the user's (systemd's, init's), never under what
+/// started it: started by `jot bridge` it was under sshd, and a prompt
+/// that looks among a shell's parents for sshd (twig's) said "(ssh)" on
+/// this machine's own panes.
 pub fn launch(path: &Path) -> io::Result<()> {
     let exe = std::env::current_exe()?;
     let log = crate::persist::state_dir().join("serve.log");
@@ -33,10 +38,15 @@ pub fn launch(path: &Path) -> io::Result<()> {
     unsafe {
         cmd.pre_exec(|| {
             libc::setsid();
-            Ok(())
+            match libc::fork() {
+                -1 => Err(io::Error::last_os_error()),
+                0 => Ok(()),
+                _ => libc::_exit(0),
+            }
         });
     }
-    cmd.spawn()?;
+    // The one between, ended at once: reaped here.
+    cmd.spawn()?.wait()?;
     Ok(())
 }
 
